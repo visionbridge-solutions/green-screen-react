@@ -1,0 +1,69 @@
+{
+  "name": "tn5250-react",
+  "version": "0.1.0",
+  "description": "Web-based IBM TN5250 terminal emulator React component",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup && cp src/styles/tn5250.css dist/styles.css",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "jsdom": "^25.0.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  },
+  "keywords": [
+    "tn5250",
+    "ibm-i",
+    "as400",
+    "iseries",
+    "terminal",
+    "emulator",
+    "5250",
+    "react",
+    "component"
+  ],
+  "author": "VisionBridge Solutions",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/visionbridge-solutions/tn5250-react.git"
+  },
+  "homepage": "https://github.com/visionbridge-solutions/tn5250-react#readme",
+  "bugs": {
+    "url": "https://github.com/visionbridge-solutions/tn5250-react/issues"
+  }
+}

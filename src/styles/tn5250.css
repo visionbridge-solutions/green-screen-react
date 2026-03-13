@@ -1,0 +1,256 @@
+/* tn5250-react — IBM TN5250 Terminal Emulator Styles */
+
+:root {
+  --tn5250-green: #10b981;
+  --tn5250-white: #FFFFFF;
+  --tn5250-blue: #7B93FF;
+  --tn5250-cyan: #00FFFF;
+  --tn5250-yellow: #FFFF00;
+  --tn5250-red: #FF5555;
+  --tn5250-pink: #FF55FF;
+  --tn5250-bg: #000000;
+  --tn5250-card-bg: #0e1422;
+  --tn5250-card-border: #1e293b;
+  --tn5250-header-bg: #090e1a;
+  --tn5250-muted: #94a3b8;
+  --tn5250-font: 'JetBrains Mono', 'Courier New', monospace;
+}
+
+/* ── Terminal Container ───────────────────────────────────────────── */
+
+.tn5250-terminal {
+  background-color: var(--tn5250-card-bg);
+  border: 1px solid var(--tn5250-card-border);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+.tn5250-terminal-focused {
+  border-color: var(--tn5250-green);
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.4), inset 0 0 10px rgba(16, 185, 129, 0.1);
+}
+
+/* ── Header ───────────────────────────────────────────────────────── */
+
+.tn5250-header {
+  background-color: var(--tn5250-header-bg);
+  border-bottom: 1px solid var(--tn5250-card-border);
+  padding: 0.5rem 1rem;
+  font-family: var(--tn5250-font);
+  font-size: 0.75rem;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--tn5250-muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.tn5250-terminal-focused .tn5250-header {
+  background-color: rgba(16, 185, 129, 0.1);
+  border-bottom-color: var(--tn5250-green);
+}
+
+.tn5250-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tn5250-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tn5250-status-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tn5250-badge-focused {
+  padding: 2px 8px;
+  background-color: var(--tn5250-green);
+  color: black;
+  font-size: 10px;
+  font-weight: bold;
+  border-radius: 4px;
+  animation: tn5250-pulse 2s infinite;
+}
+
+.tn5250-timestamp {
+  font-family: var(--tn5250-font);
+  font-size: 10px;
+  color: #808080;
+}
+
+.tn5250-hint {
+  font-family: var(--tn5250-font);
+  font-size: 10px;
+  color: #7a8594;
+}
+
+.tn5250-host {
+  font-family: var(--tn5250-font);
+  font-size: 12px;
+  color: #808080;
+}
+
+.tn5250-disconnected-text {
+  font-family: var(--tn5250-font);
+  font-size: 12px;
+  color: #FF6B00;
+}
+
+.tn5250-btn-icon {
+  background: transparent;
+  border: none;
+  padding: 4px;
+  border-radius: 4px;
+  color: var(--tn5250-muted);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.tn5250-btn-icon:hover {
+  background-color: #1A1A1A;
+  color: var(--tn5250-green);
+}
+
+.tn5250-btn-icon:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Body & Screen ────────────────────────────────────────────────── */
+
+.tn5250-body {
+  background-color: var(--tn5250-bg);
+  flex: 1;
+  display: flex;
+  padding: 0;
+  overflow: hidden;
+}
+
+.tn5250-screen {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  cursor: text;
+}
+
+.tn5250-screen-embedded {
+  flex: 1;
+}
+
+.tn5250-screen-content {
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+
+/* ── Cursor ───────────────────────────────────────────────────────── */
+
+.tn5250-cursor {
+  display: block;
+  background-color: var(--tn5250-green);
+  animation: tn5250-cursor-blink 1s infinite;
+  box-shadow: 0 0 5px rgba(16, 185, 129, 0.5);
+}
+
+@keyframes tn5250-cursor-blink {
+  0%, 50% { opacity: 0.8; }
+  51%, 100% { opacity: 0; }
+}
+
+/* ── Row Colors (IBM 5250 conventions) ────────────────────────────── */
+
+.tn5250-row-title {
+  color: var(--tn5250-white);
+}
+
+.tn5250-row-subtitle {
+  color: var(--tn5250-blue);
+}
+
+.tn5250-row-fkey {
+  color: var(--tn5250-blue);
+}
+
+.tn5250-row-content {
+  color: var(--tn5250-green);
+}
+
+/* ── Input Field ──────────────────────────────────────────────────── */
+
+.tn5250-input-field {
+  display: inline-block;
+  position: relative;
+  border-bottom: 2px solid var(--tn5250-green);
+}
+
+/* ── Overlays ─────────────────────────────────────────────────────── */
+
+.tn5250-overlay {
+  position: absolute;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  pointer-events: none;
+  color: #FF6B00;
+  font-family: var(--tn5250-font);
+  font-size: 14px;
+  gap: 12px;
+}
+
+.tn5250-error-banner {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  padding: 12px;
+  background-color: #1A0000;
+  border: 1px solid #FF6B00;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--tn5250-font);
+  font-size: 12px;
+  color: #FF6B00;
+}
+
+/* ── Animations ───────────────────────────────────────────────────── */
+
+@keyframes tn5250-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes tn5250-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.tn5250-spin {
+  animation: tn5250-spin 1s linear infinite;
+}
+
+@keyframes tn5250-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.tn5250-fade-in {
+  animation: tn5250-fade-in 400ms ease-out forwards;
+}
