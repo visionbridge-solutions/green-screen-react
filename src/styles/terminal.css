@@ -230,6 +230,57 @@
   color: #FF6B00;
 }
 
+/* ── Inline Sign-In ──────────────────────────────────────────────── */
+
+.gs-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 280px;
+  color: var(--gs-green);
+  font-family: var(--gs-font);
+}
+
+.gs-signin-row {
+  display: flex;
+  gap: 8px;
+}
+
+.gs-signin input:focus,
+.gs-signin select:focus {
+  border-color: var(--gs-green);
+  box-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+}
+
+.gs-signin select option {
+  background-color: #0e1422;
+  color: var(--gs-green);
+}
+
+.gs-signin-btn {
+  width: 100%;
+  padding: 8px;
+  margin-top: 4px;
+  background-color: rgba(16, 185, 129, 0.15);
+  border: 1px solid var(--gs-green);
+  color: var(--gs-green);
+  font-family: var(--gs-font);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.gs-signin-btn:hover:not(:disabled) {
+  background-color: rgba(16, 185, 129, 0.25);
+}
+
+.gs-signin-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* ── Animations ───────────────────────────────────────────────────── */
 
 @keyframes gs-pulse {

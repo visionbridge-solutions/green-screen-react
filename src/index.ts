@@ -16,6 +16,7 @@ export type {
   ScreenData,
   ConnectionStatus,
   SendResult,
+  ConnectConfig,
   Field,
 } from './adapters/types';
 

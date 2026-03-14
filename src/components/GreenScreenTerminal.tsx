@@ -1,9 +1,23 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { TerminalAdapter, ScreenData, ConnectionStatus, Field, TerminalProtocol, ProtocolProfile, ConnectConfig } from '../adapters/types';
+import { RestAdapter } from '../adapters/RestAdapter';
 import { useTerminalScreen, useTerminalInput, useTerminalConnection } from '../hooks/useTN5250';
 import { useTypingAnimation } from '../hooks/useTypingAnimation';
 import { getProtocolProfile } from '../protocols/registry';
 import { TerminalBootLoader as DefaultBootLoader } from './TerminalBootLoader';
+
+/* ── No-op adapter (placeholder before connection) ───────────────── */
+
+const noopResult = { success: false, error: 'No adapter configured' };
+const noopAdapter: TerminalAdapter = {
+  getScreen: async () => null,
+  getStatus: async () => ({ connected: false, status: 'disconnected' }),
+  sendText: async () => noopResult,
+  sendKey: async () => noopResult,
+  connect: async () => noopResult,
+  disconnect: async () => noopResult,
+  reconnect: async () => noopResult,
+};
 
 /* ── Inline SVG Icons (no external dependency) ────────────────────── */
 
@@ -157,8 +171,10 @@ function InlineSignIn({ defaultProtocol, loading, error, onConnect }: InlineSign
 /* ── Component Props ──────────────────────────────────────────────── */
 
 export interface GreenScreenTerminalProps {
-  /** Adapter for communicating with the terminal backend */
-  adapter: TerminalAdapter;
+  /** Adapter for communicating with the terminal backend (optional — auto-created from sign-in form or baseUrl) */
+  adapter?: TerminalAdapter;
+  /** Base URL for the terminal API — convenience shorthand that auto-creates a RestAdapter */
+  baseUrl?: string;
   /** Terminal protocol (determines color conventions, header label, etc.) */
   protocol?: TerminalProtocol;
   /** Custom protocol profile (overrides protocol param) */
@@ -186,7 +202,7 @@ export interface GreenScreenTerminalProps {
   /** Typing animation budget in ms (default 60) */
   typingBudgetMs?: number;
 
-  /** Show inline sign-in form when disconnected (default false) */
+  /** Show inline sign-in form when disconnected (default true) */
   inlineSignIn?: boolean;
   /** Default protocol for the sign-in form dropdown (default 'tn5250') */
   defaultProtocol?: TerminalProtocol;
@@ -229,7 +245,8 @@ export type TN5250TerminalProps = GreenScreenTerminalProps;
  * Supports: TN5250 (IBM i), TN3270 (z/OS), VT (OpenVMS/Pick), HP 6530 (NonStop)
  */
 export function GreenScreenTerminal({
-  adapter,
+  adapter: externalAdapter,
+  baseUrl,
   protocol,
   protocolProfile: customProfile,
   screenData: externalScreenData,
@@ -242,7 +259,7 @@ export function GreenScreenTerminal({
   showHeader = true,
   typingAnimation = true,
   typingBudgetMs = 60,
-  inlineSignIn = false,
+  inlineSignIn = true,
   defaultProtocol: signInDefaultProtocol,
   onSignIn,
   bootLoader,
@@ -255,6 +272,14 @@ export function GreenScreenTerminal({
   style,
 }: GreenScreenTerminalProps) {
   const profile = customProfile ?? getProtocolProfile(protocol);
+
+  // --- Resolve adapter: explicit > baseUrl > internal (from sign-in) > noop ---
+  const [internalAdapter, setInternalAdapter] = useState<TerminalAdapter | null>(null);
+  const baseUrlAdapter = useMemo(
+    () => baseUrl ? new RestAdapter({ baseUrl }) : null,
+    [baseUrl],
+  );
+  const adapter = externalAdapter ?? baseUrlAdapter ?? internalAdapter ?? noopAdapter;
 
   // --- Data sources ---
   const shouldPoll = pollInterval > 0 && !externalScreenData;
@@ -349,8 +374,16 @@ export function GreenScreenTerminal({
   // --- Inline sign-in ---
   const handleSignIn = useCallback(async (config: ConnectConfig) => {
     onSignIn?.(config);
+    // Auto-create adapter from sign-in config when no external adapter is provided
+    if (!externalAdapter && !baseUrlAdapter) {
+      const port = config.port ? `:${config.port}` : '';
+      const newAdapter = new RestAdapter({ baseUrl: `http://${config.host}${port}` });
+      setInternalAdapter(newAdapter);
+      await newAdapter.connect(config);
+      return;
+    }
     await connect(config);
-  }, [connect, onSignIn]);
+  }, [connect, onSignIn, externalAdapter, baseUrlAdapter]);
 
   // --- Boot loader ---
   const [showBootLoader, setShowBootLoader] = useState(bootLoader !== false);

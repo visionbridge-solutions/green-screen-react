@@ -12,6 +12,7 @@ Multi-protocol legacy terminal React component supporting TN5250, TN3270, VT220,
 - Auto-reconnect with exponential backoff
 - Fully themeable via CSS custom properties
 - Zero runtime dependencies (peer deps: React 18+)
+- Optional inline sign-in form (host, credentials, protocol picker)
 - Pluggable adapter interface for any backend
 
 ## Installation
@@ -21,6 +22,31 @@ npm install green-screen-react
 ```
 
 ## Quick Start
+
+Install and render — no configuration needed:
+
+```tsx
+import { GreenScreenTerminal } from 'green-screen-react';
+import 'green-screen-react/styles.css';
+
+function App() {
+  return <GreenScreenTerminal />;
+}
+```
+
+The inline sign-in form is enabled by default. Users enter host, port, protocol, and credentials directly in the terminal, and a `RestAdapter` is auto-created to connect to `http://{host}:{port}`.
+
+### With a Base URL
+
+If your backend is at a known URL, use the `baseUrl` shorthand:
+
+```tsx
+<GreenScreenTerminal baseUrl="https://your-server.com/api/terminal" />
+```
+
+### With a Custom Adapter
+
+For full control, provide your own adapter:
 
 ```tsx
 import { GreenScreenTerminal, RestAdapter } from 'green-screen-react';
@@ -44,6 +70,24 @@ function App() {
 <GreenScreenTerminal adapter={adapter} protocol="hp6530" />
 ```
 
+### Inline Sign-In
+
+The sign-in form is shown by default when disconnected. To disable it or customize:
+
+```tsx
+<GreenScreenTerminal
+  adapter={adapter}
+  inlineSignIn={false}  // disable the form
+/>
+
+<GreenScreenTerminal
+  defaultProtocol="tn3270"
+  onSignIn={(config) => console.log('Connecting to', config.host)}
+/>
+```
+
+The form collects host, port, protocol, and credentials. On submit, it calls `adapter.connect(config)` with `{ host, port, protocol, username, password }`.
+
 ## Adapter Interface
 
 The terminal communicates with your backend through an adapter. Implement the `TerminalAdapter` interface or use the built-in `RestAdapter`.
@@ -54,7 +98,7 @@ interface TerminalAdapter {
   getStatus(): Promise<ConnectionStatus>;
   sendText(text: string): Promise<SendResult>;
   sendKey(key: string): Promise<SendResult>;
-  connect(): Promise<SendResult>;
+  connect(config?: ConnectConfig): Promise<SendResult>;
   disconnect(): Promise<SendResult>;
   reconnect(): Promise<SendResult>;
 }
@@ -83,6 +127,9 @@ For HTTP-based backends with these endpoints (relative to `baseUrl`):
 | `protocolProfile` | `ProtocolProfile` | - | Custom protocol profile (overrides `protocol`) |
 | `screenData` | `ScreenData` | - | Direct screen data injection (bypasses polling) |
 | `connectionStatus` | `ConnectionStatus` | - | Direct status injection |
+| `inlineSignIn` | `boolean` | `false` | Show sign-in form when disconnected |
+| `defaultProtocol` | `TerminalProtocol` | `'tn5250'` | Pre-selected protocol in sign-in form |
+| `onSignIn` | `(config) => void` | - | Sign-in submit callback |
 | `readOnly` | `boolean` | `false` | Disable keyboard input |
 | `pollInterval` | `number` | `2000` | Polling interval in ms (0 to disable) |
 | `autoReconnect` | `boolean` | `true` | Auto-reconnect on disconnect |
