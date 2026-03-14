@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult } from '../adapters/types';
+import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult, ConnectConfig } from '../adapters/types';
 
 /**
  * Hook for terminal connection management via adapter.
@@ -21,11 +21,11 @@ export function useTerminalConnection(adapter: TerminalAdapter) {
     }
   }, [adapter]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (config?: ConnectConfig) => {
     setLoading(true);
     setError(null);
     try {
-      const result = await adapter.connect();
+      const result = await adapter.connect(config);
       return { ...result, success: true };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

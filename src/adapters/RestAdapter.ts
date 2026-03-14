@@ -1,4 +1,4 @@
-import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult } from './types';
+import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult, ConnectConfig } from './types';
 
 export interface RestAdapterOptions {
   /** Base URL for the terminal API (e.g. "https://myhost.com/api/terminal") */
@@ -83,8 +83,8 @@ export class RestAdapter implements TerminalAdapter {
     return this.request<SendResult>('POST', '/send-key', { key });
   }
 
-  async connect(): Promise<SendResult> {
-    return this.request<SendResult>('POST', '/connect');
+  async connect(config?: ConnectConfig): Promise<SendResult> {
+    return this.request<SendResult>('POST', '/connect', config);
   }
 
   async disconnect(): Promise<SendResult> {

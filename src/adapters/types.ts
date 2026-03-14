@@ -127,12 +127,28 @@ export interface TerminalAdapter {
   sendText(text: string): Promise<SendResult>;
   /** Send a special key (ENTER, F1-F24, TAB, etc.) */
   sendKey(key: string): Promise<SendResult>;
-  /** Establish a connection */
-  connect(): Promise<SendResult>;
+  /** Establish a connection, optionally with sign-in config */
+  connect(config?: ConnectConfig): Promise<SendResult>;
   /** Close the connection */
   disconnect(): Promise<SendResult>;
   /** Reconnect to the host */
   reconnect(): Promise<SendResult>;
+}
+
+/**
+ * Configuration passed from the inline sign-in form to adapter.connect().
+ */
+export interface ConnectConfig {
+  /** Target host address */
+  host: string;
+  /** Target port (optional, adapter/server can default per protocol) */
+  port?: number;
+  /** Terminal protocol */
+  protocol: TerminalProtocol;
+  /** Username for authentication */
+  username: string;
+  /** Password for authentication */
+  password: string;
 }
 
 /** @deprecated Use `TerminalAdapter` instead */

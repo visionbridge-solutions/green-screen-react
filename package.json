@@ -1,6 +1,6 @@
 {
   "name": "green-screen-react",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Multi-protocol legacy terminal React component (TN5250, TN3270, VT, HP 6530)",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

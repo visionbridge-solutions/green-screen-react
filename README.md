@@ -1,15 +1,15 @@
-# tn5250-react
+# green-screen-react
 
-Web-based IBM TN5250 terminal emulator React component. The first open-source 5250 terminal for the browser.
+Multi-protocol legacy terminal React component supporting TN5250, TN3270, VT220, and HP 6530.
 
 ## Features
 
-- 24x80 and 27x132 screen rendering with IBM 5250 color conventions
+- **Multi-protocol** — TN5250 (IBM i), TN3270 (mainframe), VT220, HP 6530
+- Protocol-specific color conventions and screen dimensions
 - Keyboard input: text, function keys (F1-F24), tab, arrow keys
-- Field-aware rendering with input field underlines and highlighted protected fields
-- Typing animation for field entries with correction detection
+- Field-aware rendering with input field underlines
+- Typing animation with correction detection
 - Auto-reconnect with exponential backoff
-- Focus lock mode for keyboard capture
 - Fully themeable via CSS custom properties
 - Zero runtime dependencies (peer deps: React 18+)
 - Pluggable adapter interface for any backend
@@ -17,31 +17,39 @@ Web-based IBM TN5250 terminal emulator React component. The first open-source 52
 ## Installation
 
 ```bash
-npm install tn5250-react
+npm install green-screen-react
 ```
 
 ## Quick Start
 
 ```tsx
-import { TN5250Terminal, RestAdapter } from 'tn5250-react';
-import 'tn5250-react/styles.css';
+import { GreenScreenTerminal, RestAdapter } from 'green-screen-react';
+import 'green-screen-react/styles.css';
 
 const adapter = new RestAdapter({
-  baseUrl: 'https://your-server.com/api/tn5250',
+  baseUrl: 'https://your-server.com/api/terminal',
   headers: { Authorization: 'Bearer your-token' },
 });
 
 function App() {
-  return <TN5250Terminal adapter={adapter} />;
+  return <GreenScreenTerminal adapter={adapter} protocol="tn5250" />;
 }
+```
+
+### Switching Protocols
+
+```tsx
+<GreenScreenTerminal adapter={adapter} protocol="tn3270" />
+<GreenScreenTerminal adapter={adapter} protocol="vt" />
+<GreenScreenTerminal adapter={adapter} protocol="hp6530" />
 ```
 
 ## Adapter Interface
 
-The terminal communicates with your backend through an adapter. Implement the `TN5250Adapter` interface or use the built-in `RestAdapter`.
+The terminal communicates with your backend through an adapter. Implement the `TerminalAdapter` interface or use the built-in `RestAdapter`.
 
 ```typescript
-interface TN5250Adapter {
+interface TerminalAdapter {
   getScreen(): Promise<ScreenData | null>;
   getStatus(): Promise<ConnectionStatus>;
   sendText(text: string): Promise<SendResult>;
@@ -66,24 +74,13 @@ For HTTP-based backends with these endpoints (relative to `baseUrl`):
 | POST | `/disconnect` | Close connection |
 | POST | `/reconnect` | Reconnect |
 
-### Custom Adapter
-
-```typescript
-class WebSocketAdapter implements TN5250Adapter {
-  constructor(private ws: WebSocket) {}
-
-  async getScreen() {
-    // Return screen data from WebSocket state
-  }
-  // ... implement other methods
-}
-```
-
 ## Props
 
 | Prop | Type | Default | Description |
 |------|------|---------|-------------|
-| `adapter` | `TN5250Adapter` | **required** | Backend communication adapter |
+| `adapter` | `TerminalAdapter` | **required** | Backend communication adapter |
+| `protocol` | `'tn5250' \| 'tn3270' \| 'vt' \| 'hp6530'` | `'tn5250'` | Terminal protocol |
+| `protocolProfile` | `ProtocolProfile` | - | Custom protocol profile (overrides `protocol`) |
 | `screenData` | `ScreenData` | - | Direct screen data injection (bypasses polling) |
 | `connectionStatus` | `ConnectionStatus` | - | Direct status injection |
 | `readOnly` | `boolean` | `false` | Disable keyboard input |
@@ -93,13 +90,11 @@ class WebSocketAdapter implements TN5250Adapter {
 | `embedded` | `boolean` | `false` | Compact embedded mode |
 | `showHeader` | `boolean` | `true` | Show header bar |
 | `typingAnimation` | `boolean` | `true` | Enable typing animation |
-| `typingBudgetMs` | `number` | `60` | Typing animation budget |
 | `bootLoader` | `ReactNode \| false` | default | Custom boot loader or `false` to disable |
 | `headerRight` | `ReactNode` | - | Content for right side of header |
 | `overlay` | `ReactNode` | - | Custom overlay content |
 | `onNotification` | `(msg, type) => void` | - | Notification callback |
 | `onScreenChange` | `(screen) => void` | - | Screen change callback |
-| `onMinimize` | `() => void` | - | Minimize callback (embedded mode) |
 | `className` | `string` | - | Additional CSS class |
 | `style` | `CSSProperties` | - | Inline styles |
 
@@ -109,29 +104,36 @@ Override CSS custom properties to customize the look:
 
 ```css
 :root {
-  --tn5250-green: #10b981;
-  --tn5250-white: #FFFFFF;
-  --tn5250-blue: #7B93FF;
-  --tn5250-bg: #000000;
-  --tn5250-card-bg: #0e1422;
-  --tn5250-card-border: #1e293b;
-  --tn5250-header-bg: #090e1a;
-  --tn5250-font: 'JetBrains Mono', 'Courier New', monospace;
+  --terminal-green: #10b981;
+  --terminal-white: #FFFFFF;
+  --terminal-blue: #7B93FF;
+  --terminal-bg: #000000;
+  --terminal-card-bg: #0e1422;
+  --terminal-card-border: #1e293b;
+  --terminal-header-bg: #090e1a;
+  --terminal-font: 'JetBrains Mono', 'Courier New', monospace;
 }
 ```
 
-## Exported Hooks
+## Exports
 
-- `useTN5250Connection(adapter)` — Connection lifecycle
-- `useTN5250Screen(adapter, interval, enabled)` — Screen polling
-- `useTN5250Terminal(adapter)` — Send text/key operations
+### Hooks
+
+- `useTerminalConnection(adapter)` — Connection lifecycle
+- `useTerminalScreen(adapter, interval, enabled)` — Screen polling
+- `useTerminalInput(adapter)` — Send text/key operations
 - `useTypingAnimation(content, enabled, budgetMs)` — Typing animation
 
-## Exported Utilities
+### Protocol Profiles
+
+- `getProtocolProfile(protocol)` — Get built-in profile by name
+- `tn5250Profile`, `tn3270Profile`, `vtProfile`, `hp6530Profile`
+
+### Utilities
 
 - `positionToRowCol(content, position)` — Convert linear position to row/col
 - `isFieldEntry(prev, next)` — Detect field entry vs screen transition
-- `getRowColorClass(rowIndex, content)` — IBM 5250 row color convention
+- `getRowColorClass(rowIndex, content)` — Row color convention
 - `parseHeaderRow(line)` — Parse header row into colored segments
 
 ## License
