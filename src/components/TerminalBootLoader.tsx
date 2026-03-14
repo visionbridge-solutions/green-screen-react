@@ -12,11 +12,11 @@ export interface TerminalBootLoaderProps {
 }
 
 /**
- * Animated boot loader for the TN5250 terminal.
+ * Animated boot loader for the terminal.
  * Shows a typewriter-style text reveal animation.
  */
 export function TerminalBootLoader({
-  brandText = 'TN5250',
+  brandText = 'TERMINAL',
   charSpeed = 80,
   logo,
   height = 504,
@@ -43,14 +43,14 @@ export function TerminalBootLoader({
 
   return (
     <div
-      className="tn5250-boot-loader"
+      className="gs-boot-loader"
       style={{
         height: typeof height === 'number' ? `${height}px` : height,
-        backgroundColor: 'var(--tn5250-bg, #000)',
+        backgroundColor: 'var(--gs-bg, #000)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        fontFamily: 'var(--tn5250-font)',
+        fontFamily: 'var(--gs-font)',
         fontSize: '13px',
       }}
     >
@@ -58,10 +58,10 @@ export function TerminalBootLoader({
         {logo}
         <h1
           style={{
-            fontFamily: 'var(--tn5250-font)',
+            fontFamily: 'var(--gs-font)',
             fontSize: '1.5rem',
             letterSpacing: '0.1em',
-            color: 'var(--tn5250-green, #10b981)',
+            color: 'var(--gs-green, #10b981)',
             textShadow: '0 0 12px rgba(16, 185, 129, 0.4)',
             margin: 0,
           }}

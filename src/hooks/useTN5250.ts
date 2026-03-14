@@ -1,10 +1,10 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import type { TN5250Adapter, ScreenData, ConnectionStatus, SendResult } from '../adapters/types';
+import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult } from '../adapters/types';
 
 /**
- * Hook for TN5250 connection management via adapter.
+ * Hook for terminal connection management via adapter.
  */
-export function useTN5250Connection(adapter: TN5250Adapter) {
+export function useTerminalConnection(adapter: TerminalAdapter) {
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,10 +71,10 @@ export function useTN5250Connection(adapter: TN5250Adapter) {
 }
 
 /**
- * Hook for TN5250 screen content with polling.
+ * Hook for terminal screen content with polling.
  */
-export function useTN5250Screen(
-  adapter: TN5250Adapter,
+export function useTerminalScreen(
+  adapter: TerminalAdapter,
   interval: number = 2000,
   enabled: boolean = true,
 ) {
@@ -110,9 +110,9 @@ export function useTN5250Screen(
 }
 
 /**
- * Hook for TN5250 terminal operations (sendText, sendKey).
+ * Hook for terminal operations (sendText, sendKey).
  */
-export function useTN5250Terminal(adapter: TN5250Adapter) {
+export function useTerminalInput(adapter: TerminalAdapter) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -148,3 +148,10 @@ export function useTN5250Terminal(adapter: TN5250Adapter) {
 
   return { loading, error, sendText, sendKey };
 }
+
+/** @deprecated Use `useTerminalConnection` instead */
+export const useTN5250Connection = useTerminalConnection;
+/** @deprecated Use `useTerminalScreen` instead */
+export const useTN5250Screen = useTerminalScreen;
+/** @deprecated Use `useTerminalInput` instead */
+export const useTN5250Terminal = useTerminalInput;

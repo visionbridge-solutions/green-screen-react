@@ -1,4 +1,4 @@
-/* green-screen-react — Legacy Terminal Emulator Styles */
+/* green-screen-react — Multi-protocol Legacy Terminal Emulator Styles */
 
 :root {
   --gs-green: #10b981;
@@ -14,21 +14,6 @@
   --gs-header-bg: #090e1a;
   --gs-muted: #94a3b8;
   --gs-font: 'JetBrains Mono', 'Courier New', monospace;
-
-  /* Legacy aliases */
-  --tn5250-green: var(--gs-green);
-  --tn5250-white: var(--gs-white);
-  --tn5250-blue: var(--gs-blue);
-  --tn5250-cyan: var(--gs-cyan);
-  --tn5250-yellow: var(--gs-yellow);
-  --tn5250-red: var(--gs-red);
-  --tn5250-pink: var(--gs-pink);
-  --tn5250-bg: var(--gs-bg);
-  --tn5250-card-bg: var(--gs-card-bg);
-  --tn5250-card-border: var(--gs-card-border);
-  --tn5250-header-bg: var(--gs-header-bg);
-  --tn5250-muted: var(--gs-muted);
-  --tn5250-font: var(--gs-font);
 }
 
 /* ── Terminal Container ───────────────────────────────────────────── */
@@ -183,7 +168,7 @@
   51%, 100% { opacity: 0; }
 }
 
-/* ── Row Colors (protocol-driven conventions) ─────────────────────── */
+/* ── Row Colors (protocol-driven via CSS classes) ─────────────────── */
 
 .gs-row-title {
   color: var(--gs-white);
@@ -269,32 +254,3 @@
 .gs-fade-in {
   animation: gs-fade-in 400ms ease-out forwards;
 }
-
-/* ── Legacy Aliases (backward compatibility) ──────────────────────── */
-
-.tn5250-terminal { composes: gs-terminal; }
-.tn5250-terminal-focused { composes: gs-terminal-focused; }
-.tn5250-header { composes: gs-header; }
-.tn5250-header-left { composes: gs-header-left; }
-.tn5250-header-right { composes: gs-header-right; }
-.tn5250-status-group { composes: gs-status-group; }
-.tn5250-badge-focused { composes: gs-badge-focused; }
-.tn5250-timestamp { composes: gs-timestamp; }
-.tn5250-hint { composes: gs-hint; }
-.tn5250-host { composes: gs-host; }
-.tn5250-disconnected-text { composes: gs-disconnected-text; }
-.tn5250-btn-icon { composes: gs-btn-icon; }
-.tn5250-body { composes: gs-body; }
-.tn5250-screen { composes: gs-screen; }
-.tn5250-screen-embedded { composes: gs-screen-embedded; }
-.tn5250-screen-content { composes: gs-screen-content; }
-.tn5250-cursor { composes: gs-cursor; }
-.tn5250-row-title { composes: gs-row-title; }
-.tn5250-row-subtitle { composes: gs-row-subtitle; }
-.tn5250-row-fkey { composes: gs-row-fkey; }
-.tn5250-row-content { composes: gs-row-content; }
-.tn5250-input-field { composes: gs-input-field; }
-.tn5250-overlay { composes: gs-overlay; }
-.tn5250-error-banner { composes: gs-error-banner; }
-.tn5250-spin { composes: gs-spin; }
-.tn5250-fade-in { composes: gs-fade-in; }

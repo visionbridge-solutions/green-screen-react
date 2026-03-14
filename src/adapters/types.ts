@@ -1,5 +1,39 @@
 /**
- * Field definition from the 5250 data stream.
+ * Supported terminal protocol types.
+ */
+export type TerminalProtocol = 'tn5250' | 'tn3270' | 'vt' | 'hp6530';
+
+/**
+ * Protocol-specific color/rendering conventions.
+ */
+export interface ProtocolColorProfile {
+  /** CSS class for a row based on its index and content */
+  getRowColorClass(rowIndex: number, rowContent: string, totalRows: number): string;
+  /** Parse the header row into colored segments, or null for default rendering */
+  parseHeaderRow(line: string): { text: string; colorClass: string }[] | null;
+}
+
+/**
+ * Protocol profile — configures terminal behavior per legacy system type.
+ */
+export interface ProtocolProfile {
+  /** Protocol identifier */
+  protocol: TerminalProtocol;
+  /** Human-readable name */
+  displayName: string;
+  /** Default terminal dimensions */
+  defaultRows: number;
+  defaultCols: number;
+  /** Color/rendering profile */
+  colors: ProtocolColorProfile;
+  /** Header label shown in terminal chrome */
+  headerLabel: string;
+  /** Boot loader default text */
+  bootText: string;
+}
+
+/**
+ * Field definition from the terminal data stream.
  * Describes an input or protected field on the terminal screen.
  */
 export interface Field {
@@ -21,7 +55,7 @@ export interface Field {
 
 /**
  * Screen data returned by the adapter.
- * Represents the current state of the 5250 terminal screen.
+ * Represents the current state of the terminal screen.
  */
 export interface ScreenData {
   /** Screen content as newline-separated text (e.g. 24 lines of 80 chars) */
@@ -50,6 +84,8 @@ export interface ConnectionStatus {
   connected: boolean;
   /** Current connection state */
   status: 'disconnected' | 'connecting' | 'connected' | 'authenticated' | 'error';
+  /** Terminal protocol in use */
+  protocol?: TerminalProtocol;
   /** Host address */
   host?: string;
   /** Authenticated username */
@@ -77,12 +113,12 @@ export interface SendResult {
 }
 
 /**
- * Adapter interface for TN5250 terminal communication.
+ * Adapter interface for terminal communication.
  *
  * Implement this interface to connect the terminal component to your backend.
  * The package ships a `RestAdapter` for HTTP-based backends.
  */
-export interface TN5250Adapter {
+export interface TerminalAdapter {
   /** Fetch the current screen content */
   getScreen(): Promise<ScreenData | null>;
   /** Fetch the current connection status */
@@ -98,3 +134,6 @@ export interface TN5250Adapter {
   /** Reconnect to the host */
   reconnect(): Promise<SendResult>;
 }
+
+/** @deprecated Use `TerminalAdapter` instead */
+export type TN5250Adapter = TerminalAdapter;

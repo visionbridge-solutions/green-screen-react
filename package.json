@@ -1,7 +1,7 @@
 {
-  "name": "tn5250-react",
-  "version": "0.1.1",
-  "description": "Web-based IBM TN5250 terminal emulator React component",
+  "name": "green-screen-react",
+  "version": "0.2.0",
+  "description": "Multi-protocol legacy terminal React component (TN5250, TN3270, VT, HP 6530)",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -22,7 +22,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup && cp src/styles/tn5250.css dist/styles.css",
+    "build": "tsup && cp src/styles/terminal.css dist/styles.css",
     "dev": "tsup --watch",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -46,13 +46,20 @@
     "vitest": "^2.1.8"
   },
   "keywords": [
+    "terminal",
+    "emulator",
+    "green-screen",
     "tn5250",
+    "tn3270",
     "ibm-i",
     "as400",
     "iseries",
-    "terminal",
-    "emulator",
+    "mainframe",
+    "zos",
+    "3270",
     "5250",
+    "vt220",
+    "hp6530",
     "react",
     "component"
   ],
@@ -60,10 +67,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/visionbridge-solutions/tn5250-react.git"
+    "url": "https://github.com/visionbridge-solutions/green-screen-react.git"
   },
-  "homepage": "https://github.com/visionbridge-solutions/tn5250-react#readme",
+  "homepage": "https://github.com/visionbridge-solutions/green-screen-react#readme",
   "bugs": {
-    "url": "https://github.com/visionbridge-solutions/tn5250-react/issues"
+    "url": "https://github.com/visionbridge-solutions/green-screen-react/issues"
   }
 }

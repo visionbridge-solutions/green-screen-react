@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import type { TN5250Adapter, ScreenData, ConnectionStatus, Field } from '../adapters/types';
-import { useTN5250Screen, useTN5250Terminal as useTN5250TerminalHook, useTN5250Connection } from '../hooks/useTN5250';
+import type { TerminalAdapter, ScreenData, ConnectionStatus, Field, TerminalProtocol, ProtocolProfile } from '../adapters/types';
+import { useTerminalScreen, useTerminalInput, useTerminalConnection } from '../hooks/useTN5250';
 import { useTypingAnimation } from '../hooks/useTypingAnimation';
-import { getRowColorClass, parseHeaderRow } from '../utils/rendering';
+import { getProtocolProfile } from '../protocols/registry';
 import { TerminalBootLoader as DefaultBootLoader } from './TerminalBootLoader';
 
 /* ── Inline SVG Icons (no external dependency) ────────────────────── */
@@ -51,9 +51,13 @@ const MinimizeIcon = () => (
 
 /* ── Component Props ──────────────────────────────────────────────── */
 
-export interface TN5250TerminalProps {
-  /** Adapter for communicating with the TN5250 backend */
-  adapter: TN5250Adapter;
+export interface GreenScreenTerminalProps {
+  /** Adapter for communicating with the terminal backend */
+  adapter: TerminalAdapter;
+  /** Terminal protocol (determines color conventions, header label, etc.) */
+  protocol?: TerminalProtocol;
+  /** Custom protocol profile (overrides protocol param) */
+  protocolProfile?: ProtocolProfile;
   /** Direct screen data injection (bypasses polling) */
   screenData?: ScreenData | null;
   /** Direct connection status injection */
@@ -96,19 +100,26 @@ export interface TN5250TerminalProps {
   style?: React.CSSProperties;
 }
 
+/** @deprecated Use GreenScreenTerminalProps instead */
+export type TN5250TerminalProps = GreenScreenTerminalProps;
+
 /**
- * TN5250 Terminal — Web-based IBM 5250 terminal emulator component.
+ * GreenScreenTerminal — Multi-protocol legacy terminal emulator component.
  *
- * Renders a 24x80 (or 27x132) terminal screen with:
- * - Green-on-black terminal aesthetic with IBM 5250 color conventions
+ * Renders a terminal screen with:
+ * - Green-on-black terminal aesthetic with protocol-specific color conventions
  * - Connection status indicator
  * - Keyboard input support (text, function keys, tab)
  * - Auto-reconnect with exponential backoff
  * - Typing animation for field entries
  * - Focus lock mode for keyboard capture
+ *
+ * Supports: TN5250 (IBM i), TN3270 (z/OS), VT (OpenVMS/Pick), HP 6530 (NonStop)
  */
-export function TN5250Terminal({
+export function GreenScreenTerminal({
   adapter,
+  protocol,
+  protocolProfile: customProfile,
   screenData: externalScreenData,
   connectionStatus: externalStatus,
   readOnly = false,
@@ -127,16 +138,18 @@ export function TN5250Terminal({
   onMinimize,
   className,
   style,
-}: TN5250TerminalProps) {
+}: GreenScreenTerminalProps) {
+  const profile = customProfile ?? getProtocolProfile(protocol);
+
   // --- Data sources ---
   const shouldPoll = pollInterval > 0 && !externalScreenData;
-  const { data: polledScreenData, error: screenError } = useTN5250Screen(adapter, pollInterval, shouldPoll);
-  const { sendText: _sendText, sendKey: _sendKey } = useTN5250TerminalHook(adapter);
-  const { reconnect, loading: reconnecting } = useTN5250Connection(adapter);
+  const { data: polledScreenData, error: screenError } = useTerminalScreen(adapter, pollInterval, shouldPoll);
+  const { sendText: _sendText, sendKey: _sendKey } = useTerminalInput(adapter);
+  const { reconnect, loading: reconnecting } = useTerminalConnection(adapter);
 
   const rawScreenData = externalScreenData ?? polledScreenData;
 
-  const tn5250Status = externalStatus ?? (rawScreenData ? { connected: true, status: 'authenticated' as const } : { connected: false, status: 'disconnected' as const });
+  const connStatus = externalStatus ?? (rawScreenData ? { connected: true, status: 'authenticated' as const } : { connected: false, status: 'disconnected' as const });
 
   // Typing animation
   const { displayedContent, animatedCursorPos } = useTypingAnimation(
@@ -186,11 +199,11 @@ export function TN5250Terminal({
   const wasConnectedRef = useRef(false);
   const isConnectedRef = useRef(false);
 
-  useEffect(() => { isConnectedRef.current = tn5250Status?.connected ?? false; }, [tn5250Status?.connected]);
+  useEffect(() => { isConnectedRef.current = connStatus?.connected ?? false; }, [connStatus?.connected]);
 
   useEffect(() => {
     if (!autoReconnectEnabled) return;
-    const isConnected = tn5250Status?.connected;
+    const isConnected = connStatus?.connected;
 
     if (isConnected) {
       wasConnectedRef.current = true;
@@ -216,7 +229,7 @@ export function TN5250Terminal({
       }
     }
     return () => { if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current); };
-  }, [tn5250Status?.connected, autoReconnectAttempt, isAutoReconnecting, reconnecting, reconnect, autoReconnectEnabled, maxAttempts, onNotification]);
+  }, [connStatus?.connected, autoReconnectAttempt, isAutoReconnecting, reconnecting, reconnect, autoReconnectEnabled, maxAttempts, onNotification]);
 
   // --- Boot loader ---
   const [showBootLoader, setShowBootLoader] = useState(bootLoader !== false);
@@ -335,11 +348,12 @@ export function TN5250Terminal({
   };
 
   // --- Cursor ---
+  const termCols = screenData?.cols || profile.defaultCols;
   const getCursorPos = () => {
     if (animatedCursorPos) return animatedCursorPos;
     let cursorRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
     let cursorCol = (syncedCursor?.col ?? screenData?.cursor_col ?? 0) + inputText.length;
-    while (cursorCol >= 80) { cursorCol -= 80; cursorRow += 1; }
+    while (cursorCol >= termCols) { cursorCol -= termCols; cursorRow += 1; }
     return { row: cursorRow, col: cursorCol };
   };
 
@@ -353,7 +367,7 @@ export function TN5250Terminal({
     while ((match = underscoreRegex.exec(text)) !== null) {
       if (match.index > lastIndex) segments.push(<span key={`${keyPrefix}-t-${segmentIndex}`}>{text.substring(lastIndex, match.index)}</span>);
       const count = match[0].length;
-      segments.push(<span key={`${keyPrefix}-u-${segmentIndex}`} style={{ borderBottom: '1px solid var(--tn5250-green, #10b981)', display: 'inline-block', width: `${count}ch` }}>{' '.repeat(count)}</span>);
+      segments.push(<span key={`${keyPrefix}-u-${segmentIndex}`} style={{ borderBottom: '1px solid var(--gs-green, #10b981)', display: 'inline-block', width: `${count}ch` }}>{' '.repeat(count)}</span>);
       lastIndex = match.index + match[0].length;
       segmentIndex++;
     }
@@ -372,42 +386,42 @@ export function TN5250Terminal({
     const sorted = [...allRowFields].sort((a, b) => a.col - b.col);
     const segs: React.ReactNode[] = [];
     let lastEnd = 0;
-    const termCols = screenData?.cols || 80;
+    const cols = screenData?.cols || profile.defaultCols;
 
     sorted.forEach((field, idx) => {
       const fs = field.col;
-      const fe = Math.min(field.col + field.length, termCols);
+      const fe = Math.min(field.col + field.length, cols);
       if (fs > lastEnd) segs.push(<span key={`t${idx}`}>{renderTextWithUnderlines(line.substring(lastEnd, fs), `r${rowIndex}p${idx}`)}</span>);
       const fc = line.substring(fs, fe);
       if (field.is_input) {
         const w = field.length >= 30 ? Math.max(field.length, 40) : field.length;
-        segs.push(<span key={`f${idx}`} className="tn5250-input-field" style={{ borderBottom: '2px solid var(--tn5250-green, #10b981)', display: 'inline-block', minWidth: `${w}ch` }}>{fc}</span>);
+        segs.push(<span key={`f${idx}`} className="gs-input-field" style={{ borderBottom: '2px solid var(--gs-green, #10b981)', display: 'inline-block', minWidth: `${w}ch` }}>{fc}</span>);
       } else if (field.is_reverse) {
         segs.push(<span key={`v${idx}`} style={{ color: '#ef4444', fontWeight: 'bold' }}>{fc}</span>);
       } else {
-        segs.push(<span key={`h${idx}`} style={{ color: 'var(--tn5250-white, #FFFFFF)' }}>{fc}</span>);
+        segs.push(<span key={`h${idx}`} style={{ color: 'var(--gs-white, #FFFFFF)' }}>{fc}</span>);
       }
       lastEnd = fe;
     });
     if (lastEnd < line.length) segs.push(<span key="te">{renderTextWithUnderlines(line.substring(lastEnd), `r${rowIndex}e`)}</span>);
     return <>{segs}</>;
-  }, [renderTextWithUnderlines, screenData?.cols]);
+  }, [renderTextWithUnderlines, screenData?.cols, profile.defaultCols]);
 
   // --- Screen rendering ---
   const renderScreen = () => {
     if (showBootLoader && !screenData?.content) {
       if (bootLoader === false) return null;
       if (bootLoader) return <>{bootLoader}</>;
-      return <DefaultBootLoader />;
+      return <DefaultBootLoader brandText={profile.bootText} />;
     }
-    if (bootFadingOut && screenData?.content) return <div className="tn5250-fade-in">{renderScreenContent()}</div>;
+    if (bootFadingOut && screenData?.content) return <div className="gs-fade-in">{renderScreenContent()}</div>;
     if (!screenData?.content) {
       return (
-        <div style={{ width: `${screenData?.cols || 80}ch`, height: `${(screenData?.rows || 24) * 21}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ width: `${screenData?.cols || profile.defaultCols}ch`, height: `${(screenData?.rows || profile.defaultRows) * 21}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ color: '#808080', marginBottom: '12px' }}><TerminalIcon size={40} /></div>
-            <p style={{ fontFamily: 'var(--tn5250-font)', fontSize: '12px', color: '#808080' }}>
-              {tn5250Status?.connected ? 'Waiting for screen data...' : 'Not connected'}
+            <p style={{ fontFamily: 'var(--gs-font)', fontSize: '12px', color: '#808080' }}>
+              {connStatus?.connected ? 'Waiting for screen data...' : 'Not connected'}
             </p>
           </div>
         </div>
@@ -418,11 +432,11 @@ export function TN5250Terminal({
 
   const renderScreenContent = () => {
     if (!screenData?.content) return null;
-    const termRows = screenData.rows || 24;
-    const termCols = screenData.cols || 80;
+    const termRows = screenData.rows || profile.defaultRows;
+    const cols = screenData.cols || profile.defaultCols;
     const lines = screenData.content.split('\n');
     const rows: string[] = [];
-    for (let i = 0; i < termRows; i++) rows.push((lines[i] || '').padEnd(termCols, ' '));
+    for (let i = 0; i < termRows; i++) rows.push((lines[i] || '').padEnd(cols, ' '));
 
     const fields = screenData.fields || [];
     const ROW_HEIGHT = 21;
@@ -432,27 +446,27 @@ export function TN5250Terminal({
       && (hasInputFields || screenData.cursor_row !== 0 || screenData.cursor_col !== 0);
 
     return (
-      <div style={{ fontFamily: 'var(--tn5250-font)', fontSize: '13px', position: 'relative', width: `${termCols}ch` }}>
+      <div style={{ fontFamily: 'var(--gs-font)', fontSize: '13px', position: 'relative', width: `${cols}ch` }}>
         {rows.map((line, index) => {
           let displayLine = line;
           if (hasCursor && index === cursor.row && inputText && !animatedCursorPos) {
             const baseCol = syncedCursor?.col ?? screenData.cursor_col ?? 0;
-            displayLine = (line.substring(0, baseCol) + inputText + line.substring(baseCol + inputText.length)).substring(0, termCols).padEnd(termCols, ' ');
+            displayLine = (line.substring(0, baseCol) + inputText + line.substring(baseCol + inputText.length)).substring(0, cols).padEnd(cols, ' ');
           }
-          const headerSegments = index === 0 ? parseHeaderRow(displayLine) : null;
+          const headerSegments = index === 0 ? profile.colors.parseHeaderRow(displayLine) : null;
           return (
-            <div key={index} className={headerSegments ? '' : getRowColorClass(index, displayLine)} style={{ height: `${ROW_HEIGHT}px`, lineHeight: `${ROW_HEIGHT}px`, whiteSpace: 'pre', position: 'relative' }}>
+            <div key={index} className={headerSegments ? '' : profile.colors.getRowColorClass(index, displayLine, termRows)} style={{ height: `${ROW_HEIGHT}px`, lineHeight: `${ROW_HEIGHT}px`, whiteSpace: 'pre', position: 'relative' }}>
               {headerSegments
                 ? headerSegments.map((seg, i) => <span key={i} className={seg.colorClass}>{seg.text}</span>)
                 : renderRowWithFields(displayLine, index, fields)}
               {hasCursor && index === cursor.row && (
-                <span className="tn5250-cursor" style={{ position: 'absolute', left: `${cursor.col}ch`, width: '1ch', height: `${ROW_HEIGHT}px`, top: 0, pointerEvents: 'none' }} />
+                <span className="gs-cursor" style={{ position: 'absolute', left: `${cursor.col}ch`, width: '1ch', height: `${ROW_HEIGHT}px`, top: 0, pointerEvents: 'none' }} />
               )}
             </div>
           );
         })}
         {screenData.cursor_row !== undefined && screenData.cursor_col !== undefined && (
-          <span style={{ position: 'absolute', bottom: 0, right: 0, fontFamily: 'var(--tn5250-font)', fontSize: '10px', color: 'var(--tn5250-green, #10b981)', pointerEvents: 'none', opacity: 0.6 }}>
+          <span style={{ position: 'absolute', bottom: 0, right: 0, fontFamily: 'var(--gs-font)', fontSize: '10px', color: 'var(--gs-green, #10b981)', pointerEvents: 'none', opacity: 0.6 }}>
             {String(screenData.cursor_row + 1).padStart(2, '0')}/{String(screenData.cursor_col + 1).padStart(3, '0')}
           </span>
         )}
@@ -469,7 +483,7 @@ export function TN5250Terminal({
 
   const getStatusColor = (status?: string) => {
     switch (status) {
-      case 'authenticated': return 'var(--tn5250-green, #10b981)';
+      case 'authenticated': return 'var(--gs-green, #10b981)';
       case 'connected': return '#F59E0B';
       case 'connecting': return '#64748b';
       case 'error': return '#EF4444';
@@ -478,63 +492,63 @@ export function TN5250Terminal({
   };
 
   return (
-    <div className={`tn5250-terminal ${isFocused ? 'tn5250-terminal-focused' : ''} ${className || ''}`} style={style}>
+    <div className={`gs-terminal ${isFocused ? 'gs-terminal-focused' : ''} ${className || ''}`} style={style}>
       {showHeader && (
-        <div className="tn5250-header">
+        <div className="gs-header">
           {embedded ? (
             <>
-              <span className="tn5250-header-left">
+              <span className="gs-header-left">
                 <TerminalIcon size={14} />
                 <span>TERMINAL</span>
-                {isFocused && <span className="tn5250-badge-focused">FOCUSED</span>}
-                {screenData?.timestamp && <span className="tn5250-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
-                <span className="tn5250-hint">{readOnly ? 'Read-only' : isFocused ? 'ESC to exit focus' : 'Click to control'}</span>
+                {isFocused && <span className="gs-badge-focused">FOCUSED</span>}
+                {screenData?.timestamp && <span className="gs-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
+                <span className="gs-hint">{readOnly ? 'Read-only' : isFocused ? 'ESC to exit focus' : 'Click to control'}</span>
               </span>
-              <div className="tn5250-header-right">
-                {tn5250Status?.status && <KeyIcon size={12} style={{ color: getStatusColor(tn5250Status.status) }} />}
-                {tn5250Status && (tn5250Status.connected
-                  ? <WifiIcon size={12} style={{ color: 'var(--tn5250-green, #10b981)' }} />
+              <div className="gs-header-right">
+                {connStatus?.status && <KeyIcon size={12} style={{ color: getStatusColor(connStatus.status) }} />}
+                {connStatus && (connStatus.connected
+                  ? <WifiIcon size={12} style={{ color: 'var(--gs-green, #10b981)' }} />
                   : <WifiOffIcon size={12} style={{ color: '#FF6B00' }} />)}
-                {onMinimize && <button onClick={(e) => { e.stopPropagation(); onMinimize(); }} className="tn5250-btn-icon" title="Minimize terminal"><MinimizeIcon /></button>}
+                {onMinimize && <button onClick={(e) => { e.stopPropagation(); onMinimize(); }} className="gs-btn-icon" title="Minimize terminal"><MinimizeIcon /></button>}
                 {headerRight}
               </div>
             </>
           ) : (
             <>
-              <span className="tn5250-header-left">
+              <span className="gs-header-left">
                 <TerminalIcon size={14} />
-                <span>TN5250 TERMINAL</span>
-                {isFocused && <span className="tn5250-badge-focused">FOCUSED</span>}
-                {screenData?.timestamp && <span className="tn5250-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
-                <span className="tn5250-hint">{readOnly ? 'Read-only mode' : isFocused ? 'ESC to exit focus' : 'Click terminal to control'}</span>
+                <span>{profile.headerLabel}</span>
+                {isFocused && <span className="gs-badge-focused">FOCUSED</span>}
+                {screenData?.timestamp && <span className="gs-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
+                <span className="gs-hint">{readOnly ? 'Read-only mode' : isFocused ? 'ESC to exit focus' : 'Click terminal to control'}</span>
               </span>
-              <div className="tn5250-header-right">
-                {tn5250Status && (
-                  <div className="tn5250-status-group">
-                    {tn5250Status.connected ? (
+              <div className="gs-header-right">
+                {connStatus && (
+                  <div className="gs-status-group">
+                    {connStatus.connected ? (
                       <>
-                        <WifiIcon size={12} style={{ color: 'var(--tn5250-green, #10b981)' }} />
-                        <span className="tn5250-host">{tn5250Status.host}</span>
+                        <WifiIcon size={12} style={{ color: 'var(--gs-green, #10b981)' }} />
+                        <span className="gs-host">{connStatus.host}</span>
                       </>
                     ) : (
                       <>
                         <WifiOffIcon size={12} style={{ color: '#FF6B00' }} />
-                        <span className="tn5250-disconnected-text">
+                        <span className="gs-disconnected-text">
                           {isAutoReconnecting || reconnecting
                             ? `RECONNECTING${autoReconnectAttempt > 0 ? ` (${autoReconnectAttempt}/${maxAttempts})` : '...'}`
                             : autoReconnectAttempt >= maxAttempts ? 'DISCONNECTED (auto-retry exhausted)' : 'DISCONNECTED'}
                         </span>
-                        <button onClick={handleReconnect} disabled={reconnecting || isAutoReconnecting} className="tn5250-btn-icon" title="Reconnect">
-                          <RefreshIcon size={12} className={reconnecting || isAutoReconnecting ? 'tn5250-spin' : ''} />
+                        <button onClick={handleReconnect} disabled={reconnecting || isAutoReconnecting} className="gs-btn-icon" title="Reconnect">
+                          <RefreshIcon size={12} className={reconnecting || isAutoReconnecting ? 'gs-spin' : ''} />
                         </button>
                       </>
                     )}
                   </div>
                 )}
-                {tn5250Status?.status && (
-                  <div className="tn5250-status-group">
-                    <KeyIcon size={12} style={{ color: getStatusColor(tn5250Status.status) }} />
-                    {tn5250Status.username && <span className="tn5250-host">{tn5250Status.username}</span>}
+                {connStatus?.status && (
+                  <div className="gs-status-group">
+                    <KeyIcon size={12} style={{ color: getStatusColor(connStatus.status) }} />
+                    {connStatus.username && <span className="gs-host">{connStatus.username}</span>}
                   </div>
                 )}
                 {headerRight}
@@ -544,19 +558,19 @@ export function TN5250Terminal({
         </div>
       )}
 
-      <div className="tn5250-body">
-        <div ref={terminalRef} onClick={handleTerminalClick} className={`tn5250-screen ${embedded ? 'tn5250-screen-embedded' : ''}`}
-          style={!embedded ? { width: `calc(${screenData?.cols || 80}ch + 24px)`, fontSize: (screenData?.cols ?? 80) > 80 ? '11px' : '13px', fontFamily: 'var(--tn5250-font)' } : undefined}>
+      <div className="gs-body">
+        <div ref={terminalRef} onClick={handleTerminalClick} className={`gs-screen ${embedded ? 'gs-screen-embedded' : ''}`}
+          style={!embedded ? { width: `calc(${screenData?.cols || profile.defaultCols}ch + 24px)`, fontSize: (screenData?.cols ?? profile.defaultCols) > 80 ? '11px' : '13px', fontFamily: 'var(--gs-font)' } : undefined}>
           {screenError != null && (
-            <div className="tn5250-error-banner">
+            <div className="gs-error-banner">
               <AlertTriangleIcon size={14} />
               <span>{String(screenError)}</span>
             </div>
           )}
-          <div className="tn5250-screen-content">{renderScreen()}</div>
+          <div className="gs-screen-content">{renderScreen()}</div>
           {overlay}
-          {tn5250Status && !tn5250Status.connected && screenData && (
-            <div className="tn5250-overlay">
+          {connStatus && !connStatus.connected && screenData && (
+            <div className="gs-overlay">
               <WifiOffIcon size={28} />
               <span>{isAutoReconnecting || reconnecting ? 'Reconnecting...' : 'Disconnected'}</span>
             </div>
@@ -569,3 +583,6 @@ export function TN5250Terminal({
     </div>
   );
 }
+
+/** @deprecated Use GreenScreenTerminal instead */
+export const TN5250Terminal = GreenScreenTerminal;

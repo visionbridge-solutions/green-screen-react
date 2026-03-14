@@ -1,7 +1,7 @@
-import type { TN5250Adapter, ScreenData, ConnectionStatus, SendResult } from './types';
+import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult } from './types';
 
 export interface RestAdapterOptions {
-  /** Base URL for the TN5250 API (e.g. "https://myhost.com/api/tn5250") */
+  /** Base URL for the terminal API (e.g. "https://myhost.com/api/terminal") */
   baseUrl: string;
   /** Optional headers to include with every request (e.g. Authorization) */
   headers?: Record<string, string>;
@@ -10,7 +10,7 @@ export interface RestAdapterOptions {
 }
 
 /**
- * REST API adapter for TN5250 terminal communication.
+ * REST API adapter for terminal communication.
  *
  * Expects a backend that exposes these endpoints relative to `baseUrl`:
  * - GET  /screen       → ScreenData
@@ -21,7 +21,7 @@ export interface RestAdapterOptions {
  * - POST /disconnect   → SendResult
  * - POST /reconnect    → SendResult
  */
-export class RestAdapter implements TN5250Adapter {
+export class RestAdapter implements TerminalAdapter {
   private baseUrl: string;
   private staticHeaders: Record<string, string>;
   private getHeaders?: () => Record<string, string> | Promise<Record<string, string>>;
