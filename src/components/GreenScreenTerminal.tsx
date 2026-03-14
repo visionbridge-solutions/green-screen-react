@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { TerminalAdapter, ScreenData, ConnectionStatus, Field, TerminalProtocol, ProtocolProfile, ConnectConfig } from '../adapters/types';
 import { RestAdapter } from '../adapters/RestAdapter';
-import { useTerminalScreen, useTerminalInput, useTerminalConnection } from '../hooks/useTN5250';
+import { useTerminalScreen, useTerminalInput, useTerminalConnection } from '../hooks/useTerminal';
 import { useTypingAnimation } from '../hooks/useTypingAnimation';
 import { getProtocolProfile } from '../protocols/registry';
 import { TerminalBootLoader as DefaultBootLoader } from './TerminalBootLoader';
+import { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, KeyIcon, MinimizeIcon } from './Icons';
+import { InlineSignIn } from './InlineSignIn';
 
 /* ── No-op adapter (placeholder before connection) ───────────────── */
 
@@ -18,155 +20,6 @@ const noopAdapter: TerminalAdapter = {
   disconnect: async () => noopResult,
   reconnect: async () => noopResult,
 };
-
-/* ── Inline SVG Icons (no external dependency) ────────────────────── */
-
-const TerminalIcon = ({ size = 14 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
-  </svg>
-);
-
-const WifiIcon = ({ size = 12, className, style: s }: { size?: number; className?: string; style?: React.CSSProperties }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={s}>
-    <path d="M5 12.55a11 11 0 0 1 14.08 0" /><path d="M1.42 9a16 16 0 0 1 21.16 0" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" />
-  </svg>
-);
-
-const WifiOffIcon = ({ size = 12, className, style: s }: { size?: number; className?: string; style?: React.CSSProperties }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={s}>
-    <line x1="1" y1="1" x2="23" y2="23" /><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" /><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" /><path d="M10.71 5.05A16 16 0 0 1 22.56 9" /><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" />
-  </svg>
-);
-
-const AlertTriangleIcon = ({ size = 14 }: { size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-  </svg>
-);
-
-const RefreshIcon = ({ size = 12, className }: { size?: number; className?: string }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-    <polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-  </svg>
-);
-
-const KeyIcon = ({ size = 12, style: s }: { size?: number; style?: React.CSSProperties }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={s}>
-    <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
-  </svg>
-);
-
-const MinimizeIcon = () => (
-  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <path d="M4 14h6v6M3 21l7-7M20 10h-6V4M21 3l-7 7" />
-  </svg>
-);
-
-/* ── Inline Sign-In Form ─────────────────────────────────────────── */
-
-const PROTOCOL_OPTIONS: { value: TerminalProtocol; label: string }[] = [
-  { value: 'tn5250', label: 'TN5250 (IBM i)' },
-  { value: 'tn3270', label: 'TN3270 (Mainframe)' },
-  { value: 'vt', label: 'VT220' },
-  { value: 'hp6530', label: 'HP 6530 (NonStop)' },
-];
-
-interface InlineSignInProps {
-  defaultProtocol: TerminalProtocol;
-  loading: boolean;
-  error: string | null;
-  onConnect: (config: ConnectConfig) => void;
-}
-
-function InlineSignIn({ defaultProtocol, loading, error, onConnect }: InlineSignInProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('');
-  const [selectedProtocol, setSelectedProtocol] = useState<TerminalProtocol>(defaultProtocol);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    onConnect({
-      host,
-      port: port ? parseInt(port, 10) : undefined,
-      protocol: selectedProtocol,
-      username,
-      password,
-    });
-  };
-
-  const inputStyle: React.CSSProperties = {
-    width: '100%',
-    padding: '6px 8px',
-    backgroundColor: 'rgba(16, 185, 129, 0.05)',
-    border: '1px solid var(--gs-card-border, #1e293b)',
-    color: 'var(--gs-green, #10b981)',
-    fontFamily: 'var(--gs-font)',
-    fontSize: '13px',
-    outline: 'none',
-    boxSizing: 'border-box',
-  };
-
-  const labelStyle: React.CSSProperties = {
-    display: 'block',
-    marginBottom: '4px',
-    fontSize: '10px',
-    letterSpacing: '0.1em',
-    textTransform: 'uppercase',
-    color: 'var(--gs-muted, #94a3b8)',
-    fontFamily: 'var(--gs-font)',
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="gs-signin">
-      <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-        <TerminalIcon size={28} />
-        <div style={{ fontSize: '11px', letterSpacing: '0.15em', textTransform: 'uppercase', color: 'var(--gs-muted)', marginTop: '8px' }}>Connect to Host</div>
-      </div>
-
-      <div className="gs-signin-row">
-        <div style={{ flex: 1 }}>
-          <label style={labelStyle}>Host</label>
-          <input style={inputStyle} value={host} onChange={e => setHost(e.target.value)} placeholder="192.168.1.100" required autoFocus />
-        </div>
-        <div style={{ width: '72px' }}>
-          <label style={labelStyle}>Port</label>
-          <input style={inputStyle} value={port} onChange={e => setPort(e.target.value)} placeholder="23" type="number" min="1" max="65535" />
-        </div>
-      </div>
-
-      <div>
-        <label style={labelStyle}>Protocol</label>
-        <select style={{ ...inputStyle, appearance: 'none' }} value={selectedProtocol} onChange={e => setSelectedProtocol(e.target.value as TerminalProtocol)}>
-          {PROTOCOL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-        </select>
-      </div>
-
-      <div>
-        <label style={labelStyle}>Username</label>
-        <input style={inputStyle} value={username} onChange={e => setUsername(e.target.value)} required autoComplete="username" />
-      </div>
-
-      <div>
-        <label style={labelStyle}>Password</label>
-        <input style={inputStyle} type="password" value={password} onChange={e => setPassword(e.target.value)} required autoComplete="current-password" />
-      </div>
-
-      {error && (
-        <div style={{ color: '#FF6B00', fontSize: '11px', fontFamily: 'var(--gs-font)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <AlertTriangleIcon size={12} />
-          <span>{error}</span>
-        </div>
-      )}
-
-      <button type="submit" disabled={loading || !host || !username || !password} className="gs-signin-btn">
-        {loading ? 'Connecting...' : 'Connect'}
-      </button>
-    </form>
-  );
-}
 
 /* ── Component Props ──────────────────────────────────────────────── */
 
@@ -227,9 +80,6 @@ export interface GreenScreenTerminalProps {
   /** Inline styles */
   style?: React.CSSProperties;
 }
-
-/** @deprecated Use GreenScreenTerminalProps instead */
-export type TN5250TerminalProps = GreenScreenTerminalProps;
 
 /**
  * GreenScreenTerminal — Multi-protocol legacy terminal emulator component.
@@ -744,6 +594,3 @@ export function GreenScreenTerminal({
     </div>
   );
 }
-
-/** @deprecated Use GreenScreenTerminal instead */
-export const TN5250Terminal = GreenScreenTerminal;

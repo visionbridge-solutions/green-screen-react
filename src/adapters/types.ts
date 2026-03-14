@@ -150,6 +150,3 @@ export interface ConnectConfig {
   /** Password for authentication */
   password: string;
 }
-
-/** @deprecated Use `TerminalAdapter` instead */
-export type TN5250Adapter = TerminalAdapter;

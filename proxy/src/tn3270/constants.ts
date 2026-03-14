@@ -211,6 +211,41 @@ export const TERMINAL_TYPE_3270E = 'IBM-3278-2-E';       // TN3270E variant
 // TN3270E option code (RFC 2355)
 export const OPT_TN3270E = 0x28;
 
+// === Aliases used by connection.ts, encoder.ts, parser.ts, screen.ts ===
+export const CMD = CMD3270;
+export const SNA_CMD = {
+  WRITE: CMD3270.SNA_WRITE,
+  ERASE_WRITE: CMD3270.SNA_ERASE_WRITE,
+  ERASE_WRITE_ALTERNATE: CMD3270.SNA_ERASE_WRITE_ALTERNATE,
+  READ_BUFFER: CMD3270.SNA_READ_BUFFER,
+  READ_MODIFIED: CMD3270.SNA_READ_MODIFIED,
+  READ_MODIFIED_ALL: CMD3270.SNA_READ_MODIFIED_ALL,
+  ERASE_ALL_UNPROTECTED: CMD3270.SNA_ERASE_ALL_UNPROTECTED,
+  WRITE_STRUCTURED_FIELD: CMD3270.WRITE_STRUCTURED_FIELD,
+} as const;
+export const ORDER = ORDER3270;
+export const AID = AID3270;
+export const KEY_TO_AID = KEY_TO_AID3270;
+export const FA = {
+  PROTECTED: FIELD_ATTR.PROTECTED,
+  NUMERIC: FIELD_ATTR.NUMERIC,
+  DISPLAY_MASK: FIELD_ATTR.DISPLAY_MASK,
+  DISPLAY_HIDDEN: FIELD_ATTR.DISPLAY_NON,
+  DISPLAY_INTENSIFIED: FIELD_ATTR.DISPLAY_HIGH,
+  MDT: FIELD_ATTR.MDT,
+} as const;
+export const EXT_ATTR = EXTENDED_ATTR;
+export const decodeAddress = decodeBufferAddress;
+export function encodeAddress(addr: number, _screenSize: number): Buffer {
+  const [b1, b2] = encodeBufferAddress12(addr);
+  return Buffer.from([b1, b2]);
+}
+export const SCREEN = {
+  MODEL_2_ROWS: SCREEN3270.MODEL2_ROWS,
+  MODEL_2_COLS: SCREEN3270.MODEL2_COLS,
+} as const;
+export const TERMINAL_TYPE = TERMINAL_TYPE_3270;
+
 // TN3270E subnegotiation types
 export const TN3270E = {
   CONNECT: 0x01,

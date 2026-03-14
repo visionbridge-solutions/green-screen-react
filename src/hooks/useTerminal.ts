@@ -148,10 +148,3 @@ export function useTerminalInput(adapter: TerminalAdapter) {
 
   return { loading, error, sendText, sendKey };
 }
-
-/** @deprecated Use `useTerminalConnection` instead */
-export const useTN5250Connection = useTerminalConnection;
-/** @deprecated Use `useTerminalScreen` instead */
-export const useTN5250Screen = useTerminalScreen;
-/** @deprecated Use `useTerminalInput` instead */
-export const useTN5250Terminal = useTerminalInput;

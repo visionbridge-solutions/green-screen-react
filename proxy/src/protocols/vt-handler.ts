@@ -71,7 +71,7 @@ export class VTHandler extends ProtocolHandler {
   }
 
   private onData(data: Buffer): void {
-    const modified = this.parser.parse(data);
+    const modified = this.parser.feed(data);
     if (modified) {
       this.emit('screenChange', this.screen.toScreenData());
     }
