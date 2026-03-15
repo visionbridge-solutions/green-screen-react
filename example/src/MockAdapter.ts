@@ -5,28 +5,65 @@ import type {
   SendResult,
   ConnectConfig,
 } from 'green-screen-react'
+import type { MockScreenNode } from './mockScreens'
 
 /**
  * Client-side mock adapter for interactive demo terminals.
- * Handles typing, cursor movement, and key presses entirely in the browser.
+ * Supports either a single static screen or a screen tree with navigation.
  */
 export class MockAdapter implements TerminalAdapter {
-  private lines: string[]
-  private cursorRow: number
-  private cursorCol: number
-  private rows: number
-  private cols: number
-  private fields: ScreenData['fields']
+  private lines!: string[]
+  private cursorRow!: number
+  private cursorCol!: number
+  private rows!: number
+  private cols!: number
+  private fields!: ScreenData['fields']
 
-  constructor(screen: ScreenData) {
+  // Screen tree navigation
+  private screenTree: Record<string, MockScreenNode> | null
+  private currentScreenId: string
+  private inputBuffer: string = ''
+
+  constructor(screen: ScreenData)
+  constructor(screenTree: Record<string, MockScreenNode>, startScreenId?: string)
+  constructor(arg: ScreenData | Record<string, MockScreenNode>, startScreenId?: string) {
+    // Detect screen tree vs single screen
+    if (arg && typeof arg === 'object' && 'content' in arg) {
+      // Single screen mode
+      this.screenTree = null
+      this.currentScreenId = ''
+      this.loadScreen(arg as ScreenData)
+    } else {
+      // Screen tree mode
+      this.screenTree = arg as Record<string, MockScreenNode>
+      this.currentScreenId = startScreenId || 'main'
+      const node = this.screenTree[this.currentScreenId]
+      this.loadScreen(node.screen)
+    }
+  }
+
+  private loadScreen(screen: ScreenData): void {
     this.rows = screen.rows ?? 24
     this.cols = screen.cols ?? 80
     this.cursorRow = screen.cursor_row
     this.cursorCol = screen.cursor_col
     this.fields = screen.fields ?? []
     this.lines = screen.content.split('\n')
-    // Ensure we have enough lines
     while (this.lines.length < this.rows) this.lines.push(' '.repeat(this.cols))
+    this.inputBuffer = ''
+  }
+
+  private navigateTo(screenId: string): void {
+    if (!this.screenTree) return
+    const node = this.screenTree[screenId]
+    if (!node) return
+    this.currentScreenId = screenId
+    this.loadScreen(node.screen)
+  }
+
+  private getCurrentNode(): MockScreenNode | null {
+    if (!this.screenTree) return null
+    return this.screenTree[this.currentScreenId] ?? null
   }
 
   private buildScreen(): ScreenData {
@@ -51,6 +88,16 @@ export class MockAdapter implements TerminalAdapter {
     ) ?? null
   }
 
+  /** Read typed text from the command input field */
+  private readInputField(): string {
+    // Find the command input field (the one with ===> on that row)
+    const field = this.fields?.find(f => f.is_input && !f.is_protected)
+    if (!field) return this.inputBuffer.trim()
+
+    const line = this.lines[field.row] ?? ''
+    return line.substring(field.col, field.col + field.length).trim()
+  }
+
   async getScreen(): Promise<ScreenData | null> {
     return this.buildScreen()
   }
@@ -67,14 +114,37 @@ export class MockAdapter implements TerminalAdapter {
       this.lines[this.cursorRow] =
         line.substring(0, this.cursorCol) + ch + line.substring(this.cursorCol + 1)
       this.cursorCol++
+      this.inputBuffer += ch
     }
     return this.result()
   }
 
   async sendKey(key: string): Promise<SendResult> {
+    const node = this.getCurrentNode()
+
     switch (key) {
       case 'ENTER': {
-        // Clear input field and reset cursor to field start
+        if (node) {
+          // Check input navigation first
+          const input = this.readInputField()
+          if (input && node.inputNav && node.inputNav[input]) {
+            this.navigateTo(node.inputNav[input])
+            return this.result()
+          }
+          // Check key navigation for ENTER
+          if (node.keyNav?.['ENTER']) {
+            const target = node.keyNav['ENTER']
+            if (target === '_back' && node.parent) {
+              this.navigateTo(node.parent)
+            } else if (target === '_self') {
+              this.navigateTo(this.currentScreenId)
+            } else if (target !== '_back') {
+              this.navigateTo(target)
+            }
+            return this.result()
+          }
+        }
+        // Default: clear input field
         const field = this.getCurrentField()
         if (field) {
           const line = this.lines[this.cursorRow] ?? ' '.repeat(this.cols)
@@ -83,6 +153,7 @@ export class MockAdapter implements TerminalAdapter {
             ' '.repeat(field.length) +
             line.substring(field.col + field.length)
           this.cursorCol = field.col
+          this.inputBuffer = ''
         }
         break
       }
@@ -93,6 +164,7 @@ export class MockAdapter implements TerminalAdapter {
           const line = this.lines[this.cursorRow] ?? ' '.repeat(this.cols)
           this.lines[this.cursorRow] =
             line.substring(0, this.cursorCol) + ' ' + line.substring(this.cursorCol + 1)
+          this.inputBuffer = this.inputBuffer.slice(0, -1)
         }
         break
       }
@@ -106,6 +178,7 @@ export class MockAdapter implements TerminalAdapter {
         if (next) {
           this.cursorRow = next.row
           this.cursorCol = next.col
+          this.inputBuffer = ''
         }
         break
       }
@@ -127,6 +200,21 @@ export class MockAdapter implements TerminalAdapter {
       case 'END':
         this.cursorCol = this.cols - 1
         break
+      default: {
+        // Handle F-keys via screen tree navigation
+        if (node?.keyNav?.[key]) {
+          const target = node.keyNav[key]
+          if (target === '_back' && node.parent) {
+            this.navigateTo(node.parent)
+          } else if (target === '_self') {
+            this.navigateTo(this.currentScreenId)
+          } else if (target !== '_back') {
+            this.navigateTo(target)
+          }
+          return this.result()
+        }
+        break
+      }
     }
     return this.result()
   }

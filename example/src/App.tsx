@@ -1,15 +1,8 @@
 import { useState, useMemo } from 'react'
 import { GreenScreenTerminal, WebSocketAdapter } from 'green-screen-react'
-import type { TerminalProtocol, TerminalAdapter, ConnectConfig } from 'green-screen-react'
-import { mockScreens } from './mockScreens'
+import type { TerminalAdapter, ConnectConfig } from 'green-screen-react'
+import { tn5250ScreenTree } from './mockScreens'
 import { MockAdapter } from './MockAdapter'
-
-const protocols: { key: TerminalProtocol; label: string; desc: string }[] = [
-  { key: 'tn5250', label: 'TN5250', desc: 'IBM i / AS/400' },
-  { key: 'tn3270', label: 'TN3270', desc: 'z/OS Mainframe' },
-  { key: 'vt', label: 'VT220', desc: 'OpenVMS / Unix' },
-  { key: 'hp6530', label: 'HP 6530', desc: 'NonStop' },
-]
 
 // Default Worker URL — update this after deploying the Cloudflare Worker
 const DEFAULT_WORKER_URL = import.meta.env.VITE_WORKER_URL || ''
@@ -17,7 +10,6 @@ const DEFAULT_WORKER_URL = import.meta.env.VITE_WORKER_URL || ''
 function ConnectPanel() {
   const [connected, setConnected] = useState(false)
   const [adapter, setAdapter] = useState<TerminalAdapter | null>(null)
-  const [protocol, setProtocol] = useState<TerminalProtocol>('tn5250')
   const [error, setError] = useState<string | null>(null)
   const [connectedHost, setConnectedHost] = useState('')
 
@@ -30,7 +22,6 @@ function ConnectPanel() {
 
       if (result.success) {
         setAdapter(wsAdapter)
-        setProtocol(config.protocol)
         setConnected(true)
         setConnectedHost(config.host)
       } else {
@@ -61,7 +52,7 @@ function ConnectPanel() {
         <div className="terminal-wrapper">
           <GreenScreenTerminal
             adapter={adapter}
-            protocol={protocol}
+            protocol="tn5250"
             inlineSignIn={false}
             pollInterval={500}
           />
@@ -88,7 +79,7 @@ function ConnectPanel() {
 
         <div className="terminal-wrapper" style={{ minHeight: 'auto' }}>
           <GreenScreenTerminal
-            protocol={protocol}
+            protocol="tn5250"
             inlineSignIn={true}
             defaultProtocol="tn5250"
             pollInterval={0}
@@ -105,20 +96,10 @@ function ConnectPanel() {
 }
 
 export default function App() {
-  const [selected, setSelected] = useState<TerminalProtocol | 'connect'>('tn5250')
+  const [selected, setSelected] = useState<'connect' | 'mock'>(DEFAULT_WORKER_URL ? 'connect' : 'mock')
 
-  // Create mock adapters — one per protocol, stable across re-renders
-  const mockAdapters = useMemo(() => {
-    const adapters: Record<TerminalProtocol, MockAdapter> = {} as any
-    for (const p of protocols) {
-      adapters[p.key] = new MockAdapter(mockScreens[p.key])
-    }
-    return adapters
-  }, [])
-
-  // Fall back to tn5250 if connect selected but no worker URL configured
-  const effectiveSelected = (selected === 'connect' && !DEFAULT_WORKER_URL) ? 'tn5250' : selected
-  const isProtocol = effectiveSelected !== 'connect'
+  // Create interactive TN5250 mock adapter with screen tree
+  const mockAdapter = useMemo(() => new MockAdapter(tn5250ScreenTree, 'main'), [])
 
   return (
     <div className="demo-page">
@@ -128,15 +109,6 @@ export default function App() {
       </header>
 
       <nav className="protocol-tabs">
-        {protocols.map(({ key, label }) => (
-          <button
-            key={key}
-            className={`protocol-tab ${selected === key ? 'active' : ''}`}
-            onClick={() => setSelected(key)}
-          >
-            {label}
-          </button>
-        ))}
         {DEFAULT_WORKER_URL && (
           <button
             className={`protocol-tab connect-tab ${selected === 'connect' ? 'active' : ''}`}
@@ -145,20 +117,26 @@ export default function App() {
             Connect
           </button>
         )}
+        <button
+          className={`protocol-tab ${selected === 'mock' ? 'active' : ''}`}
+          onClick={() => setSelected('mock')}
+        >
+          TN5250 Mock Preview
+        </button>
       </nav>
 
-      {isProtocol && (
+      {selected === 'mock' && (
         <div className="demo-hint">
           Click the terminal and start typing — this is a live interactive demo
         </div>
       )}
 
       <div className="terminal-wrapper">
-        {isProtocol ? (
+        {selected === 'mock' ? (
           <GreenScreenTerminal
-            key={effectiveSelected}
-            adapter={mockAdapters[effectiveSelected as TerminalProtocol]}
-            protocol={effectiveSelected as TerminalProtocol}
+            key="mock"
+            adapter={mockAdapter}
+            protocol="tn5250"
             connectionStatus={{ connected: true, status: 'authenticated' }}
             inlineSignIn={false}
             pollInterval={500}
