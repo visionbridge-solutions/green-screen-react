@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { TerminalAdapter, ScreenData, ConnectionStatus, Field, TerminalProtocol, ProtocolProfile, ConnectConfig } from '../adapters/types';
 import { RestAdapter } from '../adapters/RestAdapter';
+import { WebSocketAdapter } from '../adapters/WebSocketAdapter';
 import { useTerminalScreen, useTerminalInput, useTerminalConnection } from '../hooks/useTerminal';
 import { useTypingAnimation } from '../hooks/useTypingAnimation';
 import { getProtocolProfile } from '../protocols/registry';
@@ -123,13 +124,18 @@ export function GreenScreenTerminal({
 }: GreenScreenTerminalProps) {
   const profile = customProfile ?? getProtocolProfile(protocol);
 
-  // --- Resolve adapter: explicit > baseUrl > internal (from sign-in) > noop ---
+  // --- Resolve adapter: explicit > baseUrl > internal (from sign-in) > default WebSocket > noop ---
   const [internalAdapter, setInternalAdapter] = useState<TerminalAdapter | null>(null);
   const baseUrlAdapter = useMemo(
     () => baseUrl ? new RestAdapter({ baseUrl }) : null,
     [baseUrl],
   );
-  const adapter = externalAdapter ?? baseUrlAdapter ?? internalAdapter ?? noopAdapter;
+  // Default WebSocketAdapter (localhost:3001) when no adapter is configured
+  const defaultWsAdapter = useMemo(
+    () => (!externalAdapter && !baseUrl) ? new WebSocketAdapter() : null,
+    [externalAdapter, baseUrl],
+  );
+  const adapter = externalAdapter ?? baseUrlAdapter ?? internalAdapter ?? defaultWsAdapter ?? noopAdapter;
 
   // --- Data sources ---
   const shouldPoll = pollInterval > 0 && !externalScreenData;

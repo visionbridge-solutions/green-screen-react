@@ -12,6 +12,8 @@ export { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, Ke
 // Adapters
 export { RestAdapter } from './adapters/RestAdapter';
 export type { RestAdapterOptions } from './adapters/RestAdapter';
+export { WebSocketAdapter } from './adapters/WebSocketAdapter';
+export type { WebSocketAdapterOptions } from './adapters/WebSocketAdapter';
 export type {
   TerminalAdapter,
   TerminalProtocol,

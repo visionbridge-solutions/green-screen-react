@@ -3,3 +3,5 @@ dist/
 *.tsbuildinfo
 .DS_Store
 .claude/
+example/.env
+example/.env.local

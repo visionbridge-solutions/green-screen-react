@@ -1,0 +1,20 @@
+{
+  "name": "green-screen-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "wrangler dev",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "dependencies": {
+    "green-screen-proxy": "^0.3.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241218.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.73.0"
+  }
+}

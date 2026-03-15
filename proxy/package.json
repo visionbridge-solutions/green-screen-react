@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "tsc && mkdir -p dist/worker && cp ../worker/dist/index.js dist/worker/index.js",
     "start": "node dist/server.js",
     "lint": "tsc --noEmit",
     "prepublishOnly": "npm run build"

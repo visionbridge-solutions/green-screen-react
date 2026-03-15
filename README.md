@@ -1,12 +1,12 @@
 # green-screen-react
 
-Multi-protocol legacy terminal emulator for React, with a companion proxy server for connecting to real hosts.
-
-Supports **TN5250** (IBM i / AS/400), **TN3270** (z/OS mainframe), **VT220** (OpenVMS, Unix), and **HP 6530** (NonStop).
+Multi-protocol legacy terminal emulator for React. Connects to **TN5250** (IBM i / AS/400), **TN3270** (z/OS mainframe), **VT220** (OpenVMS, Unix), and **HP 6530** (NonStop) hosts.
 
 ## Features
 
 - **Multi-protocol** — TN5250, TN3270, VT220, HP 6530
+- **Real-time WebSocket** — instant screen updates, no polling
+- **Two backends** — self-hosted Node.js proxy or serverless Cloudflare Worker
 - Protocol-specific color conventions and screen dimensions
 - Keyboard input: text, function keys (F1-F24), tab, arrow keys
 - Field-aware rendering with input field underlines
@@ -20,35 +20,37 @@ Supports **TN5250** (IBM i / AS/400), **TN3270** (z/OS mainframe), **VT220** (Op
 
 ## How It Works
 
-Browsers cannot open raw TCP sockets to telnet hosts. The proxy server bridges this gap:
+Browsers cannot open raw TCP sockets to telnet hosts. You need a backend that bridges WebSocket to TCP. Choose one:
 
 ```
-  Your React App          green-screen-proxy           Legacy Host
+  Your React App             Backend                  Legacy Host
 ┌──────────────┐        ┌──────────────────┐        ┌──────────────┐
-│  <GreenScreen│  HTTP  │   Translates     │  TCP   │  IBM i       │
-│   Terminal/> │◄──────►│   HTTP ↔ Telnet  │◄──────►│  Mainframe   │
-│              │   WS   │                  │        │  VMS / etc.  │
+│  <GreenScreen│  WS    │  green-screen-   │  TCP   │  IBM i       │
+│   Terminal/> │◄──────►│  proxy / worker  │◄──────►│  Mainframe   │
+│              │        │                  │        │  VMS / etc.  │
 └──────────────┘        └──────────────────┘        └──────────────┘
   npm install             npx green-screen-proxy
   green-screen-react
 ```
 
-**You need two things:**
+| | Node.js Proxy | Cloudflare Worker |
+|---|---|---|
+| Run with | `npx green-screen-proxy` | `npx green-screen-proxy deploy` |
+| Transport | WebSocket (real-time) | WebSocket (real-time) |
+| Best for | Local dev, self-hosted infra | Production, static sites |
+| Cost | Free (your server) | Free (Cloudflare free tier) |
 
-| What | Package | Install |
-|------|---------|---------|
-| React component | `green-screen-react` | `npm install green-screen-react` |
-| Proxy server | `green-screen-proxy` | Run with `npx green-screen-proxy` (no install needed) |
+Both backends use the same WebSocket protocol, so `WebSocketAdapter` works with either.
 
 ## Quick Start
 
-**Step 1 — Add the component to your React project:**
+**Step 1 — Install the component:**
 
 ```bash
 npm install green-screen-react
 ```
 
-**Step 2 — Start the proxy server** (in a separate terminal):
+**Step 2 — Start the proxy** (in a separate terminal):
 
 ```bash
 npx green-screen-proxy --mock
@@ -63,15 +65,55 @@ import { GreenScreenTerminal } from 'green-screen-react';
 import 'green-screen-react/styles.css';
 
 function App() {
-  return <GreenScreenTerminal baseUrl="http://localhost:3001" />;
+  return <GreenScreenTerminal />;
 }
 ```
 
-That's it. The terminal connects to the proxy, which handles protocol translation. Remove `--mock` when you're ready to connect to a real host.
+That's it — the component connects to `localhost:3001` automatically. Remove `--mock` and use the inline sign-in form to connect to a real host.
+
+## Production Deployment (Cloudflare Worker)
+
+Deploy a serverless backend with one command — no server to manage:
+
+```bash
+npx green-screen-proxy deploy
+```
+
+This will:
+1. Install Wrangler (Cloudflare CLI) if not present
+2. Log you in to Cloudflare if needed
+3. Deploy the worker and print the URL
+4. Save the URL to `.env.local` (auto-detects Vite, Next.js, CRA)
+
+Then use it in your app:
+
+```tsx
+import { GreenScreenTerminal, WebSocketAdapter } from 'green-screen-react';
+import 'green-screen-react/styles.css';
+
+// Reads from VITE_GREEN_SCREEN_URL / NEXT_PUBLIC_GREEN_SCREEN_URL / REACT_APP_GREEN_SCREEN_URL
+const adapter = new WebSocketAdapter({
+  workerUrl: import.meta.env.VITE_GREEN_SCREEN_URL
+});
+
+<GreenScreenTerminal adapter={adapter} />
+```
+
+If no `workerUrl` is provided, the adapter defaults to `http://localhost:3001` (the local proxy).
+
+### Deploy options
+
+```bash
+npx green-screen-proxy deploy                          # Default settings
+npx green-screen-proxy deploy --name my-terminal       # Custom worker name
+npx green-screen-proxy deploy --origins https://myapp.com  # Lock CORS to your domain
+```
+
+The deployed worker includes rate limiting (3 sessions/IP, 5 connections/min), idle timeout (10 min), and blocks connections to private/internal networks.
 
 ## Proxy Server
 
-The proxy is a lightweight Node.js server. Run it with `npx` — no global install required.
+The Node.js proxy is ideal for local development and self-hosted environments.
 
 ```bash
 npx green-screen-proxy              # Start on port 3001
@@ -80,11 +122,11 @@ npx green-screen-proxy --port 8080  # Custom port
 PORT=8080 npx green-screen-proxy    # Port via environment variable
 ```
 
-If you prefer to install it (e.g. for deployment):
+If you prefer to install it:
 
 ```bash
-npm install -g green-screen-proxy   # Global install
-green-screen-proxy                  # Run directly
+npm install -g green-screen-proxy
+green-screen-proxy
 ```
 
 ### Connecting to a real host
@@ -94,10 +136,73 @@ Without `--mock`, the proxy opens real TCP connections. The sign-in form in the 
 Example: connecting to the public IBM i system at `pub400.com`:
 
 ```tsx
-<GreenScreenTerminal baseUrl="http://localhost:3001" defaultProtocol="tn5250" />
+<GreenScreenTerminal defaultProtocol="tn5250" />
 ```
 
-Enter `pub400.com` as the host in the sign-in form, and the proxy connects over TCP port 23.
+Enter `pub400.com` as the host in the sign-in form. The component connects to the local proxy automatically.
+
+## Adapters
+
+### WebSocketAdapter (recommended)
+
+Real-time bidirectional WebSocket. Works with both the Node.js proxy and the Cloudflare Worker.
+
+```tsx
+import { WebSocketAdapter } from 'green-screen-react';
+
+// Local proxy
+const adapter = new WebSocketAdapter({ workerUrl: 'http://localhost:3001' });
+
+// Cloudflare Worker
+const adapter = new WebSocketAdapter({
+  workerUrl: 'https://green-screen-worker.your-subdomain.workers.dev'
+});
+```
+
+Screen updates are pushed instantly — no polling delay.
+
+### RestAdapter (HTTP polling)
+
+For backends that expose a REST API:
+
+```tsx
+import { RestAdapter } from 'green-screen-react';
+
+const adapter = new RestAdapter({
+  baseUrl: 'https://your-server.com/api/terminal',
+  headers: { Authorization: 'Bearer your-token' },
+});
+```
+
+Maps adapter methods to HTTP endpoints (relative to `baseUrl`):
+
+| Method | Path | Request Body |
+|--------|------|-------------|
+| GET | `/screen` | - |
+| GET | `/status` | - |
+| POST | `/connect` | `{ host, port, protocol }` |
+| POST | `/send-text` | `{ text }` |
+| POST | `/send-key` | `{ key }` |
+| POST | `/disconnect` | - |
+| POST | `/reconnect` | - |
+
+### Custom Adapters
+
+Implement `TerminalAdapter` to connect to any backend:
+
+```typescript
+import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult, ConnectConfig } from 'green-screen-react';
+
+class MyAdapter implements TerminalAdapter {
+  async getScreen(): Promise<ScreenData | null> { /* ... */ }
+  async getStatus(): Promise<ConnectionStatus> { /* ... */ }
+  async sendText(text: string): Promise<SendResult> { /* ... */ }
+  async sendKey(key: string): Promise<SendResult> { /* ... */ }
+  async connect(config?: ConnectConfig): Promise<SendResult> { /* ... */ }
+  async disconnect(): Promise<SendResult> { /* ... */ }
+  async reconnect(): Promise<SendResult> { /* ... */ }
+}
+```
 
 ## Component Usage
 
@@ -107,43 +212,29 @@ Enter `pub400.com` as the host in the sign-in form, and the proxy connects over 
 import { GreenScreenTerminal } from 'green-screen-react';
 import 'green-screen-react/styles.css';
 
-// Sign-in form enabled by default — user enters host and credentials
-<GreenScreenTerminal baseUrl="http://localhost:3001" />
-```
-
-### With a custom adapter
-
-```tsx
-import { GreenScreenTerminal, RestAdapter } from 'green-screen-react';
-import 'green-screen-react/styles.css';
-
-const adapter = new RestAdapter({
-  baseUrl: 'https://your-server.com/api/terminal',
-  headers: { Authorization: 'Bearer your-token' },
-});
-
-<GreenScreenTerminal adapter={adapter} protocol="tn5250" />
+// Connects to localhost:3001 by default. Sign-in form collects host and credentials.
+<GreenScreenTerminal />
 ```
 
 ### Switching protocols
 
 ```tsx
-<GreenScreenTerminal baseUrl="http://localhost:3001" protocol="tn3270" />
-<GreenScreenTerminal baseUrl="http://localhost:3001" protocol="vt" />
-<GreenScreenTerminal baseUrl="http://localhost:3001" protocol="hp6530" />
+<GreenScreenTerminal adapter={adapter} protocol="tn3270" />
+<GreenScreenTerminal adapter={adapter} protocol="vt" />
+<GreenScreenTerminal adapter={adapter} protocol="hp6530" />
 ```
 
 ### Inline Sign-In
 
-The sign-in form appears by default when disconnected. It collects host, port, protocol, and credentials, then calls `adapter.connect(config)` to establish the connection through the proxy.
+The sign-in form appears by default when disconnected. It collects host, port, protocol, and credentials.
 
 ```tsx
 // Disable the form (use when you manage connections yourself)
 <GreenScreenTerminal adapter={adapter} inlineSignIn={false} />
 
-// Pre-select a protocol and listen for sign-in
+// Pre-select a protocol
 <GreenScreenTerminal
-  baseUrl="http://localhost:3001"
+  adapter={adapter}
   defaultProtocol="tn3270"
   onSignIn={(config) => console.log('Connecting to', config.host)}
 />
@@ -177,23 +268,7 @@ The sign-in form appears by default when disconnected. It collects host, port, p
 | `className` | `string` | - | Additional CSS class |
 | `style` | `CSSProperties` | - | Inline styles |
 
-## Adapter Interface
-
-The terminal communicates with your backend through an adapter. Implement `TerminalAdapter` or use the built-in `RestAdapter`.
-
-```typescript
-interface TerminalAdapter {
-  getScreen(): Promise<ScreenData | null>;
-  getStatus(): Promise<ConnectionStatus>;
-  sendText(text: string): Promise<SendResult>;
-  sendKey(key: string): Promise<SendResult>;
-  connect(config?: ConnectConfig): Promise<SendResult>;
-  disconnect(): Promise<SendResult>;
-  reconnect(): Promise<SendResult>;
-}
-```
-
-### Key Types
+## Key Types
 
 ```typescript
 interface ScreenData {
@@ -203,7 +278,6 @@ interface ScreenData {
   rows?: number;         // Terminal rows (default 24)
   cols?: number;         // Terminal columns (default 80)
   fields?: Field[];      // Input/protected field definitions
-  screen_signature?: string;
 }
 
 interface ConnectionStatus {
@@ -220,40 +294,6 @@ interface Field {
   length: number;        // Field length in characters
   is_input: boolean;     // Accepts user input
   is_protected: boolean; // Read-only
-}
-```
-
-### RestAdapter
-
-Maps adapter methods to HTTP endpoints (relative to `baseUrl`):
-
-| Method | Path | Request Body | Response |
-|--------|------|-------------|----------|
-| GET | `/screen` | - | `{ content, cursor_row, cursor_col, fields, screen_signature }` |
-| GET | `/status` | - | `{ connected, status, protocol, host }` |
-| POST | `/connect` | `{ host, port, protocol }` | `{ success, sessionId, content, cursor_row, cursor_col }` |
-| POST | `/send-text` | `{ text }` | `{ success, content, cursor_row, cursor_col }` |
-| POST | `/send-key` | `{ key }` | `{ success, content, cursor_row, cursor_col }` |
-| POST | `/disconnect` | - | `{ success }` |
-| POST | `/reconnect` | - | `{ success, content, cursor_row, cursor_col }` |
-
-**Session management:** The `/connect` response includes a `sessionId`. Pass it as the `X-Session-Id` header on subsequent requests to target a specific session. If omitted, the proxy uses the default (single) session.
-
-### Custom Adapters
-
-Implement `TerminalAdapter` to connect to any backend:
-
-```typescript
-import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult } from 'green-screen-react';
-
-class MyAdapter implements TerminalAdapter {
-  async getScreen(): Promise<ScreenData | null> { /* fetch screen data */ }
-  async getStatus(): Promise<ConnectionStatus> { /* fetch status */ }
-  async sendText(text: string): Promise<SendResult> { /* send text */ }
-  async sendKey(key: string): Promise<SendResult> { /* send key */ }
-  async connect(config?: ConnectConfig): Promise<SendResult> { /* connect */ }
-  async disconnect(): Promise<SendResult> { /* disconnect */ }
-  async reconnect(): Promise<SendResult> { /* reconnect */ }
 }
 ```
 
@@ -276,6 +316,11 @@ Override CSS custom properties to customize the look:
 
 ## Exports
 
+### Adapters
+
+- `WebSocketAdapter` — Real-time WebSocket (works with proxy and worker)
+- `RestAdapter` — HTTP polling
+
 ### Hooks
 
 - `useTerminalConnection(adapter)` — Connection lifecycle
@@ -292,8 +337,6 @@ Override CSS custom properties to customize the look:
 
 - `positionToRowCol(content, position)` — Convert linear position to row/col
 - `isFieldEntry(prev, next)` — Detect field entry vs screen transition
-- `getRowColorClass(rowIndex, content)` — Row color convention
-- `parseHeaderRow(line)` — Parse header row into colored segments
 
 ## License
 

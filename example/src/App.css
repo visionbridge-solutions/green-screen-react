@@ -35,11 +35,13 @@ body {
   margin-top: 0.25rem;
 }
 
+/* ── Protocol tabs ─────────────────────────── */
+
 .protocol-tabs {
   display: flex;
   gap: 0;
   justify-content: center;
-  margin-bottom: 1rem;
+  margin-bottom: 0;
   border-bottom: 1px solid #1e1e1e;
 }
 
@@ -67,11 +69,181 @@ body {
   border-bottom-color: #33ff33;
 }
 
+.connect-tab.active {
+  color: #60a5fa;
+  border-bottom-color: #60a5fa;
+}
+
+/* ── Demo hint ─────────────────────────────── */
+
+.demo-hint {
+  text-align: center;
+  font-size: 0.75rem;
+  color: #4b5563;
+  padding: 0.5rem 0;
+  letter-spacing: 0.03em;
+}
+
+/* ── Terminal wrapper ──────────────────────── */
+
 .terminal-wrapper {
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 0 0 40px rgba(51, 255, 51, 0.05);
 }
+
+/* ── Connect panel ─────────────────────────── */
+
+.connect-panel {
+  padding: 1.5rem;
+}
+
+.connect-info {
+  margin-bottom: 1.5rem;
+}
+
+.connect-info h3 {
+  font-size: 1rem;
+  color: #e2e8f0;
+  margin-bottom: 0.5rem;
+}
+
+.connect-info p {
+  font-size: 0.8rem;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
+.connect-info code {
+  background: #161616;
+  color: #33ff33;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+}
+
+.connect-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+  color: #9ca3af;
+}
+
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #1e1e1e;
+  color: #33ff33;
+  font-size: 0.7rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.step code {
+  display: block;
+  background: #161616;
+  color: #33ff33;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  margin-bottom: 0.25rem;
+}
+
+.step-desc {
+  font-size: 0.7rem;
+  color: #4b5563;
+}
+
+.connect-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.connect-label {
+  display: block;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #6b7280;
+}
+
+.connect-input {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.5rem 0.625rem;
+  background: rgba(16, 185, 129, 0.05);
+  border: 1px solid #1e293b;
+  color: #33ff33;
+  font-family: inherit;
+  font-size: 0.85rem;
+  outline: none;
+  border-radius: 3px;
+}
+
+.connect-input:focus {
+  border-color: #33ff33;
+}
+
+.connect-input::placeholder {
+  color: #374151;
+}
+
+.connect-note {
+  margin-top: 0.75rem;
+  font-size: 0.7rem;
+  color: #4b5563;
+  font-style: italic;
+}
+
+.connect-error {
+  color: #ef4444;
+  font-size: 0.75rem;
+  font-family: inherit;
+}
+
+.connect-status {
+  font-size: 0.75rem;
+  font-family: inherit;
+}
+
+.connect-status.connected {
+  color: #33ff33;
+}
+
+.disconnect-btn {
+  background: none;
+  border: 1px solid #374151;
+  color: #9ca3af;
+  font-family: inherit;
+  font-size: 0.7rem;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.disconnect-btn:hover {
+  color: #ef4444;
+  border-color: #ef4444;
+}
+
+/* ── Footer ────────────────────────────────── */
 
 .demo-footer {
   display: flex;
