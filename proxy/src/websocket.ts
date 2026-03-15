@@ -15,6 +15,41 @@ interface WsClient {
 }
 
 const clients: Set<WsClient> = new Set();
+const sessionClients: Map<string, Set<WsClient>> = new Map();
+const unassignedClients: Set<WsClient> = new Set();
+
+function indexClient(client: WsClient): void {
+  if (client.sessionId) {
+    let set = sessionClients.get(client.sessionId);
+    if (!set) { set = new Set(); sessionClients.set(client.sessionId, set); }
+    set.add(client);
+    unassignedClients.delete(client);
+  } else {
+    unassignedClients.add(client);
+  }
+}
+
+function removeClient(client: WsClient): void {
+  clients.delete(client);
+  unassignedClients.delete(client);
+  if (client.sessionId) {
+    const set = sessionClients.get(client.sessionId);
+    if (set) {
+      set.delete(client);
+      if (set.size === 0) sessionClients.delete(client.sessionId);
+    }
+  }
+}
+
+function waitForScreen(session: Session, timeoutMs: number): Promise<any> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(session.getScreenData()), timeoutMs);
+    session.once('screenChange', (data: any) => {
+      clearTimeout(timer);
+      resolve(data);
+    });
+  });
+}
 
 export function setupWebSocket(server: HttpServer): WebSocketServer {
   const wss = new WebSocketServer({ server, path: '/ws' });
@@ -25,13 +60,14 @@ export function setupWebSocket(server: HttpServer): WebSocketServer {
 
     const client: WsClient = { ws, sessionId };
     clients.add(client);
+    indexClient(client);
 
     ws.on('close', () => {
-      clients.delete(client);
+      removeClient(client);
     });
 
     ws.on('error', () => {
-      clients.delete(client);
+      removeClient(client);
     });
 
     // Handle incoming commands (bidirectional protocol)
@@ -62,7 +98,15 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
       const { host = 'pub400.com', port = 23, protocol = 'tn5250' } = msg;
 
       const session = createSession(protocol);
+      // Update client's session assignment and re-index
+      const oldSessionId = client.sessionId;
       client.sessionId = session.id;
+      if (oldSessionId) {
+        const set = sessionClients.get(oldSessionId);
+        if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(oldSessionId); }
+      }
+      unassignedClients.delete(client);
+      indexClient(client);
 
       bindSessionToWebSocket(session);
 
@@ -72,9 +116,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
         await session.connect(host, port);
         wsSend(ws, { type: 'status', data: { connected: true, status: 'connected', protocol, host } });
 
-        // Wait for initial screen data
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        const screenData = session.getScreenData();
+        const screenData = await waitForScreen(session, 5000);
         wsSend(ws, { type: 'screen', data: screenData });
         wsSend(ws, { type: 'connected', sessionId: session.id });
       } catch (err) {
@@ -102,9 +144,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
       const ok = session.sendKey(msg.key);
       if (!ok) { wsSend(ws, { type: 'error', message: `Unknown key: ${msg.key}` }); return; }
 
-      // Wait for host response
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      const screenData = session.getScreenData();
+      const screenData = await waitForScreen(session, 3000);
       wsSend(ws, { type: 'screen', data: screenData });
       break;
     }
@@ -113,7 +153,10 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
       const session = resolveSession(client);
       if (session) {
         destroySession(session.id);
+        const set = sessionClients.get(session.id);
+        if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(session.id); }
         client.sessionId = null;
+        unassignedClients.add(client);
       }
       wsSend(ws, { type: 'status', data: { connected: false, status: 'disconnected' } });
       break;
@@ -146,11 +189,13 @@ export function bindSessionToWebSocket(session: Session): void {
 }
 
 function broadcastToSession(sessionId: string, message: string): void {
-  for (const client of clients) {
-    if (client.ws.readyState !== WebSocket.OPEN) continue;
-
-    if (client.sessionId === sessionId || client.sessionId === null) {
-      client.ws.send(message);
+  const targets = sessionClients.get(sessionId);
+  if (targets) {
+    for (const client of targets) {
+      if (client.ws.readyState === WebSocket.OPEN) client.ws.send(message);
     }
+  }
+  for (const client of unassignedClients) {
+    if (client.ws.readyState === WebSocket.OPEN) client.ws.send(message);
   }
 }

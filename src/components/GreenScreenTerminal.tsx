@@ -29,6 +29,8 @@ export interface GreenScreenTerminalProps {
   adapter?: TerminalAdapter;
   /** Base URL for the terminal API — convenience shorthand that auto-creates a RestAdapter */
   baseUrl?: string;
+  /** Worker/proxy WebSocket URL — convenience shorthand that auto-creates a WebSocketAdapter */
+  workerUrl?: string;
   /** Terminal protocol (determines color conventions, header label, etc.) */
   protocol?: TerminalProtocol;
   /** Custom protocol profile (overrides protocol param) */
@@ -98,6 +100,7 @@ export interface GreenScreenTerminalProps {
 export function GreenScreenTerminal({
   adapter: externalAdapter,
   baseUrl,
+  workerUrl,
   protocol,
   protocolProfile: customProfile,
   screenData: externalScreenData,
@@ -124,18 +127,23 @@ export function GreenScreenTerminal({
 }: GreenScreenTerminalProps) {
   const profile = customProfile ?? getProtocolProfile(protocol);
 
-  // --- Resolve adapter: explicit > baseUrl > internal (from sign-in) > default WebSocket > noop ---
+  // --- Resolve adapter: explicit > baseUrl > workerUrl > internal (from sign-in) > default WebSocket > noop ---
   const [internalAdapter, setInternalAdapter] = useState<TerminalAdapter | null>(null);
   const baseUrlAdapter = useMemo(
     () => baseUrl ? new RestAdapter({ baseUrl }) : null,
     [baseUrl],
   );
-  // Default WebSocketAdapter (localhost:3001) when no adapter is configured
-  const defaultWsAdapter = useMemo(
-    () => (!externalAdapter && !baseUrl) ? new WebSocketAdapter() : null,
-    [externalAdapter, baseUrl],
+  const workerUrlAdapter = useMemo(
+    () => workerUrl ? new WebSocketAdapter({ workerUrl }) : null,
+    [workerUrl],
   );
-  const adapter = externalAdapter ?? baseUrlAdapter ?? internalAdapter ?? defaultWsAdapter ?? noopAdapter;
+  // Default WebSocketAdapter (auto-detects env vars, falls back to localhost:3001) when no adapter is configured
+  const defaultWsAdapter = useMemo(
+    () => (!externalAdapter && !baseUrl && !workerUrl) ? new WebSocketAdapter() : null,
+    [externalAdapter, baseUrl, workerUrl],
+  );
+  const adapter = externalAdapter ?? baseUrlAdapter ?? workerUrlAdapter ?? internalAdapter ?? defaultWsAdapter ?? noopAdapter;
+  const isUsingDefaultAdapter = adapter === defaultWsAdapter;
 
   // --- Data sources ---
   const shouldPoll = pollInterval > 0 && !externalScreenData;
@@ -229,7 +237,11 @@ export function GreenScreenTerminal({
 
   // --- Inline sign-in ---
   const handleSignIn = useCallback(async (config: ConnectConfig) => {
-    onSignIn?.(config);
+    // If the caller provided onSignIn, let them handle connection setup
+    if (onSignIn) {
+      onSignIn(config);
+      return;
+    }
     // Auto-create adapter from sign-in config when no external adapter is provided
     if (!externalAdapter && !baseUrlAdapter) {
       const port = config.port ? `:${config.port}` : '';
@@ -440,6 +452,11 @@ export function GreenScreenTerminal({
             <p style={{ fontFamily: 'var(--gs-font)', fontSize: '12px', color: '#808080' }}>
               {connStatus?.connected ? 'Waiting for screen data...' : 'Not connected'}
             </p>
+            {!connStatus?.connected && isUsingDefaultAdapter && (
+              <p style={{ fontFamily: 'var(--gs-font)', fontSize: '11px', color: '#606060', marginTop: '8px' }}>
+                Start the proxy: <code style={{ color: '#10b981' }}>npx green-screen-proxy --mock</code>
+              </p>
+            )}
           </div>
         </div>
       );

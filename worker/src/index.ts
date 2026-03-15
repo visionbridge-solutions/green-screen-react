@@ -89,6 +89,8 @@ function trackConnect(ip: string): void {
 function trackDisconnect(ip: string): void {
   const bucket = getRateBucket(ip)
   bucket.sessions = Math.max(0, bucket.sessions - 1)
+  const now = Date.now()
+  bucket.connectTimestamps = bucket.connectTimestamps.filter(t => now - t < 60_000)
   if (bucket.sessions === 0 && bucket.connectTimestamps.length === 0) {
     rateLimits.delete(ip)
   }
@@ -284,10 +286,9 @@ export class TerminalSession {
 
       this.send({ type: 'status', data: { connected: true, status: 'connected', protocol, host } })
 
-      // Wait for initial screen data
-      await new Promise(resolve => setTimeout(resolve, 2000))
-      const screenData = this.handler.getScreenData()
-      this.send({ type: 'screen', data: screenData })
+      // Wait for initial screen data via event (with timeout fallback)
+      const initialScreen = await this.waitForScreen(5000)
+      this.send({ type: 'screen', data: initialScreen })
       this.send({ type: 'connected', sessionId: this.state.id.toString() })
 
     } catch (err) {
@@ -320,10 +321,19 @@ export class TerminalSession {
       return
     }
 
-    // Wait for host response
-    await new Promise(resolve => setTimeout(resolve, 1500))
-    const screenData = this.handler.getScreenData()
+    const screenData = await this.waitForScreen(3000)
     this.send({ type: 'screen', data: screenData })
+  }
+
+  private waitForScreen(timeoutMs: number): Promise<any> {
+    return new Promise((resolve) => {
+      if (!this.handler) { resolve(null); return }
+      const timer = setTimeout(() => resolve(this.handler!.getScreenData()), timeoutMs)
+      this.handler.once('screenChange', (data: any) => {
+        clearTimeout(timer)
+        resolve(data)
+      })
+    })
   }
 
   private handleDisconnect(): void {
