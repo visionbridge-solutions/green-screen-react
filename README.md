@@ -1,12 +1,11 @@
-# green-screen-react
+# GREEN SCREEN REACT (EMULATOR FOR WEB)
 
 Multi-protocol legacy terminal emulator for React. Connects to **TN5250** (IBM i / AS/400), **TN3270** (z/OS mainframe), **VT220** (OpenVMS, Unix), and **HP 6530** (NonStop) hosts.
 
 ## Features
 
 - **Multi-protocol** — TN5250, TN3270, VT220, HP 6530
-- **Real-time WebSocket** — instant screen updates, no polling
-- **Two backends** — self-hosted Node.js proxy or serverless Cloudflare Worker
+- **Real-time WebSocket** — instant screen updates
 - Protocol-specific color conventions and screen dimensions
 - Keyboard input: text, function keys (F1-F24), tab, arrow keys
 - Field-aware rendering with input field underlines
@@ -14,7 +13,7 @@ Multi-protocol legacy terminal emulator for React. Connects to **TN5250** (IBM i
 - Auto-reconnect with exponential backoff
 - Fully themeable via CSS custom properties
 - Zero runtime dependencies (peer deps: React 18+)
-- Inline sign-in form (host, credentials, protocol picker)
+- Togglable inline sign-in form (host, credentials, protocol picker)
 - Pluggable adapter interface for any backend
 - Mock mode for instant evaluation without a real host
 
@@ -22,14 +21,27 @@ Multi-protocol legacy terminal emulator for React. Connects to **TN5250** (IBM i
 
 Browsers cannot open raw TCP sockets to telnet hosts. You need a backend that bridges WebSocket to TCP. Choose one:
 
+**Option A — Run locally (development):**
 ```
-  Your React App             Backend                  Legacy Host
+  Your React App          green-screen-proxy           Legacy Host
 ┌──────────────┐        ┌──────────────────┐        ┌──────────────┐
-│  <GreenScreen│  WS    │  green-screen-   │  TCP   │  IBM i       │
-│   Terminal/> │◄──────►│  proxy / worker  │◄──────►│  Mainframe   │
+│  <GreenScreen│  WS    │   Node.js proxy  │  TCP   │  IBM i       │
+│   Terminal/> │◄──────►│   localhost:3001  │◄──────►│  Mainframe   │
 │              │        │                  │        │  VMS / etc.  │
 └──────────────┘        └──────────────────┘        └──────────────┘
   npm install             npx green-screen-proxy
+  green-screen-react
+```
+
+**Option B — Deploy to Cloudflare (production):**
+```
+  Your React App          Cloudflare Worker            Legacy Host
+┌──────────────┐        ┌──────────────────┐        ┌──────────────┐
+│  <GreenScreen│  WS    │  Durable Object  │  TCP   │  IBM i       │
+│   Terminal/> │◄──────►│  holds TCP conn  │◄──────►│  Mainframe   │
+│              │        │                  │        │  VMS / etc.  │
+└──────────────┘        └──────────────────┘        └──────────────┘
+  npm install             npx green-screen-proxy deploy
   green-screen-react
 ```
 
@@ -40,7 +52,7 @@ Browsers cannot open raw TCP sockets to telnet hosts. You need a backend that br
 | Best for | Local dev, self-hosted infra | Production, static sites |
 | Cost | Free (your server) | Free (Cloudflare free tier) |
 
-Both backends use the same WebSocket protocol, so `WebSocketAdapter` works with either.
+Both use the same WebSocket protocol, so `WebSocketAdapter` works with either.
 
 ## Quick Start
 
@@ -109,7 +121,7 @@ npx green-screen-proxy deploy --name my-terminal       # Custom worker name
 npx green-screen-proxy deploy --origins https://myapp.com  # Lock CORS to your domain
 ```
 
-The deployed worker includes rate limiting (3 sessions/IP, 5 connections/min), idle timeout (10 min), and blocks connections to private/internal networks.
+User-deployed workers have no restrictions. The shared demo worker (GitHub Pages) has rate limiting and SSRF protection.
 
 ## Proxy Server
 

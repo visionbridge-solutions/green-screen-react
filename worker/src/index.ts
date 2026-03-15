@@ -38,9 +38,11 @@ const ALLOWED_ORIGINS = CONFIGURED_ORIGINS.startsWith('__')
   ? ['https://visionbridge-solutions.github.io', 'http://localhost:5173', 'http://localhost:4173']
   : [...CONFIGURED_ORIGINS.split(',').filter(Boolean), 'http://localhost:5173', 'http://localhost:4173']
 
-const MAX_SESSIONS_PER_IP = 3
-const MAX_CONNECTS_PER_MINUTE = 5
-const SESSION_IDLE_TIMEOUT_MS = 10 * 60 * 1000 // 10 minutes
+// Restrictions only apply to the shared demo worker (placeholder = demo mode)
+const IS_DEMO = CONFIGURED_ORIGINS.startsWith('__')
+const MAX_SESSIONS_PER_IP = IS_DEMO ? 3 : Infinity
+const MAX_CONNECTS_PER_MINUTE = IS_DEMO ? 5 : Infinity
+const SESSION_IDLE_TIMEOUT_MS = IS_DEMO ? 10 * 60 * 1000 : 0 // 10 min for demo, disabled for user-deployed
 
 // ── Rate limiter (in-memory, per Worker isolate) ────────────
 
@@ -251,7 +253,7 @@ export class TerminalSession {
     const host = msg.host
 
     // Basic host validation — block private/internal ranges
-    if (this.isPrivateHost(host)) {
+    if (IS_DEMO && this.isPrivateHost(host)) {
       this.send({ type: 'error', message: 'Cannot connect to private/internal addresses' })
       return
     }
@@ -340,6 +342,7 @@ export class TerminalSession {
 
   private resetIdleTimer(): void {
     this.clearIdleTimer()
+    if (!SESSION_IDLE_TIMEOUT_MS) return // disabled for user-deployed workers
     this.idleTimer = setTimeout(() => {
       this.send({ type: 'error', message: 'Session timed out due to inactivity' })
       this.send({ type: 'status', data: { connected: false, status: 'disconnected' } })
