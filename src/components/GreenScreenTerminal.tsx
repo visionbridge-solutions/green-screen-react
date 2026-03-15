@@ -440,7 +440,7 @@ export function GreenScreenTerminal({
     if (!screenData?.content) {
       if (inlineSignIn && !connStatus?.connected) {
         return (
-          <div style={{ width: `${screenData?.cols || profile.defaultCols}ch`, height: `${(screenData?.rows || profile.defaultRows) * 21}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: '100%', height: `${(screenData?.rows || profile.defaultRows) * 21}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <InlineSignIn defaultProtocol={signInDefaultProtocol || protocol || 'tn5250'} loading={reconnecting} error={connectError} onConnect={handleSignIn} />
           </div>
         );

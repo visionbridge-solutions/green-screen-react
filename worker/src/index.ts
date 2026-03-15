@@ -155,14 +155,12 @@ export default {
       const id = env.TERMINAL_SESSION.newUniqueId()
       const stub = env.TERMINAL_SESSION.get(id)
 
-      // Forward the request with IP header for the DO to track
-      const doRequest = new Request(request.url, {
-        headers: {
-          ...Object.fromEntries(request.headers),
-          'X-Client-IP': ip,
-          'Upgrade': 'websocket',
-        },
-      })
+      // Forward the original request to preserve WebSocket upgrade state.
+      // new Request() strips the internal upgrade flag, so we clone instead
+      // and pass the client IP via a query param.
+      const doUrl = new URL(request.url)
+      doUrl.searchParams.set('clientIp', ip)
+      const doRequest = new Request(doUrl.toString(), request)
 
       return stub.fetch(doRequest)
     }
@@ -193,7 +191,8 @@ export class TerminalSession {
   }
 
   async fetch(request: Request): Promise<Response> {
-    this.clientIp = request.headers.get('X-Client-IP') || 'unknown'
+    const url = new URL(request.url)
+    this.clientIp = url.searchParams.get('clientIp') || 'unknown'
 
     // Accept WebSocket
     const pair = new WebSocketPair()
