@@ -210,11 +210,11 @@ export class TN5250Connection extends EventEmitter {
     switch (cmd) {
       case TELNET.DO:
         // Server asks us to enable something
+        // Refuse TN5250E — our subneg is incomplete; server will fall back to TTYPE
         if (option === TELNET.OPT_TTYPE ||
             option === TELNET.OPT_EOR ||
             option === TELNET.OPT_BINARY ||
-            option === TELNET.OPT_NEW_ENVIRON ||
-            option === TELNET.OPT_TN5250E) {
+            option === TELNET.OPT_NEW_ENVIRON) {
           this.sendTelnet(TELNET.WILL, option);
         } else {
           this.sendTelnet(TELNET.WONT, option);
@@ -224,8 +224,7 @@ export class TN5250Connection extends EventEmitter {
       case TELNET.WILL:
         // Server offers to enable something
         if (option === TELNET.OPT_EOR ||
-            option === TELNET.OPT_BINARY ||
-            option === TELNET.OPT_TN5250E) {
+            option === TELNET.OPT_BINARY) {
           this.sendTelnet(TELNET.DO, option);
         } else {
           this.sendTelnet(TELNET.DONT, option);
@@ -285,10 +284,9 @@ export class TN5250Connection extends EventEmitter {
     this.sendRaw(buf);
   }
 
-  private handleTN5250ESubneg(data: Buffer): void {
-    // For TN5250E, we may need to send device info
-    // Minimal: just acknowledge. Most servers work with basic TTYPE negotiation.
-    // The actual device name negotiation via TN5250E is optional.
+  private handleTN5250ESubneg(_data: Buffer): void {
+    // TN5250E is refused during negotiation (WONT), so this should not be called.
+    // If it is, ignore — the server will fall back to TTYPE negotiation.
   }
 
   private sendTelnet(cmd: number, option: number): void {
