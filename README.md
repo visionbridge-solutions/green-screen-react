@@ -1,8 +1,8 @@
 # GREEN SCREEN REACT (EMULATOR FOR WEB)
 
-[**Preview**](https://visionbridge-solutions.github.io/green-screen-react/)
-
 Multi-protocol legacy terminal emulator for React. Connects to **TN5250** (IBM i / AS/400), **TN3270** (z/OS mainframe), **VT220** (OpenVMS, Unix), and **HP 6530** (NonStop) hosts.
+
+[**Preview**](https://visionbridge-solutions.github.io/green-screen-react/)
 
 ## Features
 
