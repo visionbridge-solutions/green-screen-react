@@ -5,3 +5,4 @@ dist/
 .claude/
 example/.env
 example/.env.local
+.wrangler/
