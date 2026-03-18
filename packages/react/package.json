@@ -1,6 +1,6 @@
 {
   "name": "green-screen-react",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Multi-protocol legacy terminal React component (TN5250, TN3270, VT, HP 6530)",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -33,10 +33,8 @@
     "react": ">=18.0.0",
     "react-dom": ">=18.0.0"
   },
-  "dependencies": {
-    "green-screen-types": "*"
-  },
   "devDependencies": {
+    "green-screen-types": "*",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
     "@types/react": "^19.0.0",

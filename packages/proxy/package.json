@@ -1,6 +1,6 @@
 {
   "name": "green-screen-proxy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "WebSocket/REST proxy server for green-screen-react — connects browsers to TN5250, TN3270, VT220, and HP 6530 hosts over TCP",
   "type": "module",
   "bin": {
@@ -48,12 +48,12 @@
     "url": "https://github.com/visionbridge-solutions/green-screen-react/issues"
   },
   "dependencies": {
-    "green-screen-types": "*",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "green-screen-types": "*",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/ws": "^8.5.12",
