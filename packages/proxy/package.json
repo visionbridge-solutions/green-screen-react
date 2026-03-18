@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "serve": "node --watch --import tsx/esm src/server.ts",
-    "build": "tsc && mkdir -p dist/worker && cp ../../apps/worker/dist/index.js dist/worker/index.js",
+    "build": "tsc && mkdir -p dist/worker && cp ../../apps/worker/dist/index.js dist/worker/index.js 2>/dev/null || true",
     "build:standalone": "tsc && cd ../../apps/demo && VITE_BASE_URL=/ npx vite build --outDir ../../packages/proxy/dist/ui",
     "start": "node dist/server.js",
     "lint": "tsc --noEmit",

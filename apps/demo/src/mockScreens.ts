@@ -13,6 +13,8 @@ function buildScreen(lines: string[], rows: number, cols: number, cursorRow: num
     rows,
     cols,
     fields: fields ?? [{ row: cursorRow, col: cursorCol, length: cols - cursorCol, is_input: true, is_protected: false }],
+    screen_signature: '',
+    timestamp: new Date().toISOString(),
   }
 }
 

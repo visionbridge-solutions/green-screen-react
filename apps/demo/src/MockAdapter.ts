@@ -74,6 +74,8 @@ export class MockAdapter implements TerminalAdapter {
       rows: this.rows,
       cols: this.cols,
       fields: this.fields,
+      screen_signature: '',
+      timestamp: new Date().toISOString(),
     }
   }
 
