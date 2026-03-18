@@ -13,9 +13,8 @@ npm install green-screen-proxy
 ```bash
 npx green-screen-proxy              # Start on port 3001
 npx green-screen-proxy --mock       # Mock mode (no real host needed)
-npx green-screen-proxy --standalone # Proxy + built-in web terminal UI
 npx green-screen-proxy --port 8080  # Custom port
-npx green-screen-terminal            # Shorthand for --standalone
+npx green-screen-terminal           # Proxy + web terminal UI (separate package)
 ```
 
 ### Mock mode
@@ -70,7 +69,6 @@ await proxy.close();
 |--------|------|---------|-------------|
 | `port` | `number` | `3001` | Port to listen on |
 | `mock` | `boolean` | `false` | Use mock screens |
-| `standalone` | `boolean` | `false` | Serve built-in web UI |
 
 ### Returns
 

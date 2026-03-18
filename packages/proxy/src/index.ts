@@ -1,17 +1,12 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer, Server as HttpServer } from 'http';
-import { existsSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
 
 export interface ProxyOptions {
   /** Port to listen on (default: 3001) */
   port?: number;
   /** Use mock screens instead of real connections */
   mock?: boolean;
-  /** Serve the built-in web terminal UI */
-  standalone?: boolean;
 }
 
 export interface ProxyServer {
@@ -40,7 +35,7 @@ export interface ProxyServer {
  * ```
  */
 export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServer> {
-  const { port = 3001, mock = false, standalone = false } = options;
+  const { port = 3001, mock = false } = options;
 
   const app = express();
   app.use(cors());
@@ -58,20 +53,6 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
     ]);
     app.use('/', routes);
     setupWebSocket = setupWs;
-  }
-
-  if (standalone) {
-    const __dirname = dirname(fileURLToPath(import.meta.url));
-    const uiPath = join(__dirname, 'ui');
-    if (existsSync(uiPath)) {
-      app.use(express.static(uiPath));
-      app.get('*', (_req, res, next) => {
-        if (_req.path.startsWith('/api') || _req.path.startsWith('/connect')) {
-          return next();
-        }
-        res.sendFile(join(uiPath, 'index.html'));
-      });
-    }
   }
 
   const server = createServer(app);
