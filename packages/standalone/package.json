@@ -24,6 +24,6 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/visionbridge-solutions/green-screen-react.git",
-    "directory": "packages/green-screen"
+    "directory": "packages/standalone"
   }
 }

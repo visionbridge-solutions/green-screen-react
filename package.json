@@ -5,7 +5,7 @@
     "packages/types",
     "packages/react",
     "packages/proxy",
-    "packages/green-screen",
+    "packages/standalone",
     "apps/demo",
     "apps/worker"
   ],
