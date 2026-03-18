@@ -25,3 +25,6 @@ jobs:
       - run: npm publish -w packages/proxy --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish -w packages/green-screen --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

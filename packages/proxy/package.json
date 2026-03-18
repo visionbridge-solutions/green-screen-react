@@ -8,6 +8,10 @@
     "green-screen": "dist/standalone.js"
   },
   "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./cli": "./dist/cli.js"
+  },
   "files": [
     "dist"
   ],

@@ -1,0 +1,29 @@
+{
+  "name": "green-screen",
+  "version": "1.0.0",
+  "description": "Run a standalone green-screen terminal server — shorthand for `npx green-screen-proxy --standalone`",
+  "bin": {
+    "green-screen": "bin/green-screen.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "dependencies": {
+    "green-screen-proxy": "^1.0.0"
+  },
+  "keywords": [
+    "terminal",
+    "green-screen",
+    "tn5250",
+    "tn3270",
+    "ibm-i",
+    "as400"
+  ],
+  "author": "VisionBridge Solutions",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/visionbridge-solutions/green-screen-react.git",
+    "directory": "packages/green-screen"
+  }
+}
