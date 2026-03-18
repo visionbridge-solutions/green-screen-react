@@ -26,22 +26,20 @@ jobs:
         with:
           node-version: 20
 
-      - name: Build library
-        run: npm ci && npm run build
+      - name: Install all dependencies
+        run: npm ci
 
-      - name: Install example deps
-        working-directory: example
-        run: npm install
+      - name: Build react library
+        run: npm run build -w packages/react
 
-      - name: Build example
-        working-directory: example
-        run: npm run build
+      - name: Build demo
+        run: npm run build -w apps/demo
         env:
           VITE_WORKER_URL: ${{ vars.WORKER_URL }}
 
       - uses: actions/configure-pages@v4
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: example/dist
+          path: apps/demo/dist
       - id: deployment
         uses: actions/deploy-pages@v4

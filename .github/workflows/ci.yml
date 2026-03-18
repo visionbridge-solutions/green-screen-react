@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [production]
   pull_request:
-    branches: [main]
+    branches: [production]
 
 jobs:
   build-and-test:
@@ -16,6 +16,7 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-      - run: npm run lint
-      - run: npm run test
-      - run: npm run build
+      - run: npm run lint -w packages/react
+      - run: npm run test -w packages/react
+      - run: npm run build -w packages/react
+      - run: npm run build -w packages/proxy

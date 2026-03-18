@@ -16,8 +16,12 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
-      - run: npm run build
-      - run: npm run test
-      - run: npm publish --access public
+      - run: npm run test -w packages/react
+      - run: npm run build -w packages/react
+      - run: npm run build -w packages/proxy
+      - run: npm publish -w packages/react --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish -w packages/proxy --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

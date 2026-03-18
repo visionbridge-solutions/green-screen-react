@@ -9,7 +9,8 @@ export interface FieldDef {
   ffw2: number;        // Second FFW byte
   fcw1: number;        // First FCW byte (0 if no FCW)
   fcw2: number;        // Second FCW byte (0 if no FCW)
-  attribute: number;   // Display attribute (SA value)
+  attribute: number;   // Display attribute (may include SA context)
+  rawAttrByte: number; // Raw 0x20–0x3F attribute byte from data stream (0 if none)
   modified: boolean;
 }
 
@@ -161,6 +162,18 @@ export class ScreenBuffer {
   /** Whether an input field is visually interactive (underscored or password) */
   isVisibleInput(field: FieldDef): boolean {
     return this.isInputField(field) && (this.isUnderscored(field) || this.isNonDisplay(field));
+  }
+
+  /** Whether the field's OWN attribute byte indicates underscore (not inherited from SA context).
+   *  Lower 3 bits: 4=UL, 5=UL+RI, 6=UL+HI. Excludes 7=ND. */
+  hasNativeUnderscore(field: FieldDef): boolean {
+    const type = field.rawAttrByte & 0x07;
+    return type >= 0x04 && type < 0x07;
+  }
+
+  /** Whether the field's OWN attribute byte indicates non-display (lower 3 bits = 7). */
+  hasNativeNonDisplay(field: FieldDef): boolean {
+    return (field.rawAttrByte & 0x07) === 0x07;
   }
 
   /** Convert screen buffer to the ScreenData format expected by the frontend */

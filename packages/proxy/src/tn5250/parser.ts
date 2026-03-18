@@ -412,10 +412,11 @@ export class TN5250Parser {
     // Map attribute byte to display characteristic, falling back to SA context.
     const fieldDisplayAttr = this.decodeDisplayAttr(attrByte, displayAttr);
 
-    // Determine input vs protected from attribute:
-    // UNDERSCORE (0x24) and NON_DISPLAY (0x27) = input fields (text input, password)
-    // HIGH_INTENSITY (0x22), REVERSE (0x21), etc. = output/protected fields
-    const isInput = fieldDisplayAttr === ATTR.UNDERSCORE || fieldDisplayAttr === ATTR.NON_DISPLAY;
+    // Determine input vs protected from the RAW attribute byte (not SA-enhanced).
+    // Lower 3 bits: 4-6 = underscore variants (input), 7 = non-display (input).
+    // This prevents SA context from promoting a normal/protected field to input.
+    const rawType = attrByte & 0x07;
+    const isInput = rawType >= 0x04; // underscore (4,5,6) or nondisplay (7)
 
     const field: FieldDef = {
       row,
@@ -426,6 +427,7 @@ export class TN5250Parser {
       fcw1: 0,
       fcw2: 0,
       attribute: fieldDisplayAttr,
+      rawAttrByte: attrByte,
       modified: false,
     };
 
@@ -464,10 +466,12 @@ export class TN5250Parser {
     // Consume the trailing field attribute byte (always present after FFW/FCW).
     // This byte (0x20–0x3F) specifies the display attribute for the field.
     let fieldDisplayAttr = displayAttr;
+    let rawAttrByte = 0;
     if (pos < data.length) {
       const attrByte = data[pos];
       if (attrByte >= 0x20 && attrByte <= 0x3F) {
         pos++;
+        rawAttrByte = attrByte;
         fieldDisplayAttr = this.decodeDisplayAttr(attrByte, displayAttr);
       }
     }
@@ -500,6 +504,7 @@ export class TN5250Parser {
       fcw1,
       fcw2,
       attribute: fieldDisplayAttr,
+      rawAttrByte,
       modified: false,
     };
 
@@ -569,9 +574,9 @@ export class TN5250Parser {
     }
 
     // Ensure cursor is in a functional input field. Skip UIM framework
-    // artifact fields (non-underscored, non-password fields that aren't
-    // the last/command-area field — they exist in the panel header but
-    // aren't processed by the application).
+    // artifact fields whose OWN attribute byte doesn't indicate underscore
+    // or non-display (they may inherit underscore from SA context but aren't
+    // real interactive fields — they exist in the panel header).
     {
       const allInputs = fields.filter(f => this.screen.isInputField(f));
       if (allInputs.length > 0) {
@@ -580,7 +585,7 @@ export class TN5250Parser {
           allInputs[allInputs.length - 1].col,
         );
         const functional = allInputs.filter(f =>
-          this.screen.isUnderscored(f) || this.screen.isNonDisplay(f) ||
+          this.screen.hasNativeUnderscore(f) || this.screen.hasNativeNonDisplay(f) ||
           this.screen.offset(f.row, f.col) === lastPos
         );
         const targets = functional.length > 0 ? functional : allInputs;

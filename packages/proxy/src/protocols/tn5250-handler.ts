@@ -55,18 +55,18 @@ export class TN5250Handler extends ProtocolHandler {
     const normalizedKey = this.normalizeKeyName(keyName);
 
     // Tab/Backtab: local cursor movement to next/previous input field.
-    // Skip UIM framework artifact fields (non-underscored, non-password
-    // fields that precede the main input area — they're defined by the
-    // panel framework but not processed by the application).
+    // Skip UIM framework artifact fields whose OWN attribute byte doesn't
+    // indicate underscore or non-display (they may inherit underscore from
+    // SA context but aren't real interactive fields).
     if (normalizedKey === 'Tab' || normalizedKey === 'Backtab') {
       const allInputs = this.screen.fields
         .filter(f => this.screen.isInputField(f))
         .sort((a, b) => this.screen.offset(a.row, a.col) - this.screen.offset(b.row, b.col));
       if (allInputs.length === 0) return false;
-      // Keep fields that are underscored, password, or the last input field
+      // Keep fields with native underscore/non-display, or the last input field
       const lastPos = this.screen.offset(allInputs[allInputs.length - 1].row, allInputs[allInputs.length - 1].col);
       const inputFields = allInputs.filter(f =>
-        this.screen.isUnderscored(f) || this.screen.isNonDisplay(f) ||
+        this.screen.hasNativeUnderscore(f) || this.screen.hasNativeNonDisplay(f) ||
         this.screen.offset(f.row, f.col) === lastPos
       );
       if (inputFields.length === 0) return false;

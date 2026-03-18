@@ -1,6 +1,6 @@
 # Green Screen React
 
-Multi-protocol legacy terminal emulator for React. Connects to **TN5250** (IBM i / AS/400), **TN3270** (z/OS mainframe), **VT220** (OpenVMS, Unix), and **HP 6530** (NonStop) hosts.
+Legacy terminal emulator for React. Supports **TN5250** (IBM i / AS/400). TN3270, VT220, and HP 6530 are accepted as protocol parameters but have not been properly tested yet.
 
 [**Live Preview**](https://visionbridge-solutions.github.io/green-screen-react/)
 
@@ -59,7 +59,8 @@ apps/
 
 ## Features
 
-- **Multi-protocol** — TN5250, TN3270, VT220, HP 6530
+- **TN5250** — tested and supported (IBM i / AS/400)
+- **TN3270, VT220, HP 6530** — accepted as parameters but not thoroughly tested
 - **Real-time WebSocket** — instant screen updates
 - Protocol-specific colors and screen dimensions
 - Keyboard input: text, function keys (F1–F24), tab, arrows
