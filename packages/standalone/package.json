@@ -1,9 +1,9 @@
 {
-  "name": "green-screen",
+  "name": "green-screen-terminal",
   "version": "1.0.0",
   "description": "Run a standalone green-screen terminal server — shorthand for `npx green-screen-proxy --standalone`",
   "bin": {
-    "green-screen": "bin/green-screen.js"
+    "green-screen-terminal": "bin/green-screen.js"
   },
   "files": [
     "bin"

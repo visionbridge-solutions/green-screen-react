@@ -214,7 +214,7 @@ export default function App() {
       </div>
 
       <footer className="demo-footer">
-        <code className="install-cmd">npx green-screen</code>
+        <code className="install-cmd">npx green-screen-terminal</code>
         <a
           href="https://github.com/visionbridge-solutions/green-screen-react"
           className="github-link"

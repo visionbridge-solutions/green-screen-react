@@ -20,7 +20,7 @@ Opens the demo app at `http://localhost:5173/green-screen-react/` with the proxy
 Run a web-based terminal without cloning the repo:
 
 ```bash
-npx green-screen
+npx green-screen-terminal
 ```
 
 Opens a browser-based terminal on `http://localhost:3001`. Use the sign-in form to connect to any supported host.
@@ -49,9 +49,10 @@ Browsers can't open raw TCP sockets. The proxy bridges WebSocket to TCP:
 
 ```
 packages/
-  react/     → green-screen-react  (npm)   React component
-  proxy/     → green-screen-proxy  (npm)   WebSocket-to-TCP proxy
-  types/     → green-screen-types          Shared type definitions
+  react/       → green-screen-react      (npm)  React component
+  proxy/       → green-screen-proxy      (npm)  WebSocket-to-TCP proxy
+  standalone/  → green-screen-terminal   (npm)  Standalone CLI
+  types/       → green-screen-types              Shared type definitions
 apps/
   demo/      Example Vite app
   worker/    Cloudflare Worker deployment
