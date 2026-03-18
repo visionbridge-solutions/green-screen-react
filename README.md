@@ -2,7 +2,7 @@
 
 Legacy terminal emulator for React. Supports **TN5250** (IBM i / AS/400). TN3270, VT220, and HP 6530 are accepted as protocol parameters but have not been properly tested yet.
 
-[**Live Preview**](https://visionbridge-solutions.github.io/green-screen-react/)
+[![Live Preview](apps/demo/preview.gif)](https://visionbridge-solutions.github.io/green-screen-react/)
 
 ## Getting Started
 
