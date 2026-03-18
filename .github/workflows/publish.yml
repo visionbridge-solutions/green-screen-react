@@ -19,12 +19,12 @@ jobs:
       - run: npm run test -w packages/react
       - run: npm run build -w packages/react
       - run: npm run build -w packages/proxy
-      - run: npm publish -w packages/react --access public
+      - run: npm publish -w packages/react --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: npm publish -w packages/proxy --access public
+      - run: npm publish -w packages/proxy --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: npm publish -w packages/standalone --access public
+      - run: npm publish -w packages/standalone --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
