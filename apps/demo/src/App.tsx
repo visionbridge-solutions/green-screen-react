@@ -1,0 +1,229 @@
+import { useState, useEffect, useMemo } from 'react'
+import { GreenScreenTerminal, WebSocketAdapter } from 'green-screen-react'
+import type { TerminalAdapter, ConnectConfig } from 'green-screen-react'
+import { tn5250ScreenTree } from './mockScreens'
+import { MockAdapter } from './MockAdapter'
+
+// Default Worker URL — update this after deploying the Cloudflare Worker
+const DEFAULT_WORKER_URL = import.meta.env.VITE_WORKER_URL || ''
+
+const SESSION_KEY = 'green-screen-connect-config'
+
+interface SavedSession {
+  config: ConnectConfig
+  sessionId: string
+}
+
+function saveSession(config: ConnectConfig, sessionId: string) {
+  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ config, sessionId })) } catch {}
+}
+
+function loadSession(): SavedSession | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+
+function clearSession() {
+  try { sessionStorage.removeItem(SESSION_KEY) } catch {}
+}
+
+function ConnectPanel() {
+  const [connected, setConnected] = useState(false)
+  const [adapter, setAdapter] = useState<TerminalAdapter | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [connectedHost, setConnectedHost] = useState('')
+  const [restoring, setRestoring] = useState(true)
+  const [autoSignedIn, setAutoSignedIn] = useState(false)
+
+  const doConnect = async (config: ConnectConfig) => {
+    const wsAdapter = new WebSocketAdapter({ workerUrl: DEFAULT_WORKER_URL })
+    const result = await wsAdapter.connect(config)
+
+    if (result.success) {
+      setAdapter(wsAdapter)
+      setConnected(true)
+      setConnectedHost(config.host)
+      setAutoSignedIn(!!config.username && !!config.password)
+      saveSession(config, wsAdapter.sessionId!)
+    } else {
+      wsAdapter.dispose()
+      throw new Error(result.error || 'Connection failed')
+    }
+  }
+
+  // Restore session on mount — try reattaching to existing proxy session
+  // (TCP connection stays alive across page reloads). Fall back to full
+  // connect with auto-sign-in if the session is gone.
+  useEffect(() => {
+    const saved = loadSession()
+    if (!saved) { setRestoring(false); return }
+
+    const restore = async () => {
+      const wsAdapter = new WebSocketAdapter({ workerUrl: DEFAULT_WORKER_URL })
+
+      // Try reattach to existing proxy session first
+      const result = await wsAdapter.reattach(saved.sessionId)
+      if (result.success) {
+        setAdapter(wsAdapter)
+        setConnected(true)
+        setConnectedHost(saved.config.host)
+        // Update sessionId in case it changed
+        saveSession(saved.config, wsAdapter.sessionId!)
+        return
+      }
+
+      // Session gone — full connect with auto-sign-in
+      wsAdapter.dispose()
+      await doConnect(saved.config)
+    }
+
+    restore().catch(() => {
+      clearSession()
+    }).finally(() => setRestoring(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleConnect = async (config: ConnectConfig) => {
+    setError(null)
+    try {
+      await doConnect(config)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const handleDisconnect = () => {
+    if (adapter && 'disconnect' in adapter) {
+      (adapter as WebSocketAdapter).disconnect()
+    }
+    setAdapter(null)
+    setConnected(false)
+    setConnectedHost('')
+    clearSession()
+  }
+
+  if (restoring) {
+    return (
+      <div className="connect-panel" style={{ textAlign: 'center', padding: '3rem' }}>
+        <p style={{ color: '#808080', fontFamily: 'var(--gs-font, monospace)', fontSize: '13px' }}>Reconnecting...</p>
+      </div>
+    )
+  }
+
+  if (connected && adapter) {
+    return (
+      <div>
+        <div style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <span className="connect-status connected">Connected to {connectedHost}</span>
+          <button className="disconnect-btn" onClick={handleDisconnect}>Disconnect</button>
+        </div>
+        <div className="terminal-wrapper">
+          <GreenScreenTerminal
+            adapter={adapter}
+            protocol="tn5250"
+            inlineSignIn={false}
+            pollInterval={500}
+            autoSignedIn={autoSignedIn}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="connect-panel">
+      <div className="connect-info">
+        <h3>Connect to your system</h3>
+        <p>
+          Enter your host details to connect directly from this page.
+          The connection is proxied through the local proxy server or a Cloudflare Worker.
+        </p>
+        <div className="connect-note">
+          Your credentials are sent directly to the target host and are not stored.
+        </div>
+      </div>
+
+      <div className="connect-form">
+        {error && <div className="connect-error">{error}</div>}
+
+        <div className="terminal-wrapper" style={{ minHeight: 'auto' }}>
+          <GreenScreenTerminal
+            protocol="tn5250"
+            inlineSignIn={true}
+            defaultProtocol="tn5250"
+            pollInterval={0}
+            readOnly={true}
+            showHeader={false}
+            bootLoader={false}
+            typingAnimation={false}
+            onSignIn={handleConnect}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default function App() {
+  const [selected, setSelected] = useState<'connect' | 'mock'>('connect')
+
+  // Create interactive TN5250 mock adapter with screen tree
+  const mockAdapter = useMemo(() => new MockAdapter(tn5250ScreenTree, 'main'), [])
+
+  return (
+    <div className="demo-page">
+      <header className="demo-header">
+        <h1 className="demo-title">green-screen-react</h1>
+        <p className="demo-subtitle">Multi-protocol legacy terminal emulator for React</p>
+      </header>
+
+      <nav className="protocol-tabs">
+        <button
+          className={`protocol-tab connect-tab ${selected === 'connect' ? 'active' : ''}`}
+          onClick={() => setSelected('connect')}
+        >
+          Connect
+        </button>
+        <button
+          className={`protocol-tab ${selected === 'mock' ? 'active' : ''}`}
+          onClick={() => setSelected('mock')}
+        >
+          TN5250 Mock Preview
+        </button>
+      </nav>
+
+      <div className="demo-hint" style={{ visibility: selected === 'mock' ? 'visible' : 'hidden', height: selected === 'mock' ? undefined : 0, margin: selected === 'mock' ? undefined : 0, overflow: 'hidden' }}>
+          Click the terminal and start typing — this is a live interactive demo
+      </div>
+
+      <div className="terminal-wrapper" style={{ display: selected === 'mock' ? undefined : 'none' }}>
+        <GreenScreenTerminal
+          key="mock"
+          adapter={mockAdapter}
+          protocol="tn5250"
+          connectionStatus={{ connected: true, status: 'authenticated' }}
+          inlineSignIn={false}
+          pollInterval={500}
+          typingAnimation={false}
+        />
+      </div>
+      <div className="terminal-wrapper" style={{ display: selected === 'connect' ? undefined : 'none' }}>
+        <ConnectPanel />
+      </div>
+
+      <footer className="demo-footer">
+        <code className="install-cmd">npx green-screen</code>
+        <a
+          href="https://github.com/visionbridge-solutions/green-screen-react"
+          className="github-link"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          GitHub &rarr;
+        </a>
+      </footer>
+    </div>
+  )
+}

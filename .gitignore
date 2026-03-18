@@ -3,6 +3,8 @@ dist/
 *.tsbuildinfo
 .DS_Store
 .claude/
-example/.env
-example/.env.local
+apps/demo/.env
+apps/demo/.env.local
+apps/demo/e2e/screenshots/
 .wrangler/
+test-results/

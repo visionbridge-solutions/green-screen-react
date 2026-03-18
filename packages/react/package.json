@@ -1,0 +1,80 @@
+{
+  "name": "green-screen-react",
+  "version": "0.4.0",
+  "description": "Multi-protocol legacy terminal React component (TN5250, TN3270, VT, HP 6530)",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup && cp src/styles/terminal.css dist/styles.css",
+    "dev:lib": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "dependencies": {
+    "green-screen-types": "*"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "jsdom": "^25.0.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.8"
+  },
+  "keywords": [
+    "terminal",
+    "emulator",
+    "green-screen",
+    "tn5250",
+    "tn3270",
+    "ibm-i",
+    "as400",
+    "iseries",
+    "mainframe",
+    "zos",
+    "3270",
+    "5250",
+    "vt220",
+    "hp6530",
+    "react",
+    "component"
+  ],
+  "author": "VisionBridge Solutions",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/visionbridge-solutions/green-screen-react.git",
+    "directory": "packages/react"
+  },
+  "homepage": "https://github.com/visionbridge-solutions/green-screen-react#readme",
+  "bugs": {
+    "url": "https://github.com/visionbridge-solutions/green-screen-react/issues"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "name": "green-screen-proxy",
+  "version": "0.4.0",
+  "description": "WebSocket/REST proxy server for green-screen-react — connects browsers to TN5250, TN3270, VT220, and HP 6530 hosts over TCP",
+  "type": "module",
+  "bin": {
+    "green-screen-proxy": "dist/cli.js",
+    "green-screen": "dist/standalone.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "serve": "node --watch --import tsx/esm src/server.ts",
+    "build": "tsc && mkdir -p dist/worker && cp ../../apps/worker/dist/index.js dist/worker/index.js",
+    "build:standalone": "tsc && cd ../../apps/demo && VITE_BASE_URL=/ npx vite build --outDir ../../packages/proxy/dist/ui",
+    "start": "node dist/server.js",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "terminal",
+    "proxy",
+    "tn5250",
+    "tn3270",
+    "vt220",
+    "hp6530",
+    "ibm-i",
+    "as400",
+    "mainframe",
+    "green-screen",
+    "telnet",
+    "websocket"
+  ],
+  "author": "VisionBridge Solutions",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/visionbridge-solutions/green-screen-react.git",
+    "directory": "packages/proxy"
+  },
+  "homepage": "https://github.com/visionbridge-solutions/green-screen-react#proxy-setup",
+  "bugs": {
+    "url": "https://github.com/visionbridge-solutions/green-screen-react/issues"
+  },
+  "dependencies": {
+    "green-screen-types": "*",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
