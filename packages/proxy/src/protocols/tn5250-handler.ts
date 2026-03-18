@@ -219,6 +219,55 @@ export class TN5250Handler extends ProtocolHandler {
     return true;
   }
 
+  /**
+   * Full auto-sign-in flow: wait for sign-in fields, fill credentials,
+   * submit, wait for confirmation screen, and restore field values.
+   * Returns the final screen data, or null if sign-in fields weren't found.
+   */
+  async performAutoSignIn(username: string, password: string): Promise<ScreenData | null> {
+    await this.waitForScreenWithFields(2, 5000);
+    const ok = this.autoSignIn(username, password);
+    if (!ok) return null;
+    await this.waitForScreen(10000);
+    this.restoreFields();
+    return this.getScreenData();
+  }
+
+  /** Wait for the next screenChange event (or timeout with current screen). */
+  private waitForScreen(timeoutMs: number): Promise<ScreenData> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(this.getScreenData()), timeoutMs);
+      this.once('screenChange', (data: ScreenData) => {
+        clearTimeout(timer);
+        resolve(data);
+      });
+    });
+  }
+
+  /** Wait until the screen has at least `minFields` input fields, or timeout. */
+  private waitForScreenWithFields(minFields: number, timeoutMs: number): Promise<ScreenData> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(this.getScreenData()), timeoutMs);
+      const check = (data: ScreenData) => {
+        const inputFields = (data.fields || []).filter((f: any) => f.is_input);
+        if (inputFields.length >= minFields) {
+          clearTimeout(timer);
+          this.removeListener('screenChange', check);
+          resolve(data);
+        }
+      };
+      // Check current state first
+      const current = this.getScreenData();
+      const currentInputs = (current.fields || []).filter((f: any) => f.is_input);
+      if (currentInputs.length >= minFields) {
+        clearTimeout(timer);
+        resolve(current);
+        return;
+      }
+      this.on('screenChange', check);
+    });
+  }
+
   sendRaw(data: Buffer): void {
     this.connection.sendRaw(data);
   }

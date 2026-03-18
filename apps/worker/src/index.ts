@@ -23,7 +23,8 @@
  *     { type: "connected", sessionId: string }
  */
 
-import { createProtocolHandler, ProtocolHandler, ProtocolType } from 'green-screen-proxy/dist/protocols/index.js'
+import { SessionController } from 'green-screen-proxy/dist/controller.js'
+import type { ProtocolType } from 'green-screen-proxy/dist/protocols/index.js'
 
 interface Env {
   TERMINAL_SESSION: DurableObjectNamespace
@@ -181,8 +182,7 @@ export default {
 export class TerminalSession {
   private state: DurableObjectState
   private ws: WebSocket | null = null
-  private handler: ProtocolHandler | null = null
-  private connected: boolean = false
+  private controller: SessionController | null = null
   private clientIp: string = 'unknown'
   private idleTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -194,7 +194,6 @@ export class TerminalSession {
     const url = new URL(request.url)
     this.clientIp = url.searchParams.get('clientIp') || 'unknown'
 
-    // Accept WebSocket
     const pair = new WebSocketPair()
     const [client, server] = [pair[0], pair[1]]
 
@@ -202,10 +201,7 @@ export class TerminalSession {
     this.ws = server
     this.resetIdleTimer()
 
-    return new Response(null, {
-      status: 101,
-      webSocket: client,
-    })
+    return new Response(null, { status: 101, webSocket: client })
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -216,17 +212,38 @@ export class TerminalSession {
       const msg = JSON.parse(message)
 
       switch (msg.type) {
-        case 'connect':
-          await this.handleConnect(msg)
+        case 'connect': {
+          const host = msg.host
+          // Basic host validation — block private/internal ranges
+          if (IS_DEMO && this.isPrivateHost(host)) {
+            this.send({ type: 'error', message: 'Cannot connect to private/internal addresses' })
+            return
+          }
+
+          this.controller = new SessionController((m) => {
+            this.resetIdleTimer()
+            this.send(m)
+          })
+
+          await this.controller.handleConnect({
+            host,
+            port: msg.port,
+            protocol: (msg.protocol || 'tn5250') as ProtocolType,
+            username: msg.username,
+            password: msg.password,
+            sessionId: this.state.id.toString(),
+          })
           break
+        }
         case 'text':
-          this.handleSendText(msg.text)
+          this.controller?.handleText(msg.text)
           break
         case 'key':
-          this.handleSendKey(msg.key)
+          await this.controller?.handleKey(msg.key)
           break
         case 'disconnect':
-          this.handleDisconnect()
+          this.controller?.handleDisconnect()
+          this.controller = null
           break
       }
     } catch (err) {
@@ -234,175 +251,48 @@ export class TerminalSession {
     }
   }
 
-  async webSocketClose(ws: WebSocket): Promise<void> {
-    this.cleanup()
-  }
-
-  async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
-    this.cleanup()
-  }
-
-  private async handleConnect(msg: { host: string; port?: number; protocol?: string }): Promise<void> {
-    // Clean up existing connection
-    if (this.handler) {
-      this.handler.destroy()
-      this.handler = null
-    }
-
-    const protocol = (msg.protocol || 'tn5250') as ProtocolType
-    const port = msg.port || this.defaultPort(protocol)
-    const host = msg.host
-
-    // Basic host validation — block private/internal ranges
-    if (IS_DEMO && this.isPrivateHost(host)) {
-      this.send({ type: 'error', message: 'Cannot connect to private/internal addresses' })
-      return
-    }
-
-    this.send({ type: 'status', data: { connected: false, status: 'connecting', protocol, host } })
-
-    try {
-      this.handler = createProtocolHandler(protocol)
-
-      // Listen for screen changes
-      this.handler.on('screenChange', (screenData: any) => {
-        this.resetIdleTimer()
-        this.send({ type: 'screen', data: screenData })
-      })
-
-      this.handler.on('disconnected', () => {
-        this.connected = false
-        this.send({ type: 'status', data: { connected: false, status: 'disconnected', protocol, host } })
-      })
-
-      this.handler.on('error', (err: Error) => {
-        this.send({ type: 'error', message: err.message })
-        this.send({ type: 'status', data: { connected: false, status: 'error', protocol, host, error: err.message } })
-      })
-
-      await this.handler.connect(host, port)
-      this.connected = true
-
-      this.send({ type: 'status', data: { connected: true, status: 'connected', protocol, host } })
-
-      // Wait for initial screen data via event (with timeout fallback)
-      const initialScreen = await this.waitForScreen(5000)
-      this.send({ type: 'screen', data: initialScreen })
-      this.send({ type: 'connected', sessionId: this.state.id.toString() })
-
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      this.send({ type: 'error', message })
-      this.send({ type: 'status', data: { connected: false, status: 'error', protocol, host, error: message } })
-    }
-  }
-
-  private handleSendText(text: string): void {
-    if (!this.handler || !this.connected) {
-      this.send({ type: 'error', message: 'Not connected' })
-      return
-    }
-
-    this.handler.sendText(text)
-    const screenData = this.handler.getScreenData()
-    this.send({ type: 'screen', data: screenData })
-  }
-
-  private async handleSendKey(key: string): Promise<void> {
-    if (!this.handler || !this.connected) {
-      this.send({ type: 'error', message: 'Not connected' })
-      return
-    }
-
-    const ok = this.handler.sendKey(key)
-    if (!ok) {
-      this.send({ type: 'error', message: `Unknown key: ${key}` })
-      return
-    }
-
-    const screenData = await this.waitForScreen(3000)
-    this.send({ type: 'screen', data: screenData })
-  }
-
-  private waitForScreen(timeoutMs: number): Promise<any> {
-    return new Promise((resolve) => {
-      if (!this.handler) { resolve(null); return }
-      const timer = setTimeout(() => resolve(this.handler!.getScreenData()), timeoutMs)
-      this.handler.once('screenChange', (data: any) => {
-        clearTimeout(timer)
-        resolve(data)
-      })
-    })
-  }
-
-  private handleDisconnect(): void {
-    if (this.handler) {
-      this.handler.destroy()
-      this.handler = null
-    }
-    this.connected = false
-  }
+  async webSocketClose(ws: WebSocket): Promise<void> { this.cleanup() }
+  async webSocketError(ws: WebSocket, error: unknown): Promise<void> { this.cleanup() }
 
   private cleanup(): void {
-    this.handleDisconnect()
+    this.controller?.handleDisconnect()
+    this.controller = null
     this.clearIdleTimer()
     trackDisconnect(this.clientIp)
   }
 
   private resetIdleTimer(): void {
     this.clearIdleTimer()
-    if (!SESSION_IDLE_TIMEOUT_MS) return // disabled for user-deployed workers
+    if (!SESSION_IDLE_TIMEOUT_MS) return
     this.idleTimer = setTimeout(() => {
       this.send({ type: 'error', message: 'Session timed out due to inactivity' })
       this.send({ type: 'status', data: { connected: false, status: 'disconnected' } })
-      this.handleDisconnect()
+      this.controller?.handleDisconnect()
+      this.controller = null
       try { this.ws?.close(1000, 'Idle timeout') } catch {}
     }, SESSION_IDLE_TIMEOUT_MS)
   }
 
   private clearIdleTimer(): void {
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer)
-      this.idleTimer = null
-    }
+    if (this.idleTimer) { clearTimeout(this.idleTimer); this.idleTimer = null }
   }
 
   private send(data: object): void {
-    try {
-      this.ws?.send(JSON.stringify(data))
-    } catch {
-      // WebSocket may be closed
-    }
-  }
-
-  private defaultPort(protocol: string): number {
-    switch (protocol) {
-      case 'tn5250': return 23
-      case 'tn3270': return 23
-      case 'vt': return 23
-      case 'hp6530': return 26
-      default: return 23
-    }
+    try { this.ws?.send(JSON.stringify(data)) } catch {}
   }
 
   private isPrivateHost(host: string): boolean {
-    // Block localhost
     if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true
-
-    // Block private IPv4 ranges
     const parts = host.split('.').map(Number)
     if (parts.length === 4 && parts.every(n => !isNaN(n))) {
       if (parts[0] === 10) return true
       if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true
       if (parts[0] === 192 && parts[1] === 168) return true
-      if (parts[0] === 169 && parts[1] === 254) return true // link-local
+      if (parts[0] === 169 && parts[1] === 254) return true
       if (parts[0] === 0) return true
     }
-
-    // Block common internal hostnames
     const lower = host.toLowerCase()
     if (lower.endsWith('.local') || lower.endsWith('.internal')) return true
-
     return false
   }
 }

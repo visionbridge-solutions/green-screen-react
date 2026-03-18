@@ -6,8 +6,6 @@ import {
   getDefaultSession,
   destroySession,
 } from './session.js';
-import { bindSessionToWebSocket } from './websocket.js';
-
 const router = Router();
 
 /** Resolve session from header, query param, or default */
@@ -32,7 +30,6 @@ router.post('/connect', async (req: Request, res: Response) => {
     // Store session ID in response header
     res.setHeader('X-Session-Id', session.id);
 
-    bindSessionToWebSocket(session);
     await session.connect(host, port);
 
     // Wait briefly for initial screen data

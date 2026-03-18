@@ -412,11 +412,9 @@ export class TN5250Parser {
     // Map attribute byte to display characteristic, falling back to SA context.
     const fieldDisplayAttr = this.decodeDisplayAttr(attrByte, displayAttr);
 
-    // Determine input vs protected from the RAW attribute byte (not SA-enhanced).
-    // Lower 3 bits: 4-6 = underscore variants (input), 7 = non-display (input).
-    // This prevents SA context from promoting a normal/protected field to input.
-    const rawType = attrByte & 0x07;
-    const isInput = rawType >= 0x04; // underscore (4,5,6) or nondisplay (7)
+    // Determine input vs protected from the SA-decoded display attribute.
+    // UNDERSCORE and NON_DISPLAY = input fields; everything else = protected.
+    const isInput = fieldDisplayAttr === ATTR.UNDERSCORE || fieldDisplayAttr === ATTR.NON_DISPLAY;
 
     const field: FieldDef = {
       row,
