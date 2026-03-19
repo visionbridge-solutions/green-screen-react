@@ -813,11 +813,11 @@ export class TN5250Parser {
     }
 
     // Cursor homing per lib5250 display.c:614-635 (set_cursor_home):
-    //   1. If IC was received AND cursor is inside a field — trust it.
-    //   2. If IC placed cursor outside all fields (e.g. on an attribute byte),
-    //      nudge to the first input field so the user can interact.
-    //   3. If no IC, move to first non-bypass (input) field.
-    //   4. Else, leave cursor where it is.
+    //   1. If cursor is inside a field (input or protected) — trust it.
+    //   2. If cursor is outside all fields, nudge to the first functional
+    //      input field (with native underscore). This avoids landing on
+    //      UIM NON_DISPLAY artifact fields that aren't interactive.
+    //   3. If no functional fields exist, leave cursor where IC put it.
     {
       const cursorAddr = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
       const cursorInField = fields.some(f => {
@@ -825,11 +825,15 @@ export class TN5250Parser {
         return cursorAddr >= start && cursorAddr < start + f.length;
       });
       if (!cursorInField) {
-        const firstInput = fields.find(f => this.screen.isInputField(f));
-        if (firstInput) {
-          this.screen.cursorRow = firstInput.row;
-          this.screen.cursorCol = firstInput.col;
+        const functional = fields.find(f =>
+          this.screen.isInputField(f) && this.screen.hasNativeUnderscore(f)
+        );
+        if (functional) {
+          this.screen.cursorRow = functional.row;
+          this.screen.cursorCol = functional.col;
         }
+        // If no functional fields, leave cursor at IC position — the screen
+        // may not have interactive input (e.g. DSPMSG with only F-key actions)
       }
     }
 
