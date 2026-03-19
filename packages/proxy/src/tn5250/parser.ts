@@ -717,31 +717,15 @@ export class TN5250Parser {
       if (current.length <= 0) current.length = 1;
     }
 
-    // If the host explicitly set the cursor via IC, trust it — don't override.
-    // Only reposition when no IC was received (fallback for screens without IC).
+    // Cursor homing per lib5250 display.c:614-635 (set_cursor_home):
+    //   1. If IC was received, cursor is already set — don't override.
+    //   2. Else, move cursor to the first non-bypass (input) field.
+    //   3. Else, leave cursor at (0,0).
     if (!this.icApplied) {
-      const allInputs = fields.filter(f => this.screen.isInputField(f));
-      if (allInputs.length > 0) {
-        const lastPos = this.screen.offset(
-          allInputs[allInputs.length - 1].row,
-          allInputs[allInputs.length - 1].col,
-        );
-        const functional = allInputs.filter(f =>
-          this.screen.hasNativeUnderscore(f) || this.screen.hasNativeNonDisplay(f) ||
-          this.screen.offset(f.row, f.col) === lastPos
-        );
-        const targets = functional.length > 0 ? functional : allInputs;
-        const cursorAddr = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
-        const inTarget = targets.some(f => {
-          const start = this.screen.offset(f.row, f.col);
-          return cursorAddr >= start && cursorAddr < start + f.length;
-        });
-        if (!inTarget) {
-          const after = targets.find(f => this.screen.offset(f.row, f.col) >= cursorAddr);
-          const target = after || targets[targets.length - 1];
-          this.screen.cursorRow = target.row;
-          this.screen.cursorCol = target.col;
-        }
+      const firstInput = fields.find(f => this.screen.isInputField(f));
+      if (firstInput) {
+        this.screen.cursorRow = firstInput.row;
+        this.screen.cursorCol = firstInput.col;
       }
     }
 
