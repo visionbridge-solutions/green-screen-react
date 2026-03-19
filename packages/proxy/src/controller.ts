@@ -29,6 +29,7 @@ export class SessionController {
     username?: string;
     password?: string;
     sessionId: string;
+    terminalType?: string;
   }): Promise<ProtocolHandler> {
     if (this.handler) {
       this.handler.destroy();
@@ -36,7 +37,7 @@ export class SessionController {
       this.connected = false;
     }
 
-    const { host, port = 23, protocol = 'tn5250', username, password, sessionId } = opts;
+    const { host, port = 23, protocol = 'tn5250', username, password, sessionId, terminalType } = opts;
 
     this.handler = createProtocolHandler(protocol);
     this.send({ type: 'status', data: { connected: false, status: 'connecting', protocol, host } });
@@ -54,7 +55,7 @@ export class SessionController {
       this.send({ type: 'status', data: { connected: false, status: 'error', protocol, host, error: err.message } });
     });
 
-    await this.handler.connect(host, port);
+    await this.handler.connect(host, port, terminalType ? { terminalType } : undefined);
     this.connected = true;
     this.send({ type: 'status', data: { connected: true, status: 'connected', protocol, host } });
 

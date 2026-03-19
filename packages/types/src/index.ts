@@ -88,4 +88,6 @@ export interface ConnectConfig {
   username?: string;
   /** Password for authentication (optional — skips autoSignIn if empty) */
   password?: string;
+  /** Terminal type for negotiation (e.g. 'IBM-3179-2', 'IBM-3477-FC') */
+  terminalType?: string;
 }

@@ -4,6 +4,7 @@ import { TN5250Connection } from '../tn5250/connection.js';
 import { ScreenBuffer, FieldDef } from '../tn5250/screen.js';
 import { TN5250Parser } from '../tn5250/parser.js';
 import { TN5250Encoder } from '../tn5250/encoder.js';
+import { TERMINAL_TYPE, TERMINAL_TYPE_WIDE, TERMINAL_DIMENSIONS } from '../tn5250/constants.js';
 
 /**
  * TN5250 protocol handler — implements the ProtocolHandler interface
@@ -33,8 +34,20 @@ export class TN5250Handler extends ProtocolHandler {
     return this.connection.isConnected;
   }
 
-  async connect(host: string, port: number, _options?: ProtocolOptions): Promise<void> {
-    await this.connection.connect(host, port);
+  async connect(host: string, port: number, options?: ProtocolOptions): Promise<void> {
+    // Resolve terminal type from options
+    let termType = options?.terminalType || TERMINAL_TYPE;
+    if (!options?.terminalType && options?.cols && options.cols > 80) {
+      termType = TERMINAL_TYPE_WIDE;
+    }
+
+    // Resize screen buffer if dimensions differ from default
+    const dims = TERMINAL_DIMENSIONS[termType] || TERMINAL_DIMENSIONS[TERMINAL_TYPE];
+    if (dims.rows !== this.screen.rows || dims.cols !== this.screen.cols) {
+      this.screen.resize(dims.rows, dims.cols);
+    }
+
+    await this.connection.connect(host, port, termType);
   }
 
   disconnect(): void {

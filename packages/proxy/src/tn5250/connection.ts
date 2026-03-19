@@ -1,6 +1,6 @@
 import * as net from 'net';
 import { EventEmitter } from 'events';
-import { TELNET, TERMINAL_TYPE } from './constants.js';
+import { TELNET, TERMINAL_TYPE as DEFAULT_TERMINAL_TYPE } from './constants.js';
 
 export interface ConnectionEvents {
   connected: () => void;
@@ -20,6 +20,7 @@ export class TN5250Connection extends EventEmitter {
   private connected: boolean = false;
   private recvBuffer: Buffer = Buffer.alloc(0);
   private negotiationDone: boolean = false;
+  private terminalType: string = DEFAULT_TERMINAL_TYPE;
 
   get isConnected(): boolean {
     return this.connected;
@@ -33,7 +34,7 @@ export class TN5250Connection extends EventEmitter {
     return this.port;
   }
 
-  connect(host: string, port: number): Promise<void> {
+  connect(host: string, port: number, terminalType?: string): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.socket) {
         this.disconnect();
@@ -43,6 +44,7 @@ export class TN5250Connection extends EventEmitter {
       this.port = port;
       this.recvBuffer = Buffer.alloc(0);
       this.negotiationDone = false;
+      this.terminalType = terminalType || DEFAULT_TERMINAL_TYPE;
 
       this.socket = new net.Socket();
       this.socket.setTimeout(30000);
@@ -259,7 +261,7 @@ export class TN5250Connection extends EventEmitter {
   }
 
   private sendTerminalType(): void {
-    const typeStr = TERMINAL_TYPE;
+    const typeStr = this.terminalType;
     const buf = Buffer.alloc(4 + typeStr.length + 2);
     let i = 0;
     buf[i++] = TELNET.IAC;

@@ -116,6 +116,7 @@ export class WebSocketAdapter implements TerminalAdapter {
         protocol: config.protocol,
         username: config.username,
         password: config.password,
+        terminalType: config.terminalType,
       });
     });
   }

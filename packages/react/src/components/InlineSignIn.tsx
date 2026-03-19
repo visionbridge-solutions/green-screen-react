@@ -9,6 +9,20 @@ const PROTOCOL_OPTIONS: { value: TerminalProtocol; label: string }[] = [
   { value: 'hp6530', label: 'HP 6530 (NonStop)' },
 ];
 
+/** Terminal type options per protocol (only protocols with >1 option need a dropdown) */
+const TERMINAL_TYPE_OPTIONS: Partial<Record<TerminalProtocol, { value: string; label: string }[]>> = {
+  tn5250: [
+    { value: 'IBM-3179-2', label: '24 × 80 (Standard)' },
+    { value: 'IBM-3477-FC', label: '27 × 132 (Wide)' },
+  ],
+  tn3270: [
+    { value: 'IBM-3278-2', label: '24 × 80 (Model 2)' },
+    { value: 'IBM-3278-3', label: '32 × 80 (Model 3)' },
+    { value: 'IBM-3278-4', label: '43 × 80 (Model 4)' },
+    { value: 'IBM-3278-5', label: '27 × 132 (Model 5)' },
+  ],
+};
+
 export interface InlineSignInProps {
   defaultProtocol: TerminalProtocol;
   loading: boolean;
@@ -20,8 +34,11 @@ export function InlineSignIn({ defaultProtocol, loading: externalLoading, error,
   const [host, setHost] = useState('');
   const [port, setPort] = useState('');
   const [selectedProtocol, setSelectedProtocol] = useState<TerminalProtocol>(defaultProtocol);
+  const [terminalType, setTerminalType] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+
+  const termTypeOptions = TERMINAL_TYPE_OPTIONS[selectedProtocol];
   const [submitted, setSubmitted] = useState(false);
 
   const loading = externalLoading || submitted;
@@ -35,6 +52,7 @@ export function InlineSignIn({ defaultProtocol, loading: externalLoading, error,
       protocol: selectedProtocol,
       ...(username.trim() ? { username: username.trim() } : {}),
       ...(password ? { password } : {}),
+      ...(terminalType ? { terminalType } : {}),
     });
   };
 
@@ -91,10 +109,19 @@ export function InlineSignIn({ defaultProtocol, loading: externalLoading, error,
 
       <div>
         <label style={labelStyle}>Protocol <span style={{ color: '#ef4444' }}>*</span></label>
-        <select style={{ ...inputStyle, appearance: 'none' }} value={selectedProtocol} onChange={e => setSelectedProtocol(e.target.value as TerminalProtocol)}>
+        <select style={{ ...inputStyle, appearance: 'none' }} value={selectedProtocol} onChange={e => { setSelectedProtocol(e.target.value as TerminalProtocol); setTerminalType(''); }}>
           {PROTOCOL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>
+
+      {termTypeOptions && termTypeOptions.length > 1 && (
+        <div>
+          <label style={labelStyle}>Screen Size</label>
+          <select style={{ ...inputStyle, appearance: 'none' }} value={terminalType || termTypeOptions[0].value} onChange={e => setTerminalType(e.target.value)}>
+            {termTypeOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+      )}
 
       <div>
         <label style={labelStyle}>Username</label>

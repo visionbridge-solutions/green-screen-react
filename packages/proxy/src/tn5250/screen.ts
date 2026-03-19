@@ -37,6 +37,18 @@ export class ScreenBuffer {
     return this.rows * this.cols;
   }
 
+  /** Resize the screen buffer, clearing all content and fields. */
+  resize(rows: number, cols: number): void {
+    this.rows = rows;
+    this.cols = cols;
+    const size = rows * cols;
+    this.buffer = new Array(size).fill(' ');
+    this.attrBuffer = new Array(size).fill(0x20);
+    this.fields = [];
+    this.cursorRow = 0;
+    this.cursorCol = 0;
+  }
+
   /** Convert row,col to linear offset */
   offset(row: number, col: number): number {
     return row * this.cols + col;

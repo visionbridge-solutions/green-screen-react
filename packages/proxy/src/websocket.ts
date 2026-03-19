@@ -79,7 +79,7 @@ export function setupWebSocket(server: HttpServer): WebSocketServer {
 async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promise<void> {
   switch (msg.type) {
     case 'connect': {
-      const { host = 'pub400.com', port = 23, protocol = 'tn5250', username, password } = msg;
+      const { host = 'pub400.com', port = 23, protocol = 'tn5250', username, password, terminalType } = msg;
 
       const controller = new SessionController((m) => {
         wsSend(ws, m);
@@ -109,6 +109,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
           username,
           password,
           sessionId,
+          terminalType,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

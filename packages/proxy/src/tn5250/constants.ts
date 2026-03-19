@@ -168,3 +168,9 @@ export const SCREEN = {
 // Terminal type strings for negotiation
 export const TERMINAL_TYPE = 'IBM-3179-2';
 export const TERMINAL_TYPE_WIDE = 'IBM-3477-FC';
+
+// Terminal type → screen dimensions lookup
+export const TERMINAL_DIMENSIONS: Record<string, { rows: number; cols: number }> = {
+  [TERMINAL_TYPE]: { rows: SCREEN.ROWS_24, cols: SCREEN.COLS_80 },
+  [TERMINAL_TYPE_WIDE]: { rows: SCREEN.ROWS_27, cols: SCREEN.COLS_132 },
+};
