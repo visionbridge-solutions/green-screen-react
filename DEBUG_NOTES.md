@@ -144,19 +144,13 @@ State that is read or written by more than one module:
 
 ## Suspicious Code Patterns
 
-### [LIKELY BUG] SBA/IC/MC/RA/EA Address Interpretation — 0-based vs 1-based
+### [FIXED] SBA/IC/MC/RA/EA Address Interpretation — 0-based vs 1-based
 
-**File:** parser.ts:249-252, 270-271, 283-285, 298-299
+**RESOLVED in commit 7575662.** All SBA/IC/MC/RA/EA now subtract 1 from host addresses (1-based→0-based). Encoder adds 1 when sending responses. Verified against live pub400.com — all screen positions correct.
 
-The parser treats SBA/IC/MC/RA/EA row/col bytes as **0-based** (uses them directly). The lib5250 reference implementation treats them as **1-based** and subtracts 1 (`Y-1`, `X-1`). If the IBM i host sends 1-based addresses (per the 5250 spec), every positioned operation will be off by one row and one column.
+### [FIXED] RA/EA Orders Do Not Wrap
 
-**However**, this may already be working correctly if the host actually sends 0-based values — some implementations vary. Need to verify by capturing raw bytes and comparing with expected screen positions.
-
-### [LIKELY BUG] RA/EA Orders Do Not Wrap
-
-**File:** parser.ts:287, 300
-
-`while (currentAddr < targetAddr)` — if the target address is before the current address (wrapping around the screen), the loop body never executes. The lib5250 implementation uses `tn5250_dbuffer_right()` which wraps: `cx %= w; cy %= h`. This means RA/EA in our implementation silently fail for any wrap-around case.
+**RESOLVED in commit 7575662.** RA/EA now handle wrap-around: when target < current, fill to end of screen then continue from 0.
 
 ### [SUSPICIOUS] ROLL Command Stub
 
@@ -204,23 +198,17 @@ Bit 0x08 is mapped to HIGH_INTENSITY, but in the lib5250 reference, attribute by
 
 WSF content (windows, help panels, GUI elements) is completely ignored. Any screen using 5250 structured fields will have missing content.
 
-### [SUSPICIOUS] IC Immediate vs Deferred
+### [FIXED] IC Immediate vs Deferred
 
-**File:** parser.ts:257-262
+**RESOLVED in commit 7575662.** IC now reads 2 bytes (row, col) from stream and stores as pending position. Applied at end of `parseOrders()`. Last IC wins.
 
-IC sets the cursor immediately. In lib5250, IC stores a "pending insert" position that is applied AFTER WTD processing completes. If multiple IC orders appear in one WTD, our implementation would use the first one's position during subsequent order processing, while lib5250 would use the last one's position at the end.
+### [FIXED] SOH Doesn't Clear Format Table
 
-### [SUSPICIOUS] SOH Doesn't Clear Format Table
+**RESOLVED in commit 7575662.** SOH now clears `screen.fields` and resets pending IC.
 
-**File:** parser.ts:308-316
+### [FIXED] EA Missing Attribute Type Parameter
 
-SOH skips header bytes but doesn't clear the field format table or lock the keyboard, both of which lib5250 does. This could result in stale fields persisting across screen transitions.
-
-### [SUSPICIOUS] EA Missing Attribute Type Parameter
-
-**File:** parser.ts:294-305
-
-Our EA implementation reads only 2 bytes (toRow, toCol) but the lib5250 EA reads a length byte + attribute type bytes after the address. Our implementation may be consuming attribute bytes as subsequent orders.
+**RESOLVED in commit 7575662.** EA now reads length byte and consumes attribute type bytes per lib5250 spec.
 
 ## Reference Implementation Comparison (lib5250)
 
