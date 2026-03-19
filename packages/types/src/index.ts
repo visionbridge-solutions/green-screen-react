@@ -59,6 +59,12 @@ export interface ScreenData {
   screen_signature: string;
   /** ISO timestamp of when this screen was captured */
   timestamp: string;
+  /** Whether the keyboard is locked by the host (X SYSTEM indicator) */
+  keyboard_locked?: boolean;
+  /** Whether the message waiting indicator is set */
+  message_waiting?: boolean;
+  /** Whether the host requested an audible alarm (beep) */
+  alarm?: boolean;
 }
 
 /**

@@ -24,6 +24,12 @@ export class ScreenBuffer {
   fields: FieldDef[] = [];
   cursorRow: number = 0;
   cursorCol: number = 0;
+  /** Keyboard locked by host (X SYSTEM indicator) */
+  keyboardLocked: boolean = false;
+  /** Message waiting indicator */
+  messageWaiting: boolean = false;
+  /** Pending alarm/beep from CC2 */
+  pendingAlarm: boolean = false;
 
   constructor(rows = SCREEN.ROWS_24, cols = SCREEN.COLS_80) {
     this.rows = rows;
@@ -232,6 +238,9 @@ export class ScreenBuffer {
     }>;
     screen_signature: string;
     timestamp: string;
+    keyboard_locked?: boolean;
+    message_waiting?: boolean;
+    alarm?: boolean;
   } {
     // Build content as newline-separated rows, sanitising control characters
     const lines: string[] = [];
@@ -267,6 +276,10 @@ export class ScreenBuffer {
     // Generate screen signature
     const hash = createHash('md5').update(content).digest('hex').substring(0, 12);
 
+    // Consume pending alarm (one-shot)
+    const alarm = this.pendingAlarm;
+    this.pendingAlarm = false;
+
     return {
       content,
       cursor_row: this.cursorRow,
@@ -276,6 +289,9 @@ export class ScreenBuffer {
       fields,
       screen_signature: hash,
       timestamp: new Date().toISOString(),
+      keyboard_locked: this.keyboardLocked || undefined,
+      message_waiting: this.messageWaiting || undefined,
+      alarm: alarm || undefined,
     };
   }
 }

@@ -165,8 +165,14 @@ export class TN5250Parser {
             let nullNonBypassMdt = false;
             let nullNonBypass = false;
 
+            // CC1: lock keyboard for all values except 0x00
+            // Per lib5250 session.c:853-858
+            if ((cc1 & 0xE0) !== 0x00) {
+              this.screen.keyboardLocked = true;
+            }
+
             switch (cc1 & 0xE0) {
-              case 0x00: break; // no action (unlock keyboard only)
+              case 0x00: break; // no action (don't lock keyboard)
               case 0x20: break; // reserved / no action in lib5250
               case 0x40: resetNonBypassMdt = true; break;
               case 0x60: resetAllMdt = true; break;
@@ -195,6 +201,9 @@ export class TN5250Parser {
             if (resetAllMdt || resetNonBypassMdt) {
               this.pendingFieldsClear = true;
             }
+
+            // CC2 handling per lib5250 session.c:1033-1066
+            this.handleCC2(cc2);
           }
           // Parse orders and data following WTD
           pos = this.parseOrders(data, pos);
@@ -204,10 +213,49 @@ export class TN5250Parser {
 
         case CMD.WRITE_ERROR_CODE:
         case CMD.WRITE_ERROR_CODE_WIN: {
-          pos++; // skip command byte
-          // Skip the error line data — just advance past it
-          // Error code commands are followed by data until next command
-          pos = this.parseOrders(data, pos);
+          // Per lib5250 session.c:733-799: writes error message to message line
+          pos++;
+          // WRITE_ERROR_CODE_WIN has 2 extra bytes (start/end window)
+          if (cmd === CMD.WRITE_ERROR_CODE_WIN && pos + 1 < data.length) {
+            pos += 2; // skip startwin, endwin
+          }
+          // Message line is the last row (row = rows - 1)
+          const msgRow = this.screen.rows - 1;
+          let msgCol = 0;
+          let endY = this.screen.cursorRow;
+          let endX = this.screen.cursorCol;
+          // Parse error message data: printable chars go to message line,
+          // IC sets cursor position (but NOT pending insert per spec)
+          while (pos < data.length) {
+            const c = data[pos];
+            if (c === 0x27) { // ESC — end of error code data
+              break;
+            }
+            if (c === ORDER.IC && pos + 2 < data.length) {
+              // IC within error code: just move cursor, don't set pending insert
+              pos++;
+              endY = data[pos++] - 1;
+              endX = data[pos++] - 1;
+              continue;
+            }
+            // Printable EBCDIC character → write to message line
+            if (c >= 0x40 || c === 0x00) {
+              const ch = ebcdicToChar(c);
+              const addr = this.screen.offset(msgRow, msgCol);
+              if (addr < this.screen.size) {
+                this.screen.setCharAt(addr, ch);
+              }
+              msgCol++;
+            }
+            pos++;
+          }
+          // Set cursor to the IC position from within the error code
+          if (endY >= 0 && endY < this.screen.rows && endX >= 0 && endX < this.screen.cols) {
+            this.screen.cursorRow = endY;
+            this.screen.cursorCol = endX;
+          }
+          // Lock keyboard after error
+          this.screen.keyboardLocked = true;
           modified = true;
           break;
         }
@@ -678,6 +726,37 @@ export class TN5250Parser {
           }
         }
       }
+    }
+  }
+
+  /**
+   * Handle CC2 (Control Character 2) from WTD.
+   * Per lib5250 session.c:1033-1066.
+   *
+   * CC2 bit flags:
+   *   0x40  IC_ULOCK — suppress IC cursor positioning when unlocking
+   *   0x20  CLR_BLINK — clear blink
+   *   0x10  SET_BLINK — set blink
+   *   0x08  UNLOCK — unlock keyboard
+   *   0x04  ALARM — sound audible alarm
+   *   0x02  MESSAGE_OFF — clear message waiting indicator
+   *   0x01  MESSAGE_ON — set message waiting indicator
+   */
+  private handleCC2(cc2: number): void {
+    // Message waiting indicator
+    if (cc2 & 0x01) {
+      this.screen.messageWaiting = true;
+    }
+    if ((cc2 & 0x02) && !(cc2 & 0x01)) {
+      this.screen.messageWaiting = false;
+    }
+    // Alarm
+    if (cc2 & 0x04) {
+      this.screen.pendingAlarm = true;
+    }
+    // Unlock keyboard
+    if (cc2 & 0x08) {
+      this.screen.keyboardLocked = false;
     }
   }
 
