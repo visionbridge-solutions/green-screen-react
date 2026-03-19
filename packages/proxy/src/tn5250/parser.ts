@@ -154,24 +154,42 @@ export class TN5250Parser {
             const cc1 = data[pos++];
             const cc2 = data[pos++];
 
-            // CC1 bit 5: Reset MDT flags
-            if (cc1 & 0x20) {
-              for (const f of this.screen.fields) {
-                f.modified = false;
-              }
-              // Mark that subsequent SF orders in this WTD should clear stale fields
-              this.pendingFieldsClear = true;
+            // CC1 upper 3 bits (0xE0 mask) control MDT reset + null fill.
+            // Per lib5250 session.c:820-851, this is a 7-value switch:
+            let resetNonBypassMdt = false;
+            let resetAllMdt = false;
+            let nullNonBypassMdt = false;
+            let nullNonBypass = false;
+
+            switch (cc1 & 0xE0) {
+              case 0x00: break; // no action (unlock keyboard only)
+              case 0x20: break; // reserved / no action in lib5250
+              case 0x40: resetNonBypassMdt = true; break;
+              case 0x60: resetAllMdt = true; break;
+              case 0x80: nullNonBypassMdt = true; break;
+              case 0xA0: resetNonBypassMdt = true; nullNonBypass = true; break;
+              case 0xC0: resetNonBypassMdt = true; nullNonBypassMdt = true; break;
+              case 0xE0: resetAllMdt = true; nullNonBypass = true; break;
             }
-            // CC1 bit 6: Clear all input fields (null fill)
-            if (cc1 & 0x40) {
-              for (const f of this.screen.fields) {
-                if (this.screen.isInputField(f)) {
-                  const start = this.screen.offset(f.row, f.col);
-                  for (let i = start; i < start + f.length; i++) {
-                    this.screen.buffer[i] = ' ';
-                  }
+
+            for (const f of this.screen.fields) {
+              const isInput = this.screen.isInputField(f);
+              // Null fill: clear input field content
+              if (isInput && (nullNonBypass || (nullNonBypassMdt && f.modified))) {
+                const start = this.screen.offset(f.row, f.col);
+                for (let i = start; i < start + f.length; i++) {
+                  this.screen.buffer[i] = ' ';
                 }
               }
+              // MDT reset
+              if (resetAllMdt || (resetNonBypassMdt && isInput)) {
+                f.modified = false;
+              }
+            }
+
+            // Mark that subsequent SF orders in this WTD should clear stale fields
+            if (resetAllMdt || resetNonBypassMdt) {
+              this.pendingFieldsClear = true;
             }
           }
           // Parse orders and data following WTD
@@ -201,12 +219,20 @@ export class TN5250Parser {
         }
 
         case CMD.ROLL: {
-          pos++; // skip command byte
-          if (pos + 1 < data.length) {
-            const rollCC = data[pos++];
-            const rollCount = data[pos++];
-            // Simple roll: move content up or down
-            // For now just mark as modified
+          // ROLL: 3 bytes — direction, topRow(1-based), bottomRow(1-based)
+          // Per lib5250 session.c:1463-1487
+          pos++;
+          if (pos + 2 < data.length) {
+            const direction = data[pos++];
+            const top = data[pos++] - 1; // convert 1-based to 0-based
+            const bot = data[pos++] - 1;
+            let lines = direction & 0x1F;
+            if ((direction & 0x80) === 0) {
+              lines = -lines; // scroll up (negative)
+            }
+            if (lines !== 0 && top >= 0 && bot >= top && bot < this.screen.rows) {
+              this.rollBuffer(top, bot, lines);
+            }
             modified = true;
           }
           break;
@@ -491,69 +517,63 @@ export class TN5250Parser {
   }
 
   /**
-   * Parse SF (Start Field) order with FFW and optional FCW.
-   * Format: SF(0x1D) FFW1 FFW2 [FCW1 FCW2]
-   * FFW1 always has bit 6 set (0x40+). No trailing attribute byte.
-   * Display attribute is derived from FFW2.
+   * Parse SF (Start Field) order.
+   * Per lib5250 session.c:1499-1797:
+   *   First byte: if (byte & 0xE0) != 0x20 → input field with FFW
+   *               if (byte & 0xE0) == 0x20 → output field, byte IS the attribute
+   *   Input field: FFW1, FFW2, then loop reading FCW pairs while (byte & 0xE0) != 0x20,
+   *                then attribute byte (0x20-0x3F), then 2-byte field length.
+   *   Output field: attribute byte, then 2-byte field length.
    */
   private parseStartField(data: Buffer, pos: number, addr: number, displayAttr: number): number {
     if (addr < this.screen.size) {
       this.screen.setCharAt(addr, ' ');
     }
 
-    // Parse FFW (Field Format Word) — 2 bytes (FFW1 has bit 6 set)
-    if (pos + 1 >= data.length) return pos;
-    const ffw1 = data[pos++];
-    const ffw2 = data[pos++];
+    if (pos >= data.length) return pos;
+    let curByte = data[pos++];
 
-    // Check for FCW (Field Control Word) — optional, 2 bytes
-    // FCW1 has bit 7 set (>= 0x80)
-    let fcw1 = 0, fcw2 = 0;
-    if (pos + 1 < data.length) {
-      const maybeFcw = data[pos];
-      if (maybeFcw >= 0x80 && maybeFcw !== 0xFF) {
-        fcw1 = data[pos++];
+    let ffw1 = 0, ffw2 = 0, fcw1 = 0, fcw2 = 0;
+    let inputField = false;
+
+    if ((curByte & 0xE0) !== 0x20) {
+      // Input field: curByte is FFW1
+      inputField = true;
+      ffw1 = curByte;
+      if (pos >= data.length) return pos;
+      ffw2 = data[pos++];
+
+      // Read FCW pairs: keep reading while next byte is NOT in attribute range
+      if (pos >= data.length) return pos;
+      curByte = data[pos++];
+      while ((curByte & 0xE0) !== 0x20 && pos < data.length) {
+        fcw1 = curByte;
         fcw2 = data[pos++];
+        if (pos >= data.length) return pos;
+        curByte = data[pos++];
       }
     }
+    // else: output field, curByte is already the attribute byte
 
-    // Consume the trailing field attribute byte (always present after FFW/FCW).
-    // This byte (0x20–0x3F) specifies the display attribute for the field.
-    let fieldDisplayAttr = displayAttr;
-    let rawAttrByte = 0;
-    if (pos < data.length) {
-      const attrByte = data[pos];
-      if (attrByte >= 0x20 && attrByte <= 0x3F) {
-        pos++;
-        rawAttrByte = attrByte;
-        fieldDisplayAttr = this.decodeDisplayAttr(attrByte, displayAttr);
-      }
+    // curByte is now the attribute byte (0x20-0x3F)
+    const rawAttrByte = curByte;
+    const fieldDisplayAttr = this.decodeDisplayAttr(rawAttrByte, displayAttr);
+
+    // Read 2-byte field length (always present after attribute byte per lib5250)
+    let fieldLength = 0;
+    if (pos + 1 < data.length) {
+      fieldLength = (data[pos] << 8) | data[pos + 1];
+      pos += 2;
     }
 
     const fieldStartAddr = addr + 1;
     const { row, col } = this.screen.toRowCol(fieldStartAddr);
 
-    // After SF + FFW + optional FCW + ATTR, the host may include a few stale
-    // bytes (field content initializers like nulls) before the next SBA order.
-    // These should not be displayed. Scan ahead (up to 4 bytes) for the next
-    // SBA — if found, skip everything in between.
-    {
-      let scan = pos;
-      const limit = Math.min(pos + 4, data.length);
-      while (scan < limit) {
-        if (data[scan] === ORDER.SBA) {
-          pos = scan; // skip stale bytes
-          break;
-        }
-        scan++;
-      }
-    }
-
     const field: FieldDef = {
       row,
       col,
-      length: 0,
-      ffw1,
+      length: fieldLength,
+      ffw1: inputField ? ffw1 : 0x20, // BYPASS bit for output fields
       ffw2,
       fcw1,
       fcw2,
@@ -569,15 +589,75 @@ export class TN5250Parser {
 
   /**
    * Decode a display attribute byte (0x20–0x3F) into an ATTR constant.
-   * Only recognises the bits that determine display type; falls back to
-   * the SA context (displayAttr) for modifier-only bytes (0x30, 0x38, etc.).
+   *
+   * 5250 field attribute byte layout (bits of lower nibble):
+   *   Lower 3 bits (0x07) determine display type:
+   *     0 = normal, 1 = column separator, 2 = high intensity,
+   *     3 = column separator + HI, 4 = underscore, 5 = underscore + reverse,
+   *     6 = underscore + HI, 7 = non-display
+   *   Bit 3 (0x08): when set, indicates color field (RED, TURQ, etc.)
+   *     Color is determined by the full byte value (0x28=RED, 0x30=TURQ, etc.)
+   *     For color fields, the lower 3 bits still encode the display type.
    */
   private decodeDisplayAttr(attrByte: number, displayAttr: number = ATTR.NORMAL): number {
-    if ((attrByte & 0x07) === 0x07) return ATTR.NON_DISPLAY;
-    if (attrByte & 0x04) return ATTR.UNDERSCORE;
-    if (attrByte & 0x02) return ATTR.HIGH_INTENSITY;
-    if (attrByte & 0x08) return ATTR.HIGH_INTENSITY;
-    return displayAttr;
+    const type = attrByte & 0x07;
+    if (type === 0x07) return ATTR.NON_DISPLAY;
+    if (type >= 0x04) return ATTR.UNDERSCORE; // 4, 5, 6 all have underscore
+    if (type === 0x02 || type === 0x03) return ATTR.HIGH_INTENSITY;
+    if (type === 0x01) return ATTR.COLUMN_SEPARATOR;
+    // type === 0x00: normal or color field
+    // Bit 3 (0x08) set = color field, treat as normal display (green on most terminals)
+    return ATTR.NORMAL;
+  }
+
+  /**
+   * Roll (scroll) screen buffer rows within [top, bot] by `lines` rows.
+   * Negative = scroll up, positive = scroll down.
+   * Per lib5250 dbuffer.c:869-899.
+   */
+  private rollBuffer(top: number, bot: number, lines: number): void {
+    const cols = this.screen.cols;
+    if (lines < 0) {
+      // Scroll up: move rows upward
+      for (let r = top; r <= bot; r++) {
+        if (r + lines >= top) {
+          const dstOff = (r + lines) * cols;
+          const srcOff = r * cols;
+          for (let c = 0; c < cols; c++) {
+            this.screen.buffer[dstOff + c] = this.screen.buffer[srcOff + c];
+          }
+        }
+      }
+      // Clear vacated rows at bottom
+      for (let r = bot + lines + 1; r <= bot; r++) {
+        if (r >= top) {
+          const off = r * cols;
+          for (let c = 0; c < cols; c++) {
+            this.screen.buffer[off + c] = ' ';
+          }
+        }
+      }
+    } else {
+      // Scroll down: move rows downward
+      for (let r = bot; r >= top; r--) {
+        if (r + lines <= bot) {
+          const dstOff = (r + lines) * cols;
+          const srcOff = r * cols;
+          for (let c = 0; c < cols; c++) {
+            this.screen.buffer[dstOff + c] = this.screen.buffer[srcOff + c];
+          }
+        }
+      }
+      // Clear vacated rows at top
+      for (let r = top; r < top + lines; r++) {
+        if (r <= bot) {
+          const off = r * cols;
+          for (let c = 0; c < cols; c++) {
+            this.screen.buffer[off + c] = ' ';
+          }
+        }
+      }
+    }
   }
 
   /** Clear stale fields when the first SF order arrives after a Reset MDT WTD */
@@ -605,6 +685,11 @@ export class TN5250Parser {
 
     for (let i = 0; i < fields.length; i++) {
       const current = fields[i];
+
+      // If the field already has an explicit length from SF order, keep it
+      if (current.length > 0) continue;
+
+      // Otherwise infer length from adjacent field positions (bare field attributes)
       const currentStart = this.screen.offset(current.row, current.col);
 
       if (i + 1 < fields.length) {
