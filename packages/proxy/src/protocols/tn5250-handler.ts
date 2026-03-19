@@ -67,7 +67,9 @@ export class TN5250Handler extends ProtocolHandler {
     // KEY_TO_AID uses mixed case (Enter, PageUp). Handle both.
     const normalizedKey = this.normalizeKeyName(keyName);
 
-    // Tab/Backtab: local cursor movement to next/previous input field.
+    // Tab/Backtab: move cursor to next/previous non-bypass field.
+    // Per lib5250 display.c:2089 (kf_tab → set_cursor_next_logical_field →
+    // set_cursor_next_field → next_field): visits ALL non-bypass fields.
     if (normalizedKey === 'Tab' || normalizedKey === 'Backtab') {
       const inputFields = this.screen.fields
         .filter(f => this.screen.isInputField(f))
@@ -77,7 +79,7 @@ export class TN5250Handler extends ProtocolHandler {
       const cursorPos = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
       if (normalizedKey === 'Tab') {
         const next = inputFields.find(f => this.screen.offset(f.row, f.col) > cursorPos);
-        const target = next || inputFields[0]; // wrap around
+        const target = next || inputFields[0];
         this.screen.cursorRow = target.row;
         this.screen.cursorCol = target.col;
       } else {
