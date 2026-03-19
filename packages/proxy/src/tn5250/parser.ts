@@ -9,6 +9,9 @@ export class TN5250Parser {
   private screen: ScreenBuffer;
   /** When true, the next SF order should clear stale fields first */
   private pendingFieldsClear = false;
+  /** Set when an IC order was applied during the last parseOrders call.
+   *  When true, calculateFieldLengths should NOT override the cursor. */
+  private icApplied = false;
 
   constructor(screen: ScreenBuffer) {
     this.screen = screen;
@@ -19,6 +22,7 @@ export class TN5250Parser {
    * Returns true if the screen was modified.
    */
   parseRecord(record: Buffer): boolean {
+    this.icApplied = false;
     if (record.length < 2) return false;
 
     // 5250 record header:
@@ -470,6 +474,7 @@ export class TN5250Parser {
     if (pendingICRow >= 0 && pendingICCol >= 0) {
       this.screen.cursorRow = pendingICRow;
       this.screen.cursorCol = pendingICCol;
+      this.icApplied = true;
     }
 
     return pos;
@@ -712,11 +717,9 @@ export class TN5250Parser {
       if (current.length <= 0) current.length = 1;
     }
 
-    // Ensure cursor is in a functional input field. Skip UIM framework
-    // artifact fields whose OWN attribute byte doesn't indicate underscore
-    // or non-display (they may inherit underscore from SA context but aren't
-    // real interactive fields — they exist in the panel header).
-    {
+    // If the host explicitly set the cursor via IC, trust it — don't override.
+    // Only reposition when no IC was received (fallback for screens without IC).
+    if (!this.icApplied) {
       const allInputs = fields.filter(f => this.screen.isInputField(f));
       if (allInputs.length > 0) {
         const lastPos = this.screen.offset(
