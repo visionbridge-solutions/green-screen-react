@@ -68,31 +68,19 @@ export class TN5250Handler extends ProtocolHandler {
     const normalizedKey = this.normalizeKeyName(keyName);
 
     // Tab/Backtab: local cursor movement to next/previous input field.
-    // Skip UIM framework artifact fields whose OWN attribute byte doesn't
-    // indicate underscore or non-display (they may inherit underscore from
-    // SA context but aren't real interactive fields).
     if (normalizedKey === 'Tab' || normalizedKey === 'Backtab') {
-      const allInputs = this.screen.fields
+      const inputFields = this.screen.fields
         .filter(f => this.screen.isInputField(f))
         .sort((a, b) => this.screen.offset(a.row, a.col) - this.screen.offset(b.row, b.col));
-      if (allInputs.length === 0) return false;
-      // Keep fields with native underscore/non-display, or the last input field
-      const lastPos = this.screen.offset(allInputs[allInputs.length - 1].row, allInputs[allInputs.length - 1].col);
-      const inputFields = allInputs.filter(f =>
-        this.screen.hasNativeUnderscore(f) || this.screen.hasNativeNonDisplay(f) ||
-        this.screen.offset(f.row, f.col) === lastPos
-      );
       if (inputFields.length === 0) return false;
 
       const cursorPos = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
       if (normalizedKey === 'Tab') {
-        // Find the next input field after cursor
         const next = inputFields.find(f => this.screen.offset(f.row, f.col) > cursorPos);
         const target = next || inputFields[0]; // wrap around
         this.screen.cursorRow = target.row;
         this.screen.cursorCol = target.col;
       } else {
-        // Backtab: find previous input field
         const prev = [...inputFields].reverse().find(f => this.screen.offset(f.row, f.col) < cursorPos);
         const target = prev || inputFields[inputFields.length - 1];
         this.screen.cursorRow = target.row;
