@@ -67,14 +67,26 @@ export class TN5250Handler extends ProtocolHandler {
     // KEY_TO_AID uses mixed case (Enter, PageUp). Handle both.
     const normalizedKey = this.normalizeKeyName(keyName);
 
-    // Tab/Backtab: move cursor to next/previous non-bypass field.
-    // Per lib5250 display.c:2089 (kf_tab → set_cursor_next_logical_field →
-    // set_cursor_next_field → next_field): visits ALL non-bypass fields.
+    // Tab/Backtab: move cursor to next/previous input field.
+    // Filter out UIM framework artifact fields that are technically non-bypass
+    // but not functional for user input (e.g. the selection field at (1,2) on
+    // the main menu produces "Type option number or command" error when used).
+    // Keep fields with native underscore/non-display (real interactive fields).
+    // Fall back to all input fields if none match the filter.
     if (normalizedKey === 'Tab' || normalizedKey === 'Backtab') {
-      const inputFields = this.screen.fields
+      const allInputs = this.screen.fields
         .filter(f => this.screen.isInputField(f))
         .sort((a, b) => this.screen.offset(a.row, a.col) - this.screen.offset(b.row, b.col));
-      if (inputFields.length === 0) return false;
+      if (allInputs.length === 0) return false;
+
+      const functional = allInputs.filter(f =>
+        this.screen.hasNativeUnderscore(f) || this.screen.hasNativeNonDisplay(f)
+      );
+      // If no fields have visible input indicators, use only the last input
+      // field (typically the command line). UIM artifact fields earlier in the
+      // list are not functional — typing in them produces errors.
+      const inputFields = functional.length > 0 ? functional
+        : [allInputs[allInputs.length - 1]];
 
       const cursorPos = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
       if (normalizedKey === 'Tab') {
