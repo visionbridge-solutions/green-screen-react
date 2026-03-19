@@ -489,8 +489,8 @@ export function GreenScreenTerminal({
 
       if (field.is_input) {
         const fieldWidth = Math.min(field.length, cols - fs);
-        const fieldClass = showSignInHint ? 'gs-confirmed-field' : (field.is_underscored ? 'gs-input-field' : undefined);
-        segs.push(<span key={`f${idx}`} className={fieldClass || undefined} style={{ display: 'inline-block', width: `${fieldWidth}ch`, overflow: 'hidden', color: colorVar }}>{fc}</span>);
+        const fieldClass = showSignInHint ? 'gs-confirmed-field' : 'gs-input-field';
+        segs.push(<span key={`f${idx}`} className={fieldClass} style={{ display: 'inline-block', width: `${fieldWidth}ch`, overflow: 'hidden', color: colorVar }}>{fc}</span>);
       } else if (field.is_reverse) {
         segs.push(<span key={`v${idx}`} style={{ color: colorVar || 'var(--gs-red, #FF5555)', fontWeight: 'bold' }}>{fc}</span>);
       } else if (colorVar) {
