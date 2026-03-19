@@ -466,7 +466,8 @@ export function GreenScreenTerminal({
     const inputFields = fields.filter(f => f.row === rowIndex && f.is_input);
     const highlightedFields = fields.filter(f => f.row === rowIndex && f.is_protected && f.is_highlighted);
     const reverseFields = fields.filter(f => f.row === rowIndex && f.is_protected && f.is_reverse);
-    const allRowFields = [...inputFields, ...highlightedFields, ...reverseFields];
+    const colorFields = fields.filter(f => f.row === rowIndex && f.is_protected && (f as any).color && !f.is_highlighted && !f.is_reverse);
+    const allRowFields = [...inputFields, ...highlightedFields, ...reverseFields, ...colorFields];
 
     if (allRowFields.length === 0) return <span>{line}</span>;
 
@@ -480,12 +481,20 @@ export function GreenScreenTerminal({
       const fe = Math.min(field.col + field.length, cols);
       if (fs > lastEnd) segs.push(<span key={`t${idx}`}>{line.substring(lastEnd, fs)}</span>);
       const fc = line.substring(fs, fe);
+
+      // Resolve color from field's 5250 color attribute
+      const colorVar = (field as any).color
+        ? `var(--gs-${(field as any).color}, var(--gs-green))`
+        : undefined;
+
       if (field.is_input) {
         const fieldWidth = Math.min(field.length, cols - fs);
         const fieldClass = showSignInHint ? 'gs-confirmed-field' : (field.is_underscored ? 'gs-input-field' : undefined);
-        segs.push(<span key={`f${idx}`} className={fieldClass || undefined} style={{ display: 'inline-block', width: `${fieldWidth}ch`, overflow: 'hidden' }}>{fc}</span>);
+        segs.push(<span key={`f${idx}`} className={fieldClass || undefined} style={{ display: 'inline-block', width: `${fieldWidth}ch`, overflow: 'hidden', color: colorVar }}>{fc}</span>);
       } else if (field.is_reverse) {
-        segs.push(<span key={`v${idx}`} style={{ color: '#ef4444', fontWeight: 'bold' }}>{fc}</span>);
+        segs.push(<span key={`v${idx}`} style={{ color: colorVar || 'var(--gs-red, #FF5555)', fontWeight: 'bold' }}>{fc}</span>);
+      } else if (colorVar) {
+        segs.push(<span key={`h${idx}`} style={{ color: colorVar }}>{fc}</span>);
       } else if (field.is_highlighted) {
         segs.push(<span key={`h${idx}`} style={{ color: 'var(--gs-white, #FFFFFF)' }}>{fc}</span>);
       } else {

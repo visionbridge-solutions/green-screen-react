@@ -14,6 +14,9 @@ export type ProtocolType = 'tn5250' | 'tn3270' | 'vt' | 'hp6530';
  * Field definition from the terminal data stream.
  * Describes an input or protected field on the terminal screen.
  */
+/** 5250 display color derived from field attribute byte */
+export type FieldColor = 'green' | 'white' | 'red' | 'turquoise' | 'yellow' | 'pink' | 'blue';
+
 export interface Field {
   /** 0-based row index */
   row: number;
@@ -31,6 +34,8 @@ export interface Field {
   is_reverse?: boolean;
   /** Whether the field has the underscore display attribute (visible underline) */
   is_underscored?: boolean;
+  /** 5250 display color derived from the field attribute byte */
+  color?: FieldColor;
 }
 
 /**

@@ -188,6 +188,30 @@ export class ScreenBuffer {
     return (field.rawAttrByte & 0x07) === 0x07;
   }
 
+  /**
+   * Decode the 5250 color from a raw field attribute byte (0x20-0x3F).
+   *
+   * 5250 color model:
+   *   Bits 4-3 select color group, bit 1 selects intensity:
+   *   | Bits 4-3 | Normal (bit1=0) | High Intensity (bit1=1) |
+   *   |----------|-----------------|-------------------------|
+   *   | 00 (0x20)| green           | white                   |
+   *   | 01 (0x28)| red             | red                     |
+   *   | 10 (0x30)| turquoise       | yellow                  |
+   *   | 11 (0x38)| pink            | blue                    |
+   */
+  static attrColor(rawAttrByte: number): 'green' | 'white' | 'red' | 'turquoise' | 'yellow' | 'pink' | 'blue' {
+    const colorGroup = rawAttrByte & 0x18; // bits 4-3
+    const highIntensity = (rawAttrByte & 0x02) !== 0; // bit 1
+    switch (colorGroup) {
+      case 0x00: return highIntensity ? 'white' : 'green';
+      case 0x08: return 'red';
+      case 0x10: return highIntensity ? 'yellow' : 'turquoise';
+      case 0x18: return highIntensity ? 'blue' : 'pink';
+      default: return 'green';
+    }
+  }
+
   /** Convert screen buffer to the ScreenData format expected by the frontend */
   toScreenData(): {
     content: string;
@@ -204,6 +228,7 @@ export class ScreenBuffer {
       is_highlighted?: boolean;
       is_reverse?: boolean;
       is_underscored?: boolean;
+      color?: 'green' | 'white' | 'red' | 'turquoise' | 'yellow' | 'pink' | 'blue';
     }>;
     screen_signature: string;
     timestamp: string;
@@ -224,16 +249,20 @@ export class ScreenBuffer {
     const content = lines.join('\n');
 
     // Map fields to frontend format
-    const fields = this.fields.map(f => ({
-      row: f.row,
-      col: f.col,
-      length: f.length,
-      is_input: this.isInputField(f),
-      is_protected: !this.isInputField(f),
-      is_highlighted: this.isHighlighted(f) || undefined,
-      is_reverse: this.isReverse(f) || undefined,
-      is_underscored: this.isUnderscored(f) || undefined,
-    }));
+    const fields = this.fields.map(f => {
+      const color = f.rawAttrByte ? ScreenBuffer.attrColor(f.rawAttrByte) : undefined;
+      return {
+        row: f.row,
+        col: f.col,
+        length: f.length,
+        is_input: this.isInputField(f),
+        is_protected: !this.isInputField(f),
+        is_highlighted: this.isHighlighted(f) || undefined,
+        is_reverse: this.isReverse(f) || undefined,
+        is_underscored: this.isUnderscored(f) || undefined,
+        color: color !== 'green' ? color : undefined, // only send non-default
+      };
+    });
 
     // Generate screen signature
     const hash = createHash('md5').update(content).digest('hex').substring(0, 12);
