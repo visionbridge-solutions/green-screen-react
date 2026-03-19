@@ -8,3 +8,7 @@ apps/demo/.env.local
 apps/demo/e2e/screenshots/
 .wrangler/
 test-results/
+.env
+reference/
+debug/screenshots/
+debug/state-dumps/
