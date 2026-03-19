@@ -813,14 +813,23 @@ export class TN5250Parser {
     }
 
     // Cursor homing per lib5250 display.c:614-635 (set_cursor_home):
-    //   1. If IC was received, cursor is already set — don't override.
-    //   2. Else, move cursor to the first non-bypass (input) field.
-    //   3. Else, leave cursor at (0,0).
-    if (!this.icApplied) {
-      const firstInput = fields.find(f => this.screen.isInputField(f));
-      if (firstInput) {
-        this.screen.cursorRow = firstInput.row;
-        this.screen.cursorCol = firstInput.col;
+    //   1. If IC was received AND cursor is inside a field — trust it.
+    //   2. If IC placed cursor outside all fields (e.g. on an attribute byte),
+    //      nudge to the first input field so the user can interact.
+    //   3. If no IC, move to first non-bypass (input) field.
+    //   4. Else, leave cursor where it is.
+    {
+      const cursorAddr = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
+      const cursorInField = fields.some(f => {
+        const start = this.screen.offset(f.row, f.col);
+        return cursorAddr >= start && cursorAddr < start + f.length;
+      });
+      if (!cursorInField) {
+        const firstInput = fields.find(f => this.screen.isInputField(f));
+        if (firstInput) {
+          this.screen.cursorRow = firstInput.row;
+          this.screen.cursorCol = firstInput.col;
+        }
       }
     }
 
