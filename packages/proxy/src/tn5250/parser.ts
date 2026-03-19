@@ -233,6 +233,8 @@ export class TN5250Parser {
     let currentAttr: number = ATTR.NORMAL;
     let useSymbolCharSet = false; // SA type 0x22 can switch to APL/symbol CGCS
     let afterSBA = false; // Track if we just processed an SBA order (field attrs follow SBA)
+    let pendingICRow = -1; // IC stores pending cursor position, applied after WTD
+    let pendingICCol = -1;
 
     while (pos < data.length) {
       const byte = data[pos];
@@ -244,73 +246,121 @@ export class TN5250Parser {
 
       switch (byte) {
         case ORDER.SBA: {
-          // Set Buffer Address: 2 bytes follow (row, col)
+          // Set Buffer Address: 2 bytes follow (row, col) — 1-based from host
           if (pos + 2 >= data.length) return data.length;
           pos++;
-          const row = data[pos++];
-          const col = data[pos++];
+          const row = data[pos++] - 1; // convert 1-based to 0-based
+          const col = data[pos++] - 1;
           currentAddr = this.screen.offset(row, col);
           afterSBA = true; // Field attribute may follow
           continue; // skip the afterSBA = false at end of loop
         }
 
         case ORDER.IC: {
-          // Insert Cursor: set cursor to current address
+          // Insert Cursor: 2 bytes follow (row, col) — 1-based from host.
+          // Per lib5250, IC stores a pending position applied after WTD.
+          if (pos + 2 >= data.length) return data.length;
           pos++;
-          const { row, col } = this.screen.toRowCol(currentAddr);
-          this.screen.cursorRow = row;
-          this.screen.cursorCol = col;
+          const icRow = data[pos++] - 1; // convert 1-based to 0-based
+          const icCol = data[pos++] - 1;
+          pendingICRow = icRow;
+          pendingICCol = icCol;
           break;
         }
 
         case ORDER.MC: {
-          // Move Cursor: 2 bytes follow (row, col)
+          // Move Cursor: 2 bytes follow (row, col) — 1-based from host
           if (pos + 2 >= data.length) return data.length;
           pos++;
-          const row = data[pos++];
-          const col = data[pos++];
-          this.screen.cursorRow = row;
-          this.screen.cursorCol = col;
-          currentAddr = this.screen.offset(row, col);
+          const mcRow = data[pos++] - 1; // convert 1-based to 0-based
+          const mcCol = data[pos++] - 1;
+          this.screen.cursorRow = mcRow;
+          this.screen.cursorCol = mcCol;
+          currentAddr = this.screen.offset(mcRow, mcCol);
           break;
         }
 
         case ORDER.RA: {
-          // Repeat to Address: repeat a char up to an address
+          // Repeat to Address: 3 bytes (row, col, char) — 1-based address
           if (pos + 3 >= data.length) return data.length;
           pos++;
-          const toRow = data[pos++];
-          const toCol = data[pos++];
+          const raRow = data[pos++] - 1; // convert 1-based to 0-based
+          const raCol = data[pos++] - 1;
           const charByte = data[pos++];
-          const targetAddr = this.screen.offset(toRow, toCol);
+          const targetAddr = this.screen.offset(raRow, raCol);
           const ch = ebcdicToChar(charByte);
-          while (currentAddr < targetAddr && currentAddr < this.screen.size) {
-            this.screen.setCharAt(currentAddr, ch);
-            currentAddr++;
+          // lib5250 uses addch which wraps; we fill up to target (inclusive of current pos)
+          if (targetAddr >= currentAddr) {
+            while (currentAddr < targetAddr && currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ch);
+              currentAddr++;
+            }
+          } else {
+            // Wrap-around: fill to end of screen, then from start to target
+            while (currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ch);
+              currentAddr++;
+            }
+            currentAddr = 0;
+            while (currentAddr < targetAddr && currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ch);
+              currentAddr++;
+            }
           }
           break;
         }
 
         case ORDER.EA: {
-          // Erase to Address: fill with spaces up to an address
-          if (pos + 2 >= data.length) return data.length;
+          // Erase to Address: row(1-based), col(1-based), length, attr bytes
+          // Per lib5250: reads 3+ bytes — row, col, then a length byte
+          // indicating how many more bytes follow (attribute types).
+          if (pos + 3 >= data.length) return data.length;
           pos++;
-          const toRow = data[pos++];
-          const toCol = data[pos++];
-          const targetAddr = this.screen.offset(toRow, toCol);
-          while (currentAddr < targetAddr && currentAddr < this.screen.size) {
-            this.screen.setCharAt(currentAddr, ' ');
-            currentAddr++;
+          const eaRow = data[pos++] - 1; // convert 1-based to 0-based
+          const eaCol = data[pos++] - 1;
+          const eaLen = data[pos++]; // length of attribute list (includes itself)
+          // Consume attribute type bytes (eaLen - 1 more bytes)
+          const attrBytesToSkip = Math.max(0, eaLen - 1);
+          let eaAttr = 0xFF; // default: erase all
+          for (let ai = 0; ai < attrBytesToSkip && pos < data.length; ai++) {
+            eaAttr = data[pos++];
           }
+          const eaTarget = this.screen.offset(eaRow, eaCol);
+          // Erase from current to target (lib5250 only erases when attr==0xFF)
+          if (eaAttr === 0xFF) {
+            if (eaTarget >= currentAddr) {
+              while (currentAddr < eaTarget && currentAddr < this.screen.size) {
+                this.screen.setCharAt(currentAddr, ' ');
+                currentAddr++;
+              }
+            } else {
+              // Wrap-around
+              while (currentAddr < this.screen.size) {
+                this.screen.setCharAt(currentAddr, ' ');
+                currentAddr++;
+              }
+              currentAddr = 0;
+              while (currentAddr < eaTarget && currentAddr < this.screen.size) {
+                this.screen.setCharAt(currentAddr, ' ');
+                currentAddr++;
+              }
+            }
+          }
+          // EA sets current address to target+1 (per spec)
+          currentAddr = eaTarget;
           break;
         }
 
         case ORDER.SOH: {
           // Start of Header: variable-length header for input fields.
+          // Per lib5250: SOH clears format table and pending insert cursor.
           // Format: [0x01] [length] [data...]
           // The length byte includes SOH byte + itself, so remaining = length - 2.
           if (pos + 1 >= data.length) return data.length;
           pos++;
+          this.screen.fields = [];
+          pendingICRow = -1;
+          pendingICCol = -1;
           const hdrLen = data[pos++];
           pos += Math.max(0, hdrLen - 2);
           break;
@@ -388,6 +438,12 @@ export class TN5250Parser {
         }
       }
       afterSBA = false;
+    }
+
+    // Apply deferred IC cursor position (last IC wins, per lib5250)
+    if (pendingICRow >= 0 && pendingICCol >= 0) {
+      this.screen.cursorRow = pendingICRow;
+      this.screen.cursorCol = pendingICCol;
     }
 
     return pos;

@@ -30,8 +30,8 @@ export class TN5250Encoder {
     // GDS header: length(2) + record_type(2) + var(1) + reserved(1) + opcode(1)
     parts.push(this.buildGDSHeader());
 
-    // Cursor position + AID byte
-    parts.push(Buffer.from([cursorRow, cursorCol, aidByte]));
+    // Cursor position (1-based, per 5250 spec) + AID byte
+    parts.push(Buffer.from([cursorRow + 1, cursorCol + 1, aidByte]));
 
     // For certain aid keys (like SysReq), no field data is sent
     if (aidByte === AID.SYS_REQUEST || aidByte === AID.CLEAR) {
@@ -43,8 +43,8 @@ export class TN5250Encoder {
       if (!field.modified) continue;
       if (!this.screen.isInputField(field)) continue;
 
-      // SBA order to indicate field position
-      parts.push(Buffer.from([0x11, field.row, field.col]));
+      // SBA order to indicate field position (1-based, per 5250 spec)
+      parts.push(Buffer.from([0x11, field.row + 1, field.col + 1]));
 
       // Field data in EBCDIC
       const value = this.screen.getFieldValue(field);
