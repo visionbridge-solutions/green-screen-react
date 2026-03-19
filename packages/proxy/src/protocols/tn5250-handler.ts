@@ -79,8 +79,11 @@ export class TN5250Handler extends ProtocolHandler {
         .sort((a, b) => this.screen.offset(a.row, a.col) - this.screen.offset(b.row, b.col));
       if (allInputs.length === 0) return false;
 
+      // Only include fields with visible underscore indicator. Non-display
+      // fields (like UIM artifacts with rawAttr 0x27) are excluded — they
+      // appear as invisible input areas that produce errors when used.
       const functional = allInputs.filter(f =>
-        this.screen.hasNativeUnderscore(f) || this.screen.hasNativeNonDisplay(f)
+        this.screen.hasNativeUnderscore(f)
       );
       // If no fields have visible input indicators, use only the last input
       // field (typically the command line). UIM artifact fields earlier in the

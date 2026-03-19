@@ -87,12 +87,17 @@ async function main() {
     console.log('=== Main Menu ===');
     await snap(page, '01-main-menu');
 
-    // Tab to the selection field (1,2)
-    console.log('\n--- Tab to selection field ---');
+    // Wait for proxy to fully process the main menu screen
+    await page.waitForTimeout(5000);
+
+    // Tab test
+    console.log('\n--- Tab test ---');
     await termBody(page).click();
-    await termBody(page).press('Tab');
     await page.waitForTimeout(500);
-    console.log(`After Tab: cursor at (${latestState?.cursor_row}, ${latestState?.cursor_col})`);
+    console.log(`Before Tab: cursor at (${latestState?.cursor_row}, ${latestState?.cursor_col})`);
+    await termBody(page).press('Tab');
+    await page.waitForTimeout(1000);
+    console.log(`After Tab 1: cursor at (${latestState?.cursor_row}, ${latestState?.cursor_col})`);
 
     // Check if cursor is on the (1,2) field
     if (latestState?.cursor_row === 1 && latestState?.cursor_col === 2) {
