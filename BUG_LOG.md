@@ -11,13 +11,14 @@
 | BUG-005 | Protocol | Medium | Fixed | IC sets cursor immediately instead of deferring to post-WTD |
 | BUG-006 | Protocol | Medium | Fixed | IC reads 0 bytes instead of 2 (row, col) |
 | BUG-007 | Protocol | Medium | Fixed | SOH doesn't clear format table or pending IC |
-| SUSPECT-004 | Protocol | Medium | TODO: REVIEW | SF field length not read from data stream (inferred from positions) |
-| SUSPECT-007 | Parser | Medium | TODO: REVIEW | ROLL command stub — reads bytes but doesn't scroll |
+| BUG-008 | Protocol | Medium | Fixed | CC1 bit-check vs lib5250 3-bit dispatch (wrong MDT/null-fill combos) |
+| BUG-009 | Protocol | Medium | Fixed | ROLL command stub — reads bytes but doesn't scroll |
+| BUG-010 | Protocol | Medium | Fixed | SF field length not read from data stream (2-byte misalignment) |
+| BUG-011 | Parser | Medium | Fixed | parseStartField 4-byte skip-ahead heuristic (compensating for BUG-010) |
+| BUG-012 | Parser | Medium | Fixed | SF only reads one FCW pair (should loop for multiple) |
+| BUG-013 | Rendering | Low | Fixed | decodeDisplayAttr incorrect bit logic for color/type attributes |
 | SUSPECT-008 | Parser | Low | TODO: REVIEW | Last field length cap heuristic may truncate |
-| SUSPECT-009 | Parser | Low | TODO: REVIEW | parseStartField 4-byte skip-ahead heuristic |
 | SUSPECT-010 | Parser | Low | TODO: REVIEW | Cursor repositioning side-effect in calculateFieldLengths |
-| SUSPECT-011 | Protocol | Low | TODO: REVIEW | CC1 bit-check vs lib5250 3-bit dispatch |
-| SUSPECT-012 | Rendering | Low | TODO: REVIEW | Field attributes missing color range (0x28-0x3A) |
 
 ---
 
@@ -110,42 +111,65 @@
 
 ---
 
+### BUG-008: CC1 3-bit dispatch
+- **Severity:** Medium
+- **Category:** Protocol
+- **Root Cause:** CC1 was checked with individual bit tests (`cc1 & 0x20`, `cc1 & 0x40`) instead of the proper 3-bit dispatch (`cc1 & 0xE0` as a switch). This caused CC1=0x40 to trigger null-fill (should only reset MDT), CC1=0x80 to miss null-fill entirely, etc.
+- **Reference:** lib5250 `session.c:812-879` — 7-value switch on `cc1 & 0xE0`
+- **Fix:** Replaced bit checks with switch on `cc1 & 0xE0` matching all 7 lib5250 cases.
+- **Commit:** d7a4160
+
+### BUG-009: ROLL command not implemented
+- **Severity:** Medium
+- **Category:** Protocol
+- **Root Cause:** ROLL read direction and count bytes but didn't actually scroll buffer content. Screens using server-side scrolling would not update.
+- **Reference:** lib5250 `session.c:1463-1487`, `dbuffer.c:869-899`
+- **Fix:** Implemented `rollBuffer()` that shifts rows within [top, bot] range by the specified number of lines, clearing vacated rows.
+- **Commit:** d7a4160
+
+### BUG-010: SF field length not read from data stream
+- **Severity:** Medium
+- **Category:** Protocol
+- **Root Cause:** After SF + FFW + FCW + attribute byte, the host sends a 2-byte field length. Our parser never consumed these bytes, causing 2-byte misalignment after every SF order.
+- **Reference:** lib5250 `session.c:1679-1682` — `Length1 = get_byte(); Length2 = get_byte();`
+- **Fix:** SF now reads the 2-byte length. `calculateFieldLengths()` preserves explicit lengths instead of overwriting.
+- **Commit:** d7a4160
+
+### BUG-011: parseStartField 4-byte skip-ahead removed
+- **Severity:** Medium
+- **Category:** Parser
+- **Root Cause:** The skip-ahead heuristic was compensating for not reading the 2-byte field length (BUG-010). Now that length is properly consumed, the heuristic is unnecessary.
+- **Fix:** Removed the 4-byte skip-ahead scan.
+- **Commit:** d7a4160
+
+### BUG-012: SF only reads one FCW pair
+- **Severity:** Medium
+- **Category:** Protocol
+- **Root Cause:** SF parsing checked for one optional FCW pair with `maybeFcw >= 0x80`. lib5250 uses a loop reading FCW pairs until a byte in the attribute range (0x20-0x3F) is found. Fields with multiple FCW pairs (resequence, transparency, etc.) would fail.
+- **Reference:** lib5250 `session.c:1568-1662` — while loop checking `(cur_char & 0xe0) != 0x20`
+- **Fix:** Replaced single FCW check with a while loop matching lib5250's approach.
+- **Commit:** d7a4160
+
+### BUG-013: decodeDisplayAttr incorrect bit logic
+- **Severity:** Low
+- **Category:** Rendering
+- **Root Cause:** Attribute decoding used ad-hoc bit checks (`attrByte & 0x04`, `attrByte & 0x08`) that collapsed different display types. Color attributes (0x28=RED, 0x30=TURQ) with bit 3 set were classified as HIGH_INTENSITY.
+- **Fix:** Rewrote to use lower 3 bits (0x07) as the type selector per the 5250 spec. Column separator (type 1), high intensity (types 2-3), underscore (types 4-6), non-display (type 7) now correctly decoded.
+- **Commit:** d7a4160
+
+---
+
 ## TODO: REVIEW Items
-
-### SUSPECT-004: SF field length not read from data stream
-- **Status:** Not yet causing visible issues
-- **Reason:** Field lengths are inferred from adjacent field positions in `calculateFieldLengths()`. This works correctly for all tested screens (sign-on, main menu, WRKACTJOB, DSPLIB). May cause issues with non-contiguous fields or fields that wrap across multiple rows.
-- **Action:** Monitor; fix only if specific screens show wrong field lengths
-
-### SUSPECT-007: ROLL command stub
-- **Status:** Not triggered during testing
-- **Reason:** pub400.com sends full screen updates for PageUp/PageDown instead of ROLL commands. ROLL may be used by other IBM i servers or specific programs.
-- **Action:** Implement when a ROLL-using scenario is found
 
 ### SUSPECT-008: Last field length cap heuristic
 - **Status:** Not causing visible issues
-- **Reason:** The command line field (last field on main menu) has length 153 which is correct for the available space. The heuristic only triggers for fields > 2 rows, which hasn't been observed.
-- **Action:** Monitor
-
-### SUSPECT-009: parseStartField 4-byte skip-ahead
-- **Status:** Not causing visible issues
-- **Reason:** All tested screens parse correctly. The skip-ahead may be needed for specific data stream patterns.
+- **Reason:** Only applies to inferred lengths (bare field attributes). SF fields now have explicit lengths from the data stream. The heuristic caps inferred last-field length at `cols * 2`.
 - **Action:** Monitor
 
 ### SUSPECT-010: Cursor repositioning in calculateFieldLengths
 - **Status:** Not causing visible issues
 - **Reason:** With IC now deferred correctly, `calculateFieldLengths()` cursor adjustment serves as a safety net ensuring cursor lands on an input field. All tested screens show correct cursor positions.
 - **Action:** Monitor; may mask future IC/MC bugs
-
-### SUSPECT-011: CC1 bit-check vs 3-bit dispatch
-- **Status:** Not causing visible issues
-- **Reason:** Common CC1 values (0x00, 0x20, 0x40, 0x60) work correctly with our bit checks. Edge cases with less common combinations may misbehave.
-- **Action:** Monitor
-
-### SUSPECT-012: Field attributes missing color range
-- **Status:** Cosmetic only
-- **Reason:** Attributes 0x28-0x3A (RED, TURQ, YELLOW, etc.) are not mapped as distinct colors. They would be classified as NORMAL or HIGH_INTENSITY. Visual distinction is missing but fields are still functional.
-- **Action:** Implement color attribute rendering in a future UI enhancement pass
 
 ---
 

@@ -152,9 +152,11 @@ State that is read or written by more than one module:
 
 **RESOLVED in commit 7575662.** RA/EA now handle wrap-around: when target < current, fill to end of screen then continue from 0.
 
-### [SUSPICIOUS] ROLL Command Stub
+### [FIXED] ROLL Command Stub
 
-**File:** parser.ts:203-212
+**RESOLVED in commit d7a4160.** ROLL now implements actual buffer scrolling per lib5250 `dbuffer.c:869-899`.
+
+**File (historical):** parser.ts:203-212
 
 Reads `rollCC` and `rollCount` but does nothing with them. Screens that use server-side scrolling (PageUp/PageDown on some screens) will not update correctly.
 
@@ -170,11 +172,9 @@ if (current.length > this.screen.cols * 2) {
 
 Arbitrary cap of `cols * 2` for the last field's wrap-around length, falling back to `cols - col`. This could produce wrong lengths for fields that legitimately wrap past 2 rows. The lib5250 implementation calculates field length from the SF order's explicit length bytes, not by inferring from field positions.
 
-### [SUSPICIOUS] parseStartField 4-Byte Skip-Ahead
+### [FIXED] parseStartField 4-Byte Skip-Ahead
 
-**File:** parser.ts:484-494
-
-After parsing SF + FFW + FCW + ATTR, scans up to 4 bytes ahead looking for SBA to skip "stale bytes". This heuristic could skip legitimate field content initializer data or miss an SBA that's further than 4 bytes away.
+**RESOLVED in commit d7a4160.** Root cause was not reading the 2-byte field length after the attribute byte. The skip-ahead was compensating. Now that SF properly reads the length, the heuristic was removed.
 
 ### [SUSPICIOUS] Cursor Side-Effect in calculateFieldLengths
 
@@ -182,15 +182,9 @@ After parsing SF + FFW + FCW + ATTR, scans up to 4 bytes ahead looking for SBA t
 
 `calculateFieldLengths()` may reposition the cursor to a "functional input field" if the current cursor position isn't in one. This side effect in a calculation method could mask cursor positioning bugs from IC/MC orders, making them harder to diagnose.
 
-### [SUSPICIOUS] decodeDisplayAttr Bit Interpretation
+### [FIXED] decodeDisplayAttr Bit Interpretation
 
-**File:** parser.ts:519-525
-
-```typescript
-if (attrByte & 0x08) return ATTR.HIGH_INTENSITY;
-```
-
-Bit 0x08 is mapped to HIGH_INTENSITY, but in the lib5250 reference, attribute bytes like 0x28 (RED), 0x30 (TURQUOISE), 0x38 (PINK) have distinct meanings based on bits 3-5. The current implementation collapses multiple distinct attributes into HIGH_INTENSITY.
+**RESOLVED in commit d7a4160.** Rewrote to use lower 3 bits (0x07) as the type selector per 5250 spec, properly distinguishing column separator, high intensity, underscore, and non-display.
 
 ### [SUSPICIOUS] WRITE_STRUCTURED_FIELD Fully Skipped
 
