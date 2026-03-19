@@ -76,6 +76,7 @@ export const ORDER = {
   TD: 0x10,    // Transparent Data
   WEA: 0x04,   // Write Extended Attribute
   SF: 0x1D,    // Start Field (used in field attribute)
+  WDSF: 0x15,  // Write Display Structured Field (within WTD)
   SA: 0x28,    // Set Attribute
 } as const;
 

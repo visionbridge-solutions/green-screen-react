@@ -281,7 +281,9 @@ export class TN5250Parser {
           pos++;
           const row = data[pos++] - 1; // convert 1-based to 0-based
           const col = data[pos++] - 1;
-          currentAddr = this.screen.offset(row, col);
+          if (row >= 0 && row < this.screen.rows && col >= 0 && col < this.screen.cols) {
+            currentAddr = this.screen.offset(row, col);
+          }
           afterSBA = true; // Field attribute may follow
           continue; // skip the afterSBA = false at end of loop
         }
@@ -304,9 +306,11 @@ export class TN5250Parser {
           pos++;
           const mcRow = data[pos++] - 1; // convert 1-based to 0-based
           const mcCol = data[pos++] - 1;
-          this.screen.cursorRow = mcRow;
-          this.screen.cursorCol = mcCol;
-          currentAddr = this.screen.offset(mcRow, mcCol);
+          if (mcRow >= 0 && mcRow < this.screen.rows && mcCol >= 0 && mcCol < this.screen.cols) {
+            this.screen.cursorRow = mcRow;
+            this.screen.cursorCol = mcCol;
+            currentAddr = this.screen.offset(mcRow, mcCol);
+          }
           break;
         }
 
@@ -397,10 +401,12 @@ export class TN5250Parser {
         }
 
         case ORDER.TD: {
-          // Transparent Data: length byte followed by raw data
-          if (pos + 1 >= data.length) return data.length;
+          // Transparent Data: 2-byte length followed by raw data
+          // Per lib5250 session.c:2002-2019
+          if (pos + 2 >= data.length) return data.length;
           pos++;
-          const tdLen = data[pos++];
+          const tdLen = (data[pos] << 8) | data[pos + 1];
+          pos += 2;
           for (let i = 0; i < tdLen && pos < data.length; i++) {
             this.screen.setCharAt(currentAddr++, ebcdicToChar(data[pos++]));
           }
@@ -441,6 +447,16 @@ export class TN5250Parser {
           continue;
         }
 
+        case ORDER.WDSF: {
+          // Write Display Structured Field: 2-byte length + data
+          // Per lib5250 session.c:1909-1984 (0x15 within WTD)
+          if (pos + 2 >= data.length) return data.length;
+          pos++;
+          const wdsfLen = (data[pos] << 8) | data[pos + 1];
+          pos += Math.max(2, wdsfLen); // length includes the 2 length bytes
+          break;
+        }
+
         case ORDER.SF: {
           // Start Field: explicit SF order with FFW + optional FCW
           pos++;
@@ -460,8 +476,8 @@ export class TN5250Parser {
             if (currentAddr < this.screen.size) {
               this.screen.setCharAt(currentAddr, ch);
               this.screen.setAttrAt(currentAddr, currentAttr);
-              currentAddr++;
             }
+            currentAddr++;
             pos++;
           }
           break;
