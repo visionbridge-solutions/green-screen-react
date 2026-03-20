@@ -80,10 +80,7 @@ export class SessionController {
       return;
     }
     this.handler.sendText(text);
-    // Cursor-only response — client renders the character optimistically.
-    // Full screen reconciles on next host response (Enter/F-key).
-    const sd = this.handler.getScreenData();
-    this.send({ type: 'cursor', data: { cursor_row: sd.cursor_row, cursor_col: sd.cursor_col } });
+    this.send({ type: 'screen', data: this.handler.getScreenData() });
   }
 
   async handleKey(key: string): Promise<void> {
