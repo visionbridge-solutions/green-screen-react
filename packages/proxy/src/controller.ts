@@ -95,12 +95,13 @@ export class SessionController {
       return;
     }
 
-    // Local cursor movements — respond immediately without waiting for host
+    // Local operations — respond immediately without waiting for host
     const localKeys = [
       'Tab', 'Backtab', 'TAB', 'BACKTAB',
       'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
       'LEFT', 'RIGHT', 'UP', 'DOWN',
       'Home', 'HOME', 'End', 'END',
+      'Backspace', 'BACKSPACE', 'Delete', 'DELETE',
     ];
     if (localKeys.includes(key)) {
       this.send({ type: 'screen', data: this.handler.getScreenData() });

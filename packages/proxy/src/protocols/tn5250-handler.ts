@@ -90,6 +90,29 @@ export class TN5250Handler extends ProtocolHandler {
       return true;
     }
 
+    // Backspace: move cursor left, delete character at new position (shift left)
+    // Per lib5250 display.c:1970-1997, 1385-1389
+    if (normalizedKey === 'Backspace') {
+      const field = this.screen.getFieldAtCursor();
+      if (!field || !this.screen.isInputField(field)) return true;
+      // If at start of field, don't go further
+      if (this.screen.cursorCol <= field.col) return true;
+      // Move left
+      this.screen.cursorCol--;
+      // Delete character at cursor (shift remaining left, pad with space)
+      this.deleteCharAtCursor(field);
+      return true;
+    }
+
+    // Delete: delete character at cursor position (shift remaining left)
+    // Per lib5250 display.c:2221-2244, dbuffer.c:693-737
+    if (normalizedKey === 'Delete') {
+      const field = this.screen.getFieldAtCursor();
+      if (!field || !this.screen.isInputField(field)) return true;
+      this.deleteCharAtCursor(field);
+      return true;
+    }
+
     // Home: move cursor to start of current input field
     if (normalizedKey === 'Home') {
       const field = this.screen.getFieldAtCursor();
@@ -158,11 +181,32 @@ export class TN5250Handler extends ProtocolHandler {
     return true;
   }
 
+  /**
+   * Delete character at current cursor position within a field.
+   * Shifts all characters to the right of cursor one position left.
+   * Pads the end of the field with a space. Marks field as modified.
+   * Per lib5250 dbuffer.c:693-737 (dbuffer_del).
+   */
+  private deleteCharAtCursor(field: FieldDef): void {
+    const fieldStart = this.screen.offset(field.row, field.col);
+    const fieldEnd = fieldStart + field.length;
+    const cursorAddr = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
+
+    // Shift characters left from cursor+1 to end of field
+    for (let i = cursorAddr; i < fieldEnd - 1; i++) {
+      this.screen.buffer[i] = this.screen.buffer[i + 1];
+    }
+    // Pad last position with space
+    this.screen.buffer[fieldEnd - 1] = ' ';
+    field.modified = true;
+  }
+
   private normalizeKeyName(key: string): string {
     const map: Record<string, string> = {
       'ENTER': 'Enter', 'TAB': 'Tab', 'BACKTAB': 'Backtab',
       'PAGEUP': 'PageUp', 'PAGEDOWN': 'PageDown',
-      'DELETE': 'Delete', 'CLEAR': 'Clear', 'HELP': 'Help', 'PRINT': 'Print',
+      'BACKSPACE': 'Backspace', 'DELETE': 'Delete',
+      'CLEAR': 'Clear', 'HELP': 'Help', 'PRINT': 'Print',
       'UP': 'ArrowUp', 'DOWN': 'ArrowDown', 'LEFT': 'ArrowLeft', 'RIGHT': 'ArrowRight',
       'HOME': 'Home', 'END': 'End', 'INSERT': 'Insert',
     };

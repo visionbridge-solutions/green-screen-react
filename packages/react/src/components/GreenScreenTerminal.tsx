@@ -376,11 +376,13 @@ export function GreenScreenTerminal({
 
     if (e.key === 'Backspace') {
       e.preventDefault();
-      if (inputText.length > 0) { setInputText(prev => prev.slice(0, -1)); }
-      else {
-        const keyResult = await sendKey('BACKSPACE');
-        if (keyResult.cursor_row !== undefined) setSyncedCursor({ row: keyResult.cursor_row, col: keyResult.cursor_col! });
+      // Flush any buffered text first, then send backspace to proxy
+      if (inputText) {
+        const r = await sendText(inputText); setInputText('');
+        if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
       }
+      const keyResult = await sendKey('BACKSPACE');
+      if (keyResult.cursor_row !== undefined) setSyncedCursor({ row: keyResult.cursor_row, col: keyResult.cursor_col! });
       return;
     }
 
