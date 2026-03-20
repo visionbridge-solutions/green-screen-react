@@ -361,57 +361,35 @@ export function GreenScreenTerminal({
     return null;
   }, [screenData, syncedCursor]);
 
-  const canTypeMore = useCallback((additionalChars: number = 1) => {
-    const currentField = getCurrentField();
-    if (!currentField) return true;
-    const cursorCol = (syncedCursor?.col ?? screenData?.cursor_col ?? 0) + inputText.length;
-    return cursorCol + additionalChars <= currentField.col + currentField.length;
-  }, [getCurrentField, syncedCursor, screenData, inputText]);
-
   // --- Keyboard handling ---
+  // Characters are sent immediately to the proxy (no client-side buffering).
+  // This keeps the proxy screen buffer in sync so arrow keys, backspace,
+  // delete, and insert mode all work correctly at any cursor position.
   const handleKeyDown = async (e: React.KeyboardEvent) => {
     if (readOnly) { e.preventDefault(); return; }
 
     if (e.key === 'Escape') { e.preventDefault(); setIsFocused(false); inputRef.current?.blur(); return; }
 
-    if (e.key === 'Backspace') {
-      e.preventDefault();
-      // Flush any buffered text first, then send backspace to proxy
-      if (inputText) {
-        const r = await sendText(inputText); setInputText('');
-        if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
-      }
-      const keyResult = await sendKey('BACKSPACE');
-      if (keyResult.cursor_row !== undefined) setSyncedCursor({ row: keyResult.cursor_row, col: keyResult.cursor_col! });
-      return;
-    }
-
     const keyMap: Record<string, string> = {
-      Enter: 'ENTER', Tab: 'TAB', Delete: 'DELETE',
+      Enter: 'ENTER', Tab: 'TAB', Backspace: 'BACKSPACE', Delete: 'DELETE',
       ArrowUp: 'UP', ArrowDown: 'DOWN', ArrowLeft: 'LEFT', ArrowRight: 'RIGHT',
       PageUp: 'PAGEUP', PageDown: 'PAGEDOWN', Home: 'HOME', End: 'END', Insert: 'INSERT',
     };
 
+    // F-keys
     if (e.key.startsWith('F') && e.key.length <= 3) {
       e.preventDefault();
       const fKey = e.key.toUpperCase();
       if (/^F([1-9]|1[0-9]|2[0-4])$/.test(fKey)) {
-        if (inputText) {
-          const r = await sendText(inputText); setInputText('');
-          if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
-        }
         const kr = await sendKey(fKey);
         if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
         return;
       }
     }
 
+    // Action/navigation keys
     if (keyMap[e.key]) {
       e.preventDefault();
-      if (inputText) {
-        const r = await sendText(inputText); setInputText('');
-        if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
-      }
       const kr = await sendKey(keyMap[e.key]);
       if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
     }
@@ -420,20 +398,15 @@ export function GreenScreenTerminal({
   const handleInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (readOnly) { e.target.value = ''; return; }
     const newText = e.target.value;
-    if (newText.includes('\n')) {
-      const textToSend = newText.replace('\n', '');
-      if (textToSend) {
-        const r = await sendText(textToSend);
-        if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
-      }
-      const kr = await sendKey('ENTER');
-      if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
-      setInputText(''); e.target.value = '';
-    } else {
-      const charsToAdd = newText.length - inputText.length;
-      if (charsToAdd > 0 && !canTypeMore(charsToAdd)) { e.target.value = inputText; return; }
-      setInputText(newText);
+    // Send each new character immediately to proxy
+    if (newText.length > inputText.length) {
+      const newChars = newText.substring(inputText.length);
+      const r = await sendText(newChars);
+      if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
     }
+    // Always reset the input element (proxy has the authoritative state)
+    setInputText('');
+    e.target.value = '';
   };
 
   // --- Cursor ---
@@ -441,7 +414,7 @@ export function GreenScreenTerminal({
   const getCursorPos = () => {
     if (animatedCursorPos) return animatedCursorPos;
     let cursorRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
-    let cursorCol = (syncedCursor?.col ?? screenData?.cursor_col ?? 0) + inputText.length;
+    let cursorCol = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
     while (cursorCol >= termCols) { cursorCol -= termCols; cursorRow += 1; }
     return { row: cursorRow, col: cursorCol };
   };
@@ -564,11 +537,7 @@ export function GreenScreenTerminal({
     return (
       <div style={{ fontFamily: 'var(--gs-font)', fontSize: '13px', position: 'relative', width: `${cols}ch` }}>
         {rows.map((line, index) => {
-          let displayLine = line;
-          if (hasCursor && index === cursor.row && inputText && !animatedCursorPos) {
-            const baseCol = syncedCursor?.col ?? screenData.cursor_col ?? 0;
-            displayLine = (line.substring(0, baseCol) + inputText + line.substring(baseCol + inputText.length)).substring(0, cols).padEnd(cols, ' ');
-          }
+          const displayLine = line;
           const headerSegments = index === 0 ? profile.colors.parseHeaderRow(displayLine) : null;
           return (
             <div key={index} className={headerSegments ? '' : profile.colors.getRowColorClass(index, displayLine, termRows)} style={{ height: `${ROW_HEIGHT}px`, lineHeight: `${ROW_HEIGHT}px`, whiteSpace: 'pre', position: 'relative' }}>
