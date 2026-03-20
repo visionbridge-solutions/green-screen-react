@@ -122,6 +122,14 @@ export class TN5250Encoder {
     for (const ch of text) {
       if (cursorOffset >= fieldEnd) break; // Field is full
 
+      // If cursor is before existing content, insert by shifting right
+      // (per lib5250 dbuffer.c:790-835 dbuffer_ins)
+      if (this.screen.buffer[cursorOffset] !== ' ') {
+        // Shift characters right from end of field to cursor
+        for (let i = fieldEnd - 1; i > cursorOffset; i--) {
+          this.screen.buffer[i] = this.screen.buffer[i - 1];
+        }
+      }
       this.screen.buffer[cursorOffset] = ch;
       cursorOffset++;
     }

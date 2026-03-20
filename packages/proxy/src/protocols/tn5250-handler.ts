@@ -80,7 +80,14 @@ export class TN5250Handler extends ProtocolHandler {
           this.screen.cursorCol--;
         }
       } else if (normalizedKey === 'ArrowRight') {
-        if (this.screen.cursorCol < field.col + field.length - 1) {
+        // Stop at end of data (last non-space char + 1), not end of field
+        const fieldStart = this.screen.offset(field.row, field.col);
+        let lastData = field.col;
+        for (let i = 0; i < field.length; i++) {
+          if (this.screen.buffer[fieldStart + i] !== ' ') lastData = field.col + i + 1;
+        }
+        const rightLimit = Math.min(lastData, field.col + field.length - 1);
+        if (this.screen.cursorCol < rightLimit) {
           this.screen.cursorCol++;
         }
       } else {
