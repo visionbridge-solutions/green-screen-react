@@ -12,3 +12,4 @@ test-results/
 reference/
 debug/screenshots/
 debug/state-dumps/
+packages/standalone/ui/

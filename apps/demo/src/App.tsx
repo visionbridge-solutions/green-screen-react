@@ -29,7 +29,7 @@ function clearSession() {
   try { sessionStorage.removeItem(SESSION_KEY) } catch {}
 }
 
-function ConnectPanel() {
+function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
   const [connected, setConnected] = useState(false)
   const [adapter, setAdapter] = useState<TerminalAdapter | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -106,13 +106,28 @@ function ConnectPanel() {
 
   if (restoring) {
     return (
-      <div className="connect-panel" style={{ textAlign: 'center', padding: '3rem' }}>
+      <div className={standalone ? 'standalone-page' : 'connect-panel'} style={{ textAlign: 'center', padding: standalone ? undefined : '3rem' }}>
         <p style={{ color: '#808080', fontFamily: 'var(--gs-font, monospace)', fontSize: '13px' }}>Reconnecting...</p>
       </div>
     )
   }
 
   if (connected && adapter) {
+    if (standalone) {
+      return (
+        <div className="standalone-page">
+          <div className="terminal-wrapper">
+            <GreenScreenTerminal
+              adapter={adapter}
+              protocol="tn5250"
+              inlineSignIn={false}
+              pollInterval={500}
+              autoSignedIn={autoSignedIn}
+            />
+          </div>
+        </div>
+      )
+    }
     return (
       <div>
         <div style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -126,6 +141,26 @@ function ConnectPanel() {
             inlineSignIn={false}
             pollInterval={500}
             autoSignedIn={autoSignedIn}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (standalone) {
+    return (
+      <div className="standalone-page">
+        <div className="terminal-wrapper">
+          <GreenScreenTerminal
+            protocol="tn5250"
+            inlineSignIn={true}
+            defaultProtocol="tn5250"
+            pollInterval={0}
+            readOnly={true}
+            showHeader={false}
+            bootLoader={false}
+            typingAnimation={false}
+            onSignIn={handleConnect}
           />
         </div>
       </div>
@@ -168,9 +203,22 @@ function ConnectPanel() {
 
 export default function App() {
   const [selected, setSelected] = useState<'connect' | 'mock'>('connect')
+  const isStandalone = new URLSearchParams(window.location.search).get('mode') === 'standalone'
+
+  useEffect(() => {
+    if (isStandalone) {
+      document.body.classList.add('standalone')
+      document.title = 'Green Screen Terminal'
+    }
+    return () => { document.body.classList.remove('standalone') }
+  }, [isStandalone])
 
   // Create interactive TN5250 mock adapter with screen tree
   const mockAdapter = useMemo(() => new MockAdapter(tn5250ScreenTree, 'main'), [])
+
+  if (isStandalone) {
+    return <ConnectPanel standalone />
+  }
 
   return (
     <div className="demo-page">
