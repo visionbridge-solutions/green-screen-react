@@ -6,7 +6,7 @@ import { useTerminalScreen, useTerminalInput, useTerminalConnection } from '../h
 import { useTypingAnimation } from '../hooks/useTypingAnimation';
 import { getProtocolProfile } from '../protocols/registry';
 import { TerminalBootLoader as DefaultBootLoader } from './TerminalBootLoader';
-import { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, KeyIcon, MinimizeIcon } from './Icons';
+import { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, KeyIcon, MinimizeIcon, HelpIcon } from './Icons';
 import { InlineSignIn } from './InlineSignIn';
 
 /* ── No-op adapter (placeholder before connection) ───────────────── */
@@ -201,6 +201,7 @@ export function GreenScreenTerminal({
   const [inputText, setInputText] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const [showSignInHint, setShowSignInHint] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const prevAutoSignedIn = useRef(false);
   useEffect(() => {
     if (autoSignedIn && !prevAutoSignedIn.current) setShowSignInHint(true);
@@ -648,6 +649,7 @@ export function GreenScreenTerminal({
                   ? <WifiIcon size={12} style={{ color: 'var(--gs-green, #10b981)' }} />
                   : <WifiOffIcon size={12} style={{ color: '#FF6B00' }} />)}
                 {onMinimize && <button onClick={(e) => { e.stopPropagation(); onMinimize(); }} className="gs-btn-icon" title="Minimize terminal"><MinimizeIcon /></button>}
+                <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><HelpIcon size={12} /></button>
                 {headerRight}
               </div>
             </>
@@ -691,6 +693,7 @@ export function GreenScreenTerminal({
                     {connStatus.username && <span className="gs-host">{connStatus.username}</span>}
                   </div>
                 )}
+                <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><HelpIcon size={12} /></button>
                 {headerRight}
               </div>
             </>
@@ -709,6 +712,25 @@ export function GreenScreenTerminal({
           )}
           <div className="gs-screen-content">{renderScreen()}</div>
           {overlay}
+          {showShortcuts && (
+            <div className="gs-shortcuts-panel">
+              <div className="gs-shortcuts-header">
+                <span>Keyboard Shortcuts</span>
+                <button className="gs-btn-icon" onClick={() => setShowShortcuts(false)} style={{ pointerEvents: 'auto' }}>&times;</button>
+              </div>
+              <table className="gs-shortcuts-table">
+                <tbody>
+                  <tr><td className="gs-shortcut-key">Ctrl+Enter</td><td>Field Exit</td></tr>
+                  <tr><td className="gs-shortcut-key">Ctrl+R</td><td>Reset</td></tr>
+                  <tr><td className="gs-shortcut-key">Insert</td><td>Insert / Overwrite</td></tr>
+                  <tr><td className="gs-shortcut-key">Page Up</td><td>Roll Down</td></tr>
+                  <tr><td className="gs-shortcut-key">Page Down</td><td>Roll Up</td></tr>
+                  <tr><td className="gs-shortcut-key">Click</td><td>Enter focus mode</td></tr>
+                  <tr><td className="gs-shortcut-key">Escape</td><td>Exit focus mode</td></tr>
+                </tbody>
+              </table>
+            </div>
+          )}
           {connStatus && !connStatus.connected && screenData && (
             <div className="gs-overlay">
               <WifiOffIcon size={28} />

@@ -36,6 +36,12 @@ export const KeyIcon = ({ size = 12, style: s }: { size?: number; style?: React.
   </svg>
 );
 
+export const HelpIcon = ({ size = 14 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" />
+  </svg>
+);
+
 export const MinimizeIcon = () => (
   <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <path d="M4 14h6v6M3 21l7-7M20 10h-6V4M21 3l-7 7" />

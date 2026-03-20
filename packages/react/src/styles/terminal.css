@@ -275,6 +275,51 @@
   pointer-events: none;
 }
 
+/* ── Shortcuts Panel ──────────────────────────────────────────────── */
+
+.gs-shortcuts-panel {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  z-index: 8;
+  background-color: rgba(14, 20, 34, 0.95);
+  border: 1px solid var(--gs-card-border);
+  border-radius: 4px;
+  padding: 8px 12px;
+  font-family: var(--gs-font);
+  font-size: 11px;
+  color: var(--gs-muted);
+  pointer-events: none;
+  animation: gs-fade-in 200ms ease-out;
+  max-width: 260px;
+}
+
+.gs-shortcuts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  color: var(--gs-green);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.gs-shortcuts-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.gs-shortcuts-table td {
+  padding: 2px 0;
+}
+
+.gs-shortcut-key {
+  color: var(--gs-green);
+  padding-right: 12px;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
 /* ── Inline Sign-In ──────────────────────────────────────────────── */
 
 .gs-signin {
