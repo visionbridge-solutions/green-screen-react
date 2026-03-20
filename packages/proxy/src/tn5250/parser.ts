@@ -14,6 +14,10 @@ export class TN5250Parser {
   /** Set when an IC order was applied during the last parseOrders call.
    *  When true, calculateFieldLengths should NOT override the cursor. */
   private icApplied = false;
+  /** Active window offset — after CREATE_WINDOW, SBA/RA/EA addresses are
+   *  relative to the window content area, not the full screen. */
+  private winRowOff = 0;
+  private winColOff = 0;
 
   constructor(screen: ScreenBuffer) {
     this.screen = screen;
@@ -95,6 +99,8 @@ export class TN5250Parser {
       case OPCODE.RESTORE_SCREEN:
         this.screen.restoreState();
         this.screen.windowList = [];
+        this.winRowOff = 0;
+        this.winColOff = 0;
         if (record.length > dataOffset) {
           modified = this.parseCommandsFromOffset(record, dataOffset);
         }
@@ -349,8 +355,10 @@ export class TN5250Parser {
           // Set Buffer Address: 2 bytes follow (row, col) — 1-based from host
           if (pos + 2 >= data.length) return data.length;
           pos++;
-          const row = data[pos++] - 1; // convert 1-based to 0-based
-          const col = data[pos++] - 1;
+          const rawRow = data[pos++];
+          const rawCol = data[pos++];
+          const row = rawRow - 1 + this.winRowOff;
+          const col = rawCol - 1 + this.winColOff;
           if (row >= 0 && row < this.screen.rows && col >= 0 && col < this.screen.cols) {
             currentAddr = this.screen.offset(row, col);
           }
@@ -363,8 +371,8 @@ export class TN5250Parser {
           // Per lib5250, IC stores a pending position applied after WTD.
           if (pos + 2 >= data.length) return data.length;
           pos++;
-          const icRow = data[pos++] - 1; // convert 1-based to 0-based
-          const icCol = data[pos++] - 1;
+          const icRow = data[pos++] - 1 + this.winRowOff;
+          const icCol = data[pos++] - 1 + this.winColOff;
           pendingICRow = icRow;
           pendingICCol = icCol;
           break;
@@ -374,8 +382,8 @@ export class TN5250Parser {
           // Move Cursor: 2 bytes follow (row, col) — 1-based from host
           if (pos + 2 >= data.length) return data.length;
           pos++;
-          const mcRow = data[pos++] - 1; // convert 1-based to 0-based
-          const mcCol = data[pos++] - 1;
+          const mcRow = data[pos++] - 1 + this.winRowOff;
+          const mcCol = data[pos++] - 1 + this.winColOff;
           if (mcRow >= 0 && mcRow < this.screen.rows && mcCol >= 0 && mcCol < this.screen.cols) {
             this.screen.cursorRow = mcRow;
             this.screen.cursorCol = mcCol;
@@ -388,8 +396,8 @@ export class TN5250Parser {
           // Repeat to Address: 3 bytes (row, col, char) — 1-based address
           if (pos + 3 >= data.length) return data.length;
           pos++;
-          const raRow = data[pos++] - 1; // convert 1-based to 0-based
-          const raCol = data[pos++] - 1;
+          const raRow = data[pos++] - 1 + this.winRowOff;
+          const raCol = data[pos++] - 1 + this.winColOff;
           const charByte = data[pos++];
           const targetAddr = this.screen.offset(raRow, raCol);
           const ch = ebcdicToChar(charByte);
@@ -420,8 +428,8 @@ export class TN5250Parser {
           // indicating how many more bytes follow (attribute types).
           if (pos + 3 >= data.length) return data.length;
           pos++;
-          const eaRow = data[pos++] - 1; // convert 1-based to 0-based
-          const eaCol = data[pos++] - 1;
+          const eaRow = data[pos++] - 1 + this.winRowOff;
+          const eaCol = data[pos++] - 1 + this.winColOff;
           const eaLen = data[pos++]; // length of attribute list (includes itself)
           // Consume attribute type bytes (eaLen - 1 more bytes)
           const attrBytesToSkip = Math.max(0, eaLen - 1);
@@ -539,9 +547,13 @@ export class TN5250Parser {
                   if (this.screen.windowList.length > 0) {
                     this.screen.windowList.pop();
                   }
+                  this.winRowOff = 0;
+                  this.winColOff = 0;
                   break;
                 case WDSF_TYPE.REM_ALL_GUI_CONSTRUCTS:
                   this.screen.windowList = [];
+                  this.winRowOff = 0;
+                  this.winColOff = 0;
                   break;
               }
             }
@@ -750,6 +762,11 @@ export class TN5250Parser {
 
     // Erase content area inside the border
     this.screen.eraseRegion(winRow + 1, winCol + 1, winRow + depth, winCol + width);
+
+    // Set window offset — subsequent SBA/RA/EA addresses are relative to
+    // the window content area (row+1, col+1)
+    this.winRowOff = winRow + 1;
+    this.winColOff = winCol + 1;
   }
 
   /**
