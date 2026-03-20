@@ -185,6 +185,18 @@ export function GreenScreenTerminal({
   const sendText = useCallback(async (text: string) => _sendText(text), [_sendText]);
   const sendKey = useCallback(async (key: string) => _sendKey(key), [_sendKey]);
 
+  // --- Optimistic edits ---
+  // Characters typed by the user are applied optimistically to the displayed
+  // content before the proxy responds. Cleared on full screen updates.
+  const [optimisticEdits, setOptimisticEdits] = useState<Array<{ row: number; col: number; ch: string }>>([]);
+  const prevScreenSigForEdits = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (rawScreenData?.screen_signature && rawScreenData.screen_signature !== prevScreenSigForEdits.current) {
+      prevScreenSigForEdits.current = rawScreenData.screen_signature;
+      setOptimisticEdits([]);
+    }
+  }, [rawScreenData?.screen_signature]);
+
   // --- UI State ---
   const [inputText, setInputText] = useState('');
   const [isFocused, setIsFocused] = useState(false);
@@ -398,13 +410,22 @@ export function GreenScreenTerminal({
   const handleInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (readOnly) { e.target.value = ''; return; }
     const newText = e.target.value;
-    // Send each new character immediately to proxy
     if (newText.length > inputText.length) {
       const newChars = newText.substring(inputText.length);
-      const r = await sendText(newChars);
-      if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
+      // Optimistic: show character immediately at cursor position
+      const curRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
+      const curCol = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
+      const edits: Array<{ row: number; col: number; ch: string }> = [];
+      for (let i = 0; i < newChars.length; i++) {
+        edits.push({ row: curRow, col: curCol + i, ch: newChars[i] });
+      }
+      setOptimisticEdits(prev => [...prev, ...edits]);
+      setSyncedCursor({ row: curRow, col: curCol + newChars.length });
+      // Send to proxy in background (cursor-only response)
+      sendText(newChars).then(r => {
+        if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
+      });
     }
-    // Always reset the input element (proxy has the authoritative state)
     setInputText('');
     e.target.value = '';
   };
@@ -537,7 +558,16 @@ export function GreenScreenTerminal({
     return (
       <div style={{ fontFamily: 'var(--gs-font)', fontSize: '13px', position: 'relative', width: `${cols}ch` }}>
         {rows.map((line, index) => {
-          const displayLine = line;
+          // Apply optimistic edits to this row
+          let displayLine = line;
+          const rowEdits = optimisticEdits.filter(e => e.row === index);
+          if (rowEdits.length > 0) {
+            const chars = displayLine.split('');
+            for (const edit of rowEdits) {
+              if (edit.col >= 0 && edit.col < chars.length) chars[edit.col] = edit.ch;
+            }
+            displayLine = chars.join('');
+          }
           const headerSegments = index === 0 ? profile.colors.parseHeaderRow(displayLine) : null;
           return (
             <div key={index} className={headerSegments ? '' : profile.colors.getRowColorClass(index, displayLine, termRows)} style={{ height: `${ROW_HEIGHT}px`, lineHeight: `${ROW_HEIGHT}px`, whiteSpace: 'pre', position: 'relative' }}>
