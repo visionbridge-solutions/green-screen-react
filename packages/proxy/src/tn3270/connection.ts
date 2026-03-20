@@ -22,7 +22,7 @@ export class TN3270Connection extends EventEmitter {
     return this.connected;
   }
 
-  connect(host: string, port: number): Promise<void> {
+  connect(host: string, port: number, connectTimeout?: number): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.socket) {
         this.disconnect();
@@ -34,7 +34,7 @@ export class TN3270Connection extends EventEmitter {
       this.tn3270eMode = false;
 
       this.socket = new net.Socket();
-      this.socket.setTimeout(30000);
+      this.socket.setTimeout(connectTimeout ?? 30000);
 
       const onError = (err: Error) => {
         this.cleanup();

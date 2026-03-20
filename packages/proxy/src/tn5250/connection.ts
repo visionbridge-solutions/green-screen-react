@@ -34,7 +34,7 @@ export class TN5250Connection extends EventEmitter {
     return this.port;
   }
 
-  connect(host: string, port: number, terminalType?: string): Promise<void> {
+  connect(host: string, port: number, terminalType?: string, connectTimeout?: number): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.socket) {
         this.disconnect();
@@ -47,7 +47,7 @@ export class TN5250Connection extends EventEmitter {
       this.terminalType = terminalType || DEFAULT_TERMINAL_TYPE;
 
       this.socket = new net.Socket();
-      this.socket.setTimeout(30000);
+      this.socket.setTimeout(connectTimeout ?? 30000);
 
       const onError = (err: Error) => {
         this.cleanup();

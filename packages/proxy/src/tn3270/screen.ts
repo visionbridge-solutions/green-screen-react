@@ -226,6 +226,7 @@ export class ScreenBuffer3270 {
         is_protected: this.isProtected(f),
         is_highlighted: this.isIntensified(f) || undefined,
         is_reverse: undefined,
+        is_non_display: this.isHidden(f) || undefined,
       };
     });
 

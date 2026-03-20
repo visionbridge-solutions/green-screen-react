@@ -33,8 +33,9 @@ export class TN3270Handler extends ProtocolHandler {
     return this.connection.isConnected;
   }
 
-  async connect(host: string, port: number, _options?: ProtocolOptions): Promise<void> {
-    await this.connection.connect(host, port);
+  async connect(host: string, port: number, options?: ProtocolOptions): Promise<void> {
+    const connectTimeout = options?.connectTimeout as number | undefined;
+    await this.connection.connect(host, port, connectTimeout);
   }
 
   disconnect(): void {
@@ -53,6 +54,14 @@ export class TN3270Handler extends ProtocolHandler {
     const response = this.encoder.buildAidResponse(keyName);
     if (!response) return false;
     this.connection.sendRaw(response);
+    return true;
+  }
+
+  setCursor(row: number, col: number): boolean {
+    if (row < 0 || row >= this.screen.rows || col < 0 || col >= this.screen.cols) {
+      return false;
+    }
+    this.screen.cursorAddr = row * this.screen.cols + col;
     return true;
   }
 

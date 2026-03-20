@@ -44,6 +44,11 @@ export abstract class ProtocolHandler extends EventEmitter {
    */
   abstract sendKey(keyName: string): boolean;
 
+  /** Set cursor position. Returns true if successful. */
+  setCursor(row: number, col: number): boolean {
+    return false;
+  }
+
   /** Send raw bytes over the connection */
   abstract sendRaw(data: Buffer): void;
 

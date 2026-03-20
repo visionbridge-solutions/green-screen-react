@@ -34,6 +34,8 @@ export interface Field {
   is_reverse?: boolean;
   /** Whether the field has the underscore display attribute (visible underline) */
   is_underscored?: boolean;
+  /** Whether the field is non-display (hidden input, e.g. password fields) */
+  is_non_display?: boolean;
   /** 5250 display color derived from the field attribute byte */
   color?: FieldColor;
 }

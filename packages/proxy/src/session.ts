@@ -13,6 +13,9 @@ export class Session extends EventEmitter {
   private _host: string = '';
   private _port: number = 23;
 
+  /** Timeout (ms) to wait for screen data after connect or key send (default 2000) */
+  screenTimeout: number = 2000;
+
   constructor(protocol: ProtocolType = 'tn5250') {
     super();
     this.id = randomUUID();
@@ -34,6 +37,16 @@ export class Session extends EventEmitter {
 
   get status(): ConnectionStatus {
     return { ...this._status };
+  }
+
+  /** Mark this session as authenticated after a successful auto-sign-in */
+  markAuthenticated(username: string): void {
+    this._status = {
+      ...this._status,
+      status: 'authenticated',
+      username,
+    };
+    this.emit('statusChange', this._status);
   }
 
   async connect(host: string, port: number, options?: ProtocolOptions): Promise<void> {
@@ -67,8 +80,23 @@ export class Session extends EventEmitter {
     return this.handler.sendKey(keyName);
   }
 
+  setCursor(row: number, col: number): boolean {
+    return this.handler.setCursor(row, col);
+  }
+
   getScreenData() {
     return this.handler.getScreenData();
+  }
+
+  /** Wait for the next screenChange event, or return current screen after timeout */
+  waitForScreen(timeoutMs: number): Promise<ScreenData> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(this.handler.getScreenData()), timeoutMs);
+      this.handler.once('screenChange', (data: ScreenData) => {
+        clearTimeout(timer);
+        resolve(data);
+      });
+    });
   }
 
   destroy(): void {

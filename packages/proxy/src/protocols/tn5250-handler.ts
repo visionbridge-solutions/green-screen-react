@@ -47,7 +47,8 @@ export class TN5250Handler extends ProtocolHandler {
       this.screen.resize(dims.rows, dims.cols);
     }
 
-    await this.connection.connect(host, port, termType);
+    const connectTimeout = options?.connectTimeout as number | undefined;
+    await this.connection.connect(host, port, termType, connectTimeout);
   }
 
   disconnect(): void {

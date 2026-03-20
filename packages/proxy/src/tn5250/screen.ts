@@ -532,6 +532,7 @@ export class ScreenBuffer {
         is_highlighted: this.isHighlighted(f) || undefined,
         is_reverse: this.isReverse(f) || undefined,
         is_underscored: this.isUnderscored(f) || undefined,
+        is_non_display: this.isNonDisplay(f) || undefined,
         color: color !== 'green' ? color : undefined, // only send non-default
       };
     });
