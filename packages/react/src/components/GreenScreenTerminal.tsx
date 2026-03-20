@@ -53,7 +53,7 @@ export interface GreenScreenTerminalProps {
   embedded?: boolean;
   /** Show the header bar (default true) */
   showHeader?: boolean;
-  /** Enable typing animation (default true) */
+  /** Enable typing animation (default false) */
   typingAnimation?: boolean;
   /** Typing animation budget in ms (default 60) */
   typingBudgetMs?: number;
@@ -115,7 +115,7 @@ export function GreenScreenTerminal({
   maxReconnectAttempts: maxAttempts = 5,
   embedded = false,
   showHeader = true,
-  typingAnimation = true,
+  typingAnimation = false,
   typingBudgetMs = 60,
   inlineSignIn = true,
   defaultProtocol: signInDefaultProtocol,
