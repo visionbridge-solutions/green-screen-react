@@ -91,6 +91,10 @@ export class WebSocketAdapter implements TerminalAdapter {
     return this.sendAndWaitForScreen({ type: 'key', key });
   }
 
+  async setCursor(row: number, col: number): Promise<SendResult> {
+    return this.sendAndWaitForScreen({ type: 'setCursor', row, col });
+  }
+
   async connect(config?: ConnectConfig): Promise<SendResult> {
     await this.ensureWebSocket();
 
@@ -205,6 +209,22 @@ export class WebSocketAdapter implements TerminalAdapter {
           const resolver = this.pendingScreenResolver;
           this.pendingScreenResolver = null;
           resolver(msg.data);
+        }
+        break;
+      }
+
+      case 'cursor': {
+        // Lightweight cursor-only response for local operations (arrows, Tab)
+        // Resolve pending promise with just cursor position, no screen update
+        if (this.pendingScreenResolver) {
+          const resolver = this.pendingScreenResolver;
+          this.pendingScreenResolver = null;
+          resolver({
+            cursor_row: msg.data.cursor_row,
+            cursor_col: msg.data.cursor_col,
+            content: this.screen?.content ?? '',
+            screen_signature: this.screen?.screen_signature ?? '',
+          } as any);
         }
         break;
       }

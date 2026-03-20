@@ -77,6 +77,8 @@ export interface TerminalAdapter {
   sendText(text: string): Promise<SendResult>;
   /** Send a special key (ENTER, F1-F24, TAB, etc.) */
   sendKey(key: string): Promise<SendResult>;
+  /** Set cursor position (click-to-position) */
+  setCursor?(row: number, col: number): Promise<SendResult>;
   /** Establish a connection, optionally with sign-in config */
   connect(config?: ConnectConfig): Promise<SendResult>;
   /** Close the connection */

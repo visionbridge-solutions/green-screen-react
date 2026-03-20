@@ -67,37 +67,142 @@ export class TN5250Handler extends ProtocolHandler {
     // KEY_TO_AID uses mixed case (Enter, PageUp). Handle both.
     const normalizedKey = this.normalizeKeyName(keyName);
 
-    // Tab/Backtab: local cursor movement to next/previous input field.
-    // Skip UIM framework artifact fields whose OWN attribute byte doesn't
-    // indicate underscore or non-display (they may inherit underscore from
-    // SA context but aren't real interactive fields).
+    // Arrow keys: local cursor movement within input fields.
+    // Left/Right: move within current field, stop at field boundaries.
+    // Up/Down: move to previous/next input field.
+    if (normalizedKey === 'ArrowLeft' || normalizedKey === 'ArrowRight' ||
+        normalizedKey === 'ArrowUp' || normalizedKey === 'ArrowDown') {
+      const field = this.screen.getFieldAtCursor();
+      if (!field || !this.screen.isInputField(field)) return true; // no-op outside input
+
+      if (normalizedKey === 'ArrowLeft') {
+        if (this.screen.cursorCol > field.col) {
+          this.screen.cursorCol--;
+        }
+      } else if (normalizedKey === 'ArrowRight') {
+        // Stop at end of data (last non-space char + 1), not end of field
+        const fieldStart = this.screen.offset(field.row, field.col);
+        let lastData = field.col;
+        for (let i = 0; i < field.length; i++) {
+          if (this.screen.buffer[fieldStart + i] !== ' ') lastData = field.col + i + 1;
+        }
+        const rightLimit = Math.min(lastData, field.col + field.length - 1);
+        if (this.screen.cursorCol < rightLimit) {
+          this.screen.cursorCol++;
+        }
+      } else {
+        // Up/Down: move to prev/next input field (reuse Tab/Backtab logic)
+        return this.sendKey(normalizedKey === 'ArrowUp' ? 'Backtab' : 'Tab');
+      }
+      return true;
+    }
+
+    // Backspace: move cursor left, delete character at new position (shift left)
+    // Per lib5250 display.c:1970-1997, 1385-1389
+    if (normalizedKey === 'Backspace') {
+      const field = this.screen.getFieldAtCursor();
+      if (!field || !this.screen.isInputField(field)) return true;
+      // If at start of field, don't go further
+      if (this.screen.cursorCol <= field.col) return true;
+      // Move left
+      this.screen.cursorCol--;
+      // Delete character at cursor (shift remaining left, pad with space)
+      this.deleteCharAtCursor(field);
+      return true;
+    }
+
+    // Delete: delete character at cursor position (shift remaining left)
+    // Per lib5250 display.c:2221-2244, dbuffer.c:693-737
+    if (normalizedKey === 'Delete') {
+      const field = this.screen.getFieldAtCursor();
+      if (!field || !this.screen.isInputField(field)) return true;
+      this.deleteCharAtCursor(field);
+      return true;
+    }
+
+    // Home: move cursor to start of current input field
+    if (normalizedKey === 'Home') {
+      const field = this.screen.getFieldAtCursor();
+      if (field && this.screen.isInputField(field)) {
+        this.screen.cursorCol = field.col;
+      }
+      return true;
+    }
+
+    // End: move cursor to end of data in current input field
+    if (normalizedKey === 'End') {
+      const field = this.screen.getFieldAtCursor();
+      if (field && this.screen.isInputField(field)) {
+        const start = this.screen.offset(field.row, field.col);
+        let lastData = field.col;
+        for (let i = 0; i < field.length; i++) {
+          if (this.screen.buffer[start + i] !== ' ') lastData = field.col + i + 1;
+        }
+        this.screen.cursorCol = Math.min(lastData, field.col + field.length - 1);
+      }
+      return true;
+    }
+
+    // Tab/Backtab: move cursor to next/previous input field.
+    // Filter out UIM framework artifact fields that are technically non-bypass
+    // but not functional for user input (e.g. the selection field at (1,2) on
+    // the main menu produces "Type option number or command" error when used).
+    // Keep fields with native underscore/non-display (real interactive fields).
+    // Fall back to all input fields if none match the filter.
     if (normalizedKey === 'Tab' || normalizedKey === 'Backtab') {
       const allInputs = this.screen.fields
         .filter(f => this.screen.isInputField(f))
         .sort((a, b) => this.screen.offset(a.row, a.col) - this.screen.offset(b.row, b.col));
       if (allInputs.length === 0) return false;
-      // Keep fields with native underscore/non-display, or the last input field
-      const lastPos = this.screen.offset(allInputs[allInputs.length - 1].row, allInputs[allInputs.length - 1].col);
-      const inputFields = allInputs.filter(f =>
-        this.screen.hasNativeUnderscore(f) || this.screen.hasNativeNonDisplay(f) ||
-        this.screen.offset(f.row, f.col) === lastPos
+
+      // Exclude non-display fields (like UIM artifacts with rawAttr 0x27) —
+      // they appear as invisible input areas that produce errors when used.
+      // All other input fields (underscored, normal display, etc.) are kept.
+      const functional = allInputs.filter(f =>
+        !this.screen.hasNativeNonDisplay(f)
       );
-      if (inputFields.length === 0) return false;
+      // If no fields have visible input indicators, use only the last input
+      // field (typically the command line). UIM artifact fields earlier in the
+      // list are not functional — typing in them produces errors.
+      const inputFields = functional.length > 0 ? functional
+        : [allInputs[allInputs.length - 1]];
 
       const cursorPos = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
       if (normalizedKey === 'Tab') {
-        // Find the next input field after cursor
         const next = inputFields.find(f => this.screen.offset(f.row, f.col) > cursorPos);
-        const target = next || inputFields[0]; // wrap around
+        const target = next || inputFields[0];
         this.screen.cursorRow = target.row;
         this.screen.cursorCol = target.col;
       } else {
-        // Backtab: find previous input field
         const prev = [...inputFields].reverse().find(f => this.screen.offset(f.row, f.col) < cursorPos);
         const target = prev || inputFields[inputFields.length - 1];
         this.screen.cursorRow = target.row;
         this.screen.cursorCol = target.col;
       }
+      return true;
+    }
+
+    // Field Exit: right-adjust field value, mark modified, advance to next field
+    if (normalizedKey === 'FieldExit') {
+      this.encoder.fieldExit();
+      return this.sendKey('Tab');
+    }
+
+    // Reset: clear keyboard lock and error line (client-side only, nothing sent to host)
+    if (normalizedKey === 'Reset') {
+      this.screen.keyboardLocked = false;
+      this.screen.clearErrorLine();
+      if (this.screen.savedCursorBeforeError) {
+        this.screen.cursorRow = this.screen.savedCursorBeforeError.row;
+        this.screen.cursorCol = this.screen.savedCursorBeforeError.col;
+        this.screen.savedCursorBeforeError = null;
+      }
+      return true;
+    }
+
+    // Insert: toggle insert/overwrite mode (client-side only)
+    if (normalizedKey === 'Insert') {
+      this.screen.insertMode = !this.screen.insertMode;
       return true;
     }
 
@@ -107,13 +212,36 @@ export class TN5250Handler extends ProtocolHandler {
     return true;
   }
 
+  /**
+   * Delete character at current cursor position within a field.
+   * Shifts all characters to the right of cursor one position left.
+   * Pads the end of the field with a space. Marks field as modified.
+   * Per lib5250 dbuffer.c:693-737 (dbuffer_del).
+   */
+  private deleteCharAtCursor(field: FieldDef): void {
+    const fieldStart = this.screen.offset(field.row, field.col);
+    const fieldEnd = fieldStart + field.length;
+    const cursorAddr = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
+
+    // Shift characters left from cursor+1 to end of field
+    for (let i = cursorAddr; i < fieldEnd - 1; i++) {
+      this.screen.buffer[i] = this.screen.buffer[i + 1];
+    }
+    // Pad last position with space
+    this.screen.buffer[fieldEnd - 1] = ' ';
+    field.modified = true;
+  }
+
   private normalizeKeyName(key: string): string {
     const map: Record<string, string> = {
       'ENTER': 'Enter', 'TAB': 'Tab', 'BACKTAB': 'Backtab',
       'PAGEUP': 'PageUp', 'PAGEDOWN': 'PageDown',
-      'DELETE': 'Delete', 'CLEAR': 'Clear', 'HELP': 'Help', 'PRINT': 'Print',
+      'BACKSPACE': 'Backspace', 'DELETE': 'Delete',
+      'CLEAR': 'Clear', 'HELP': 'Help', 'PRINT': 'Print',
       'UP': 'ArrowUp', 'DOWN': 'ArrowDown', 'LEFT': 'ArrowLeft', 'RIGHT': 'ArrowRight',
       'HOME': 'Home', 'END': 'End', 'INSERT': 'Insert',
+      'RESET': 'Reset',
+      'FIELD_EXIT': 'FieldExit', 'FIELDEXIT': 'FieldExit',
     };
     return map[key] || key;
   }
@@ -281,6 +409,52 @@ export class TN5250Handler extends ProtocolHandler {
     });
   }
 
+  /**
+   * Set cursor position (for click-to-position). Validates the target is
+   * inside an input field; if not, finds the nearest input field.
+   * Returns true if the cursor was repositioned.
+   */
+  setCursor(row: number, col: number): boolean {
+    // Clamp to screen bounds
+    row = Math.max(0, Math.min(row, this.screen.rows - 1));
+    col = Math.max(0, Math.min(col, this.screen.cols - 1));
+
+    // Check if target is directly in an input field
+    const field = this.screen.getFieldAt(row, col);
+    if (field && this.screen.isInputField(field)) {
+      this.screen.cursorRow = row;
+      this.screen.cursorCol = col;
+      return true;
+    }
+
+    // Find nearest input field (prefer same row, then closest overall)
+    const inputFields = this.screen.fields.filter(f => this.screen.isInputField(f) && this.screen.hasNativeUnderscore(f));
+    if (inputFields.length === 0) return false;
+
+    const targetPos = this.screen.offset(row, col);
+    let bestField: FieldDef | null = null;
+    let bestDist = Infinity;
+
+    for (const f of inputFields) {
+      const fStart = this.screen.offset(f.row, f.col);
+      const fEnd = fStart + f.length - 1;
+      // Distance: 0 if inside, else distance to nearest edge
+      const dist = targetPos < fStart ? fStart - targetPos
+        : targetPos > fEnd ? targetPos - fEnd : 0;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestField = f;
+      }
+    }
+
+    if (bestField) {
+      this.screen.cursorRow = bestField.row;
+      this.screen.cursorCol = bestField.col;
+      return true;
+    }
+    return false;
+  }
+
   sendRaw(data: Buffer): void {
     this.connection.sendRaw(data);
   }
@@ -292,8 +466,24 @@ export class TN5250Handler extends ProtocolHandler {
 
   private onRecord(record: Buffer): void {
     const modified = this.parser.parseRecord(record);
+
+    // Send query reply if host sent a 5250 Query WSF
+    if (this.parser.pendingQueryReply) {
+      this.parser.pendingQueryReply = false;
+      const reply = this.encoder.buildQueryReply();
+      if (reply) this.connection.sendRaw(reply);
+    }
+
     if (modified) {
       this.parser.calculateFieldLengths();
+
+      // If we're in a SAVE_SCREEN context but the host didn't send CREATE_WINDOW,
+      // synthesize a window by overlaying the content on the saved screen.
+      // Check if a real CREATE_WINDOW was used (parser sets winRowOff/winColOff).
+      if (this.screen.screenStack.length > 0 && this.parser.winRowOff === 0 && this.parser.winColOff === 0) {
+        this.screen.synthesizeWindow();
+      }
+
       this.emit('screenChange', this.screen.toScreenData());
     }
   }

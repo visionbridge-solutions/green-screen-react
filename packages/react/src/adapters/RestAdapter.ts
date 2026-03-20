@@ -83,6 +83,10 @@ export class RestAdapter implements TerminalAdapter {
     return this.request<SendResult>('POST', '/send-key', { key });
   }
 
+  async setCursor(row: number, col: number): Promise<SendResult> {
+    return this.request<SendResult>('POST', '/set-cursor', { row, col });
+  }
+
   async connect(config?: ConnectConfig): Promise<SendResult> {
     return this.request<SendResult>('POST', '/connect', config);
   }
