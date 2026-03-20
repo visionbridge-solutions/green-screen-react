@@ -10,6 +10,7 @@ apps/demo/e2e/screenshots/
 test-results/
 .env
 reference/
-debug/screenshots/
-debug/state-dumps/
+debug/
+DEBUG_NOTES.md
+BUG_LOG.md
 packages/standalone/ui/
