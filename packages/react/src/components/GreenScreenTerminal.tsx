@@ -696,7 +696,7 @@ export function GreenScreenTerminal({
             </div>
           )}
           <input ref={inputRef} type="text" value={inputText} onChange={handleInput} onKeyDown={handleKeyDown}
-            style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}
+            style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', fontSize: '13px', lineHeight: '21px', fontFamily: 'var(--gs-font)', padding: 0, border: 'none', height: '21px' }}
             autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
         </div>
       </div>
