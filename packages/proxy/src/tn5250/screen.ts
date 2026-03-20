@@ -41,6 +41,10 @@ export class ScreenBuffer {
   cursorCol: number = 0;
   /** Keyboard locked by host (X SYSTEM indicator) */
   keyboardLocked: boolean = false;
+  /** Insert mode (true) vs overwrite mode (false). Default is overwrite per real 5250. */
+  insertMode: boolean = false;
+  /** Cursor position saved before WRITE_ERROR_CODE moved it, for Reset to restore */
+  savedCursorBeforeError: { row: number; col: number } | null = null;
   /** Message waiting indicator */
   messageWaiting: boolean = false;
   /** Pending alarm/beep from CC2 */
@@ -130,6 +134,15 @@ export class ScreenBuffer {
     this.fields = [];
     this.cursorRow = 0;
     this.cursorCol = 0;
+  }
+
+  /** Clear the error/message line (last row) */
+  clearErrorLine(): void {
+    const start = this.offset(this.rows - 1, 0);
+    for (let i = start; i < start + this.cols; i++) {
+      this.buffer[i] = ' ';
+      this.attrBuffer[i] = 0x20;
+    }
   }
 
   /** Fill range [start, end) with a character */
@@ -330,6 +343,7 @@ export class ScreenBuffer {
     keyboard_locked?: boolean;
     message_waiting?: boolean;
     alarm?: boolean;
+    insert_mode?: boolean;
   } {
     // Build content as newline-separated rows, sanitising control characters
     const lines: string[] = [];
@@ -379,6 +393,7 @@ export class ScreenBuffer {
       screen_signature: hash,
       timestamp: new Date().toISOString(),
       keyboard_locked: this.keyboardLocked || undefined,
+      insert_mode: this.insertMode || undefined,
       message_waiting: this.messageWaiting || undefined,
       alarm: alarm || undefined,
     };

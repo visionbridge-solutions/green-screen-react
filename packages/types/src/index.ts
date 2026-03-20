@@ -65,6 +65,8 @@ export interface ScreenData {
   message_waiting?: boolean;
   /** Whether the host requested an audible alarm (beep) */
   alarm?: boolean;
+  /** Whether insert mode is active (vs overwrite mode) */
+  insert_mode?: boolean;
 }
 
 /**

@@ -182,6 +182,30 @@ export class TN5250Handler extends ProtocolHandler {
       return true;
     }
 
+    // Field Exit: right-adjust field value, mark modified, advance to next field
+    if (normalizedKey === 'FieldExit') {
+      this.encoder.fieldExit();
+      return this.sendKey('Tab');
+    }
+
+    // Reset: clear keyboard lock and error line (client-side only, nothing sent to host)
+    if (normalizedKey === 'Reset') {
+      this.screen.keyboardLocked = false;
+      this.screen.clearErrorLine();
+      if (this.screen.savedCursorBeforeError) {
+        this.screen.cursorRow = this.screen.savedCursorBeforeError.row;
+        this.screen.cursorCol = this.screen.savedCursorBeforeError.col;
+        this.screen.savedCursorBeforeError = null;
+      }
+      return true;
+    }
+
+    // Insert: toggle insert/overwrite mode (client-side only)
+    if (normalizedKey === 'Insert') {
+      this.screen.insertMode = !this.screen.insertMode;
+      return true;
+    }
+
     const response = this.encoder.buildAidResponse(normalizedKey);
     if (!response) return false;
     this.connection.sendRaw(response);
@@ -216,6 +240,8 @@ export class TN5250Handler extends ProtocolHandler {
       'CLEAR': 'Clear', 'HELP': 'Help', 'PRINT': 'Print',
       'UP': 'ArrowUp', 'DOWN': 'ArrowDown', 'LEFT': 'ArrowLeft', 'RIGHT': 'ArrowRight',
       'HOME': 'Home', 'END': 'End', 'INSERT': 'Insert',
+      'RESET': 'Reset',
+      'FIELD_EXIT': 'FieldExit', 'FIELDEXIT': 'FieldExit',
     };
     return map[key] || key;
   }

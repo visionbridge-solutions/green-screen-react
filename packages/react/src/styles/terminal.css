@@ -83,6 +83,24 @@
   animation: gs-pulse 2s infinite;
 }
 
+.gs-badge-lock {
+  padding: 2px 6px;
+  background-color: #EF4444;
+  color: white;
+  font-size: 10px;
+  font-weight: bold;
+  border-radius: 4px;
+}
+
+.gs-badge-ins {
+  padding: 2px 6px;
+  background-color: #F59E0B;
+  color: black;
+  font-size: 10px;
+  font-weight: bold;
+  border-radius: 4px;
+}
+
 .gs-timestamp {
   font-family: var(--gs-font);
   font-size: 10px;

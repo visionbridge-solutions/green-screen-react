@@ -102,10 +102,16 @@ export class SessionController {
       'LEFT', 'RIGHT', 'UP', 'DOWN',
       'Home', 'HOME', 'End', 'END',
       'Backspace', 'BACKSPACE', 'Delete', 'DELETE',
+      'Insert', 'INSERT',
+      'Reset', 'RESET',
+      'FieldExit', 'FIELD_EXIT', 'FIELDEXIT',
     ];
     if (localKeys.includes(key)) {
       // Local buffer-modifying ops need full screen; cursor-only ops don't
-      const bufferOps = ['Backspace', 'BACKSPACE', 'Delete', 'DELETE'];
+      const bufferOps = ['Backspace', 'BACKSPACE', 'Delete', 'DELETE',
+        'Insert', 'INSERT',
+        'Reset', 'RESET',
+        'FieldExit', 'FIELD_EXIT', 'FIELDEXIT'];
       if (bufferOps.includes(key)) {
         this.send({ type: 'screen', data: this.handler.getScreenData() });
       } else {

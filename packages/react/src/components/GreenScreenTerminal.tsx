@@ -382,6 +382,22 @@ export function GreenScreenTerminal({
 
     if (e.key === 'Escape') { e.preventDefault(); setIsFocused(false); inputRef.current?.blur(); return; }
 
+    // Ctrl+R: Reset (clear keyboard lock and error line)
+    if (e.ctrlKey && e.key === 'r') {
+      e.preventDefault();
+      const kr = await sendKey('RESET');
+      if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
+      return;
+    }
+
+    // Ctrl+Enter: Field Exit (right-adjust and advance)
+    if (e.ctrlKey && e.key === 'Enter') {
+      e.preventDefault();
+      const kr = await sendKey('FIELD_EXIT');
+      if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
+      return;
+    }
+
     const keyMap: Record<string, string> = {
       Enter: 'ENTER', Tab: 'TAB', Backspace: 'BACKSPACE', Delete: 'DELETE',
       ArrowUp: 'UP', ArrowDown: 'DOWN', ArrowLeft: 'LEFT', ArrowRight: 'RIGHT',
@@ -623,6 +639,8 @@ export function GreenScreenTerminal({
                 {isFocused && <span className="gs-badge-focused">FOCUSED</span>}
                 {screenData?.timestamp && <span className="gs-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
                 <span className="gs-hint">{readOnly ? 'Read-only' : isFocused ? 'ESC to exit focus' : 'Click to control'}</span>
+                {screenData?.keyboard_locked && <span className="gs-badge-lock">X II</span>}
+                {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
               </span>
               <div className="gs-header-right">
                 {connStatus?.status && <KeyIcon size={12} style={{ color: getStatusColor(connStatus.status) }} />}
@@ -641,6 +659,8 @@ export function GreenScreenTerminal({
                 {isFocused && <span className="gs-badge-focused">FOCUSED</span>}
                 {screenData?.timestamp && <span className="gs-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
                 <span className="gs-hint">{readOnly ? 'Read-only mode' : isFocused ? 'ESC to exit focus' : 'Click terminal to control'}</span>
+                {screenData?.keyboard_locked && <span className="gs-badge-lock">X II</span>}
+                {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
               </span>
               <div className="gs-header-right">
                 {connStatus && (

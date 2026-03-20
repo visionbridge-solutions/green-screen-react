@@ -1,5 +1,5 @@
 import { ScreenBuffer } from './screen.js';
-import { TELNET, KEY_TO_AID, AID } from './constants.js';
+import { TELNET, KEY_TO_AID, AID, FFW } from './constants.js';
 import { charToEbcdic, EBCDIC_SPACE } from './ebcdic.js';
 
 /**
@@ -214,10 +214,9 @@ export class TN5250Encoder {
     for (const ch of text) {
       if (cursorOffset >= fieldEnd) break; // Field is full
 
-      // If cursor is before existing content, insert by shifting right
+      // In insert mode, shift existing content right to make room
       // (per lib5250 dbuffer.c:790-835 dbuffer_ins)
-      if (this.screen.buffer[cursorOffset] !== ' ') {
-        // Shift characters right from end of field to cursor
+      if (this.screen.insertMode && this.screen.buffer[cursorOffset] !== ' ') {
         for (let i = fieldEnd - 1; i > cursorOffset; i--) {
           this.screen.buffer[i] = this.screen.buffer[i - 1];
         }
@@ -230,6 +229,31 @@ export class TN5250Encoder {
     const newPos = this.screen.toRowCol(Math.min(cursorOffset, fieldEnd - 1));
     this.screen.cursorRow = newPos.row;
     this.screen.cursorCol = newPos.col;
+
+    field.modified = true;
+    return true;
+  }
+
+  /**
+   * Field Exit: right-adjust field value per FFW2 bits and mark modified.
+   * Does NOT advance cursor — caller should handle that (e.g., Tab).
+   */
+  fieldExit(): boolean {
+    const field = this.screen.getFieldAtCursor();
+    if (!field || !this.screen.isInputField(field)) return false;
+
+    const value = this.screen.getFieldValue(field);
+    const trimmed = value.replace(/\s+$/, '');
+
+    const adjustType = field.ffw2 & FFW.RIGHT_ADJUST_MASK;
+    if (adjustType !== 0 && trimmed.length > 0 && trimmed.length < field.length) {
+      let padChar = ' ';
+      if (adjustType === 1 || adjustType === 3) padChar = '0'; // zero fill
+      // adjustType 2, 5 = blank fill (padChar stays ' ')
+
+      const adjusted = padChar.repeat(field.length - trimmed.length) + trimmed;
+      this.screen.setFieldValue(field, adjusted);
+    }
 
     field.modified = true;
     return true;

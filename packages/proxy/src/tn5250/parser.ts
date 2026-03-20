@@ -232,6 +232,8 @@ export class TN5250Parser {
           if (cmd === CMD.WRITE_ERROR_CODE_WIN && pos + 1 < data.length) {
             pos += 2; // skip startwin, endwin
           }
+          // Save cursor so Reset can restore it after unlocking
+          this.screen.savedCursorBeforeError = { row: this.screen.cursorRow, col: this.screen.cursorCol };
           // Message line is the last row (row = rows - 1)
           const msgRow = this.screen.rows - 1;
           let msgCol = 0;
