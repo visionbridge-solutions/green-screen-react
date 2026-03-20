@@ -20,4 +20,3 @@ jobs:
       - run: npm run test -w packages/react
       - run: npm run build -w packages/react
       - run: npm run build -w packages/proxy
-      - run: npm run build:ui -w packages/standalone
