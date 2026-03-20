@@ -91,6 +91,10 @@ export class WebSocketAdapter implements TerminalAdapter {
     return this.sendAndWaitForScreen({ type: 'key', key });
   }
 
+  async setCursor(row: number, col: number): Promise<SendResult> {
+    return this.sendAndWaitForScreen({ type: 'setCursor', row, col });
+  }
+
   async connect(config?: ConnectConfig): Promise<SendResult> {
     await this.ensureWebSocket();
 

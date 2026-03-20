@@ -29,6 +29,20 @@ export interface FieldDef {
   modified: boolean;
 }
 
+export interface SelectionChoice {
+  text: string;
+  row: number;
+  col: number;
+}
+
+export interface SelectionFieldDef {
+  row: number;
+  col: number;
+  numRows: number;
+  numCols: number;
+  choices: SelectionChoice[];
+}
+
 export class ScreenBuffer {
   rows: number;
   cols: number;
@@ -50,9 +64,11 @@ export class ScreenBuffer {
   /** Pending alarm/beep from CC2 */
   pendingAlarm: boolean = false;
   /** Stack of saved screen states for SAVE_SCREEN / RESTORE_SCREEN */
-  private screenStack: SavedScreenState[] = [];
+  screenStack: SavedScreenState[] = [];
   /** Active windows (for tracking; borders rendered directly into buffer) */
   windowList: WindowDef[] = [];
+  /** Selection fields parsed from WDSF DEFINE_SELECTION_FIELD */
+  selectionFields: SelectionFieldDef[] = [];
 
   constructor(rows = SCREEN.ROWS_24, cols = SCREEN.COLS_80) {
     this.rows = rows;
@@ -132,6 +148,7 @@ export class ScreenBuffer {
     this.buffer.fill(' ');
     this.attrBuffer.fill(0x20);
     this.fields = [];
+    this.selectionFields = [];
     this.cursorRow = 0;
     this.cursorCol = 0;
   }
@@ -273,6 +290,107 @@ export class ScreenBuffer {
     return true;
   }
 
+  /**
+   * Synthesize a window when the host uses SAVE_SCREEN but no CREATE_WINDOW.
+   * Detects the content area written to the cleared screen, restores the saved
+   * screen as background, and overlays the content with a border.
+   */
+  synthesizeWindow(): void {
+    if (this.screenStack.length === 0) return;
+
+    // Find the bounding box of non-empty content in current buffer
+    let minRow = this.rows, maxRow = -1, minCol = this.cols, maxCol = -1;
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        if (this.buffer[this.offset(r, c)] !== ' ') {
+          if (r < minRow) minRow = r;
+          if (r > maxRow) maxRow = r;
+          if (c < minCol) minCol = c;
+          if (c > maxCol) maxCol = c;
+        }
+      }
+    }
+    if (maxRow < 0) return; // nothing written
+
+    // Save the prompted command content and fields
+    const contentBuf = [...this.buffer];
+    const contentAttr = [...this.attrBuffer];
+    const contentFields = this.fields.map(f => ({ ...f }));
+    const contentCursorRow = this.cursorRow;
+    const contentCursorCol = this.cursorCol;
+
+    // Restore saved screen as background (peek, don't pop — RESTORE_SCREEN will pop)
+    const saved = this.screenStack[this.screenStack.length - 1];
+    this.buffer = [...saved.buffer];
+    this.attrBuffer = [...saved.attrBuffer];
+
+    // Check if there's room for borders (at least 1 cell of space on each side)
+    const hasTopBorder = minRow > 0;
+    const hasBotBorder = maxRow < this.rows - 1;
+    const hasLeftBorder = minCol > 0;
+    const hasRightBorder = maxCol < this.cols - 1;
+
+    if (hasTopBorder || hasBotBorder || hasLeftBorder || hasRightBorder) {
+      const bTop = hasTopBorder ? minRow - 1 : minRow;
+      const bLeft = hasLeftBorder ? minCol - 1 : minCol;
+      const bBot = hasBotBorder ? maxRow + 1 : maxRow;
+      const bRight = hasRightBorder ? maxCol + 1 : maxCol;
+
+      const setBorder = (r: number, c: number, ch: string) => {
+        if (r >= 0 && r < this.rows && c >= 0 && c < this.cols) {
+          const addr = this.offset(r, c);
+          this.buffer[addr] = ch;
+          this.attrBuffer[addr] = 0x22;
+        }
+      };
+
+      // Horizontal edges
+      if (hasTopBorder) for (let c = bLeft; c <= bRight; c++) setBorder(bTop, c, '.');
+      if (hasBotBorder) for (let c = bLeft; c <= bRight; c++) setBorder(bBot, c, '.');
+
+      // Vertical edges
+      if (hasLeftBorder) for (let r = minRow; r <= maxRow; r++) setBorder(r, bLeft, ':');
+      if (hasRightBorder) for (let r = minRow; r <= maxRow; r++) setBorder(r, bRight, ':');
+
+      // Corners
+      if (hasTopBorder && hasLeftBorder) setBorder(bTop, bLeft, '.');
+      if (hasTopBorder && hasRightBorder) setBorder(bTop, bRight, '.');
+      if (hasBotBorder && hasLeftBorder) setBorder(bBot, bLeft, ':');
+      if (hasBotBorder && hasRightBorder) setBorder(bBot, bRight, ':');
+
+      // Erase content area inside the border (clear saved screen artifacts)
+      for (let r = minRow; r <= maxRow; r++) {
+        for (let c = minCol; c <= maxCol; c++) {
+          const addr = this.offset(r, c);
+          this.buffer[addr] = ' ';
+          this.attrBuffer[addr] = 0x20;
+        }
+      }
+    }
+
+    // Copy prompted command content into the area
+    for (let r = minRow; r <= maxRow; r++) {
+      for (let c = minCol; c <= maxCol; c++) {
+        const addr = this.offset(r, c);
+        this.buffer[addr] = contentBuf[addr];
+        this.attrBuffer[addr] = contentAttr[addr];
+      }
+    }
+
+    // Restore content fields and cursor
+    this.fields = contentFields;
+    this.cursorRow = contentCursorRow;
+    this.cursorCol = contentCursorCol;
+
+    // Track as a synthetic window
+    this.windowList.push({
+      row: Math.max(0, minRow - 1),
+      col: Math.max(0, minCol - 1),
+      height: maxRow - minRow + 1,
+      width: maxCol - minCol + 1,
+    });
+  }
+
   /** Erase a rectangular region (inclusive bounds, 0-based) */
   eraseRegion(startRow: number, startCol: number, endRow: number, endCol: number): void {
     for (let r = startRow; r <= endRow; r++) {
@@ -286,10 +404,20 @@ export class ScreenBuffer {
     }
   }
 
-  /** Render a window border into the character buffer.
-   *  (row, col) is the top-left corner of the border.
-   *  Content area is (row+1, col+1) to (row+height, col+width). */
+  /** Render a window border with default characters */
   renderWindowBorder(row: number, col: number, height: number, width: number): void {
+    this.renderWindowBorderCustom(row, col, height, width,
+      { ul: '.', top: '.', ur: '.', left: ':', right: ':', ll: ':', bot: '.', lr: ':' },
+      '', '');
+  }
+
+  /** Render a window border with custom characters and optional title/footer.
+   *  Per lib5250 session.c:3129-3349. */
+  renderWindowBorderCustom(
+    row: number, col: number, height: number, width: number,
+    chars: { ul: string; top: string; ur: string; left: string; right: string; ll: string; bot: string; lr: string },
+    title: string, footer: string,
+  ): void {
     const botRow = row + height + 1;
     const rightCol = col + width + 1;
 
@@ -302,21 +430,37 @@ export class ScreenBuffer {
     };
 
     // Corners
-    setBorder(row, col, '.');
-    setBorder(row, rightCol, '.');
-    setBorder(botRow, col, ':');
-    setBorder(botRow, rightCol, ':');
+    setBorder(row, col, chars.ul);
+    setBorder(row, rightCol, chars.ur);
+    setBorder(botRow, col, chars.ll);
+    setBorder(botRow, rightCol, chars.lr);
 
     // Top and bottom edges
     for (let c = col + 1; c < rightCol; c++) {
-      setBorder(row, c, '.');
-      setBorder(botRow, c, '.');
+      setBorder(row, c, chars.top);
+      setBorder(botRow, c, chars.bot);
     }
 
     // Left and right edges
     for (let r = row + 1; r < botRow; r++) {
-      setBorder(r, col, ':');
-      setBorder(r, rightCol, ':');
+      setBorder(r, col, chars.left);
+      setBorder(r, rightCol, chars.right);
+    }
+
+    // Window title (centered on top border)
+    if (title) {
+      const startCol = col + 1 + Math.max(0, Math.floor((width - title.length) / 2));
+      for (let i = 0; i < title.length && startCol + i < rightCol; i++) {
+        setBorder(row, startCol + i, title[i]);
+      }
+    }
+
+    // Window footer (centered on bottom border)
+    if (footer) {
+      const startCol = col + 1 + Math.max(0, Math.floor((width - footer.length) / 2));
+      for (let i = 0; i < footer.length && startCol + i < rightCol; i++) {
+        setBorder(botRow, startCol + i, footer[i]);
+      }
     }
   }
 
@@ -346,6 +490,8 @@ export class ScreenBuffer {
     insert_mode?: boolean;
   } {
     // Build content as newline-separated rows, sanitising control characters
+    // and replacing 5250 indicator characters that the host sends without
+    // an SA charset switch (common on pub400 and other non-GUI hosts).
     const lines: string[] = [];
     for (let r = 0; r < this.rows; r++) {
       const start = r * this.cols;
@@ -354,11 +500,25 @@ export class ScreenBuffer {
         const ch = this.buffer[start + c];
         const code = ch.charCodeAt(0);
         // Replace control characters (< 0x20) and DEL (0x7F) with space
-        row += (code < 0x20 || code === 0x7F || code >= 0x80 && code <= 0x9F) ? ' ' : ch;
+        if (code < 0x20 || code === 0x7F || code >= 0x80 && code <= 0x9F) {
+          row += ' ';
+        } else {
+          row += ch;
+        }
       }
       lines.push(row);
     }
-    const content = lines.join('\n');
+
+    // Clean up 5250 indicator artifacts in the rendered text:
+    // - â/ê appearing as lone chars before "Bottom"/"More"/"Top" → replace with arrows
+    // - & appearing as isolated chars (field attribute separators) → replace with space
+    // - ( + ê appearing at end of indicator lines → replace with space
+    let content = lines.join('\n');
+    content = content.replace(/â(\s+(Bottom|More))/g, '↓$1');
+    content = content.replace(/â(\s+(Top))/g, '↑$1');
+    content = content.replace(/(\s)ê(\s)/g, '$1 $2');
+    content = content.replace(/(\s)&(\s{2,})/g, '$1 $2');
+    content = content.replace(/\(\s{2,}\+\s+ê/g, '               ');
 
     // Map fields to frontend format
     const fields = this.fields.map(f => {

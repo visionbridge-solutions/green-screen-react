@@ -16,8 +16,8 @@ export class TN5250Parser {
   private icApplied = false;
   /** Active window offset — after CREATE_WINDOW, SBA/RA/EA addresses are
    *  relative to the window content area, not the full screen. */
-  private winRowOff = 0;
-  private winColOff = 0;
+  winRowOff = 0;
+  winColOff = 0;
 
   constructor(screen: ScreenBuffer) {
     this.screen = screen;
@@ -72,7 +72,6 @@ export class TN5250Parser {
     }
 
     let modified = false;
-
     switch (opcode) {
       case OPCODE.OUTPUT:
       case OPCODE.PUT_GET:
@@ -321,6 +320,11 @@ export class TN5250Parser {
           break;
         }
 
+        case 0x04:
+          // Sub-record marker — skip (appears between commands in some hosts)
+          pos++;
+          break;
+
         default:
           // Not a recognized command at this position
           // Try treating remaining data as orders/text
@@ -426,42 +430,31 @@ export class TN5250Parser {
         }
 
         case ORDER.EA: {
-          // Erase to Address: row(1-based), col(1-based), length, attr bytes
-          // Per lib5250: reads 3+ bytes — row, col, then a length byte
-          // indicating how many more bytes follow (attribute types).
-          if (pos + 3 >= data.length) return data.length;
+          // Erase to Address: 2 bytes — row(1-based), col(1-based)
+          // Per 5250 spec (5494 Functions Reference) and lib5250: EA takes
+          // only row + col, erases from current address to target address.
+          if (pos + 2 >= data.length) return data.length;
           pos++;
           const eaRow = data[pos++] - 1 + this.winRowOff;
           const eaCol = data[pos++] - 1 + this.winColOff;
-          const eaLen = data[pos++]; // length of attribute list (includes itself)
-          // Consume attribute type bytes (eaLen - 1 more bytes)
-          const attrBytesToSkip = Math.max(0, eaLen - 1);
-          let eaAttr = 0xFF; // default: erase all
-          for (let ai = 0; ai < attrBytesToSkip && pos < data.length; ai++) {
-            eaAttr = data[pos++];
-          }
           const eaTarget = this.screen.offset(eaRow, eaCol);
-          // Erase from current to target (lib5250 only erases when attr==0xFF)
-          if (eaAttr === 0xFF) {
-            if (eaTarget >= currentAddr) {
-              while (currentAddr < eaTarget && currentAddr < this.screen.size) {
-                this.screen.setCharAt(currentAddr, ' ');
-                currentAddr++;
-              }
-            } else {
-              // Wrap-around
-              while (currentAddr < this.screen.size) {
-                this.screen.setCharAt(currentAddr, ' ');
-                currentAddr++;
-              }
-              currentAddr = 0;
-              while (currentAddr < eaTarget && currentAddr < this.screen.size) {
-                this.screen.setCharAt(currentAddr, ' ');
-                currentAddr++;
-              }
+          if (eaTarget >= currentAddr) {
+            while (currentAddr < eaTarget && currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ' ');
+              currentAddr++;
+            }
+          } else {
+            // Wrap-around
+            while (currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ' ');
+              currentAddr++;
+            }
+            currentAddr = 0;
+            while (currentAddr < eaTarget && currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ' ');
+              currentAddr++;
             }
           }
-          // EA sets current address to target+1 (per spec)
           currentAddr = eaTarget;
           break;
         }
@@ -470,14 +463,16 @@ export class TN5250Parser {
           // Start of Header: variable-length header for input fields.
           // Per lib5250: SOH clears format table and pending insert cursor.
           // Format: [0x01] [length] [data...]
-          // The length byte includes SOH byte + itself, so remaining = length - 2.
+          // The length byte specifies the number of data bytes following it
+          // (NOT including SOH or length byte itself).
           if (pos + 1 >= data.length) return data.length;
           pos++;
           this.screen.fields = [];
+          this.screen.selectionFields = [];
           pendingICRow = -1;
           pendingICCol = -1;
           const hdrLen = data[pos++];
-          pos += Math.max(0, hdrLen - 2);
+          pos += Math.max(0, hdrLen);
           break;
         }
 
@@ -546,6 +541,9 @@ export class TN5250Parser {
                 case WDSF_TYPE.CREATE_WINDOW:
                   this.parseCreateWindow(data, pos, wdsfEnd);
                   break;
+                case WDSF_TYPE.DEFINE_SELECTION_FIELD:
+                  this.parseDefineSelectionField(data, pos, wdsfEnd);
+                  break;
                 case WDSF_TYPE.REM_GUI_WINDOW:
                   if (this.screen.windowList.length > 0) {
                     this.screen.windowList.pop();
@@ -557,6 +555,8 @@ export class TN5250Parser {
                   this.screen.windowList = [];
                   this.winRowOff = 0;
                   this.winColOff = 0;
+                  break;
+                default:
                   break;
               }
             }
@@ -748,20 +748,55 @@ export class TN5250Parser {
   private parseCreateWindow(data: Buffer, pos: number, end: number): void {
     if (pos + 4 >= end) return;
 
-    const flagbyte1 = data[pos++]; // 0x80=cursor restricted, 0x40=pull-down
+    const _flagbyte1 = data[pos++]; // 0x80=cursor restricted, 0x40=pull-down
     pos += 2; // 2 reserved bytes
     const depth = data[pos++];     // content height
     const width = data[pos++];     // content width
 
-    // Remaining bytes are border minor structures — skip for now
+    // Parse border minor structures per lib5250 session.c:3129-3349
+    let borderChars = { ul: '.', top: '.', ur: '.', left: ':', right: ':', ll: ':', bot: '.', lr: ':' };
+    let titleText = '';
+    let footerText = '';
+
+    while (pos < end) {
+      if (pos + 2 > end) break;
+      const minorLen = data[pos];
+      if (minorLen < 2 || pos + minorLen > end) break;
+      const minorType = data[pos + 1];
+
+      if (minorType === 0x01 && minorLen >= 13) {
+        // Border Presentation: flags(1) + mono_attr(1) + color_attr(1) + 8 border chars
+        borderChars = {
+          ul:    ebcdicToChar(data[pos + 5]),
+          top:   ebcdicToChar(data[pos + 6]),
+          ur:    ebcdicToChar(data[pos + 7]),
+          left:  ebcdicToChar(data[pos + 8]),
+          right: ebcdicToChar(data[pos + 9]),
+          ll:    ebcdicToChar(data[pos + 10]),
+          bot:   ebcdicToChar(data[pos + 11]),
+          lr:    ebcdicToChar(data[pos + 12]),
+        };
+      } else if (minorType === 0x10 && minorLen > 6) {
+        // Window Title/Footer: flags(1) + mono_attr(1) + color_attr(1) + reserved(1) + text
+        const isFooter = (data[pos + 2] & 0x40) !== 0;
+        let text = '';
+        for (let i = 6; i < minorLen; i++) {
+          text += ebcdicToChar(data[pos + i]);
+        }
+        if (isFooter) footerText = text;
+        else titleText = text;
+      }
+
+      pos += minorLen;
+    }
 
     const winRow = this.screen.cursorRow;
     const winCol = this.screen.cursorCol;
 
     this.screen.windowList.push({ row: winRow, col: winCol, height: depth, width: width });
 
-    // Render border into character buffer
-    this.screen.renderWindowBorder(winRow, winCol, depth, width);
+    // Render border with custom characters from host
+    this.screen.renderWindowBorderCustom(winRow, winCol, depth, width, borderChars, titleText, footerText);
 
     // Erase content area inside the border
     this.screen.eraseRegion(winRow + 1, winCol + 1, winRow + depth, winCol + width);
@@ -770,6 +805,89 @@ export class TN5250Parser {
     // the window content area (row+1, col+1)
     this.winRowOff = winRow + 1;
     this.winColOff = winCol + 1;
+  }
+
+  /**
+   * Parse DEFINE_SELECTION_FIELD structured field data.
+   * Per lib5250 session.c:2930-3128 (tn5250_session_handle_define_selection).
+   *
+   * 16-byte fixed header:
+   *   [0] flagbyte1  [1] flagbyte2  [2] flagbyte3  [3] fieldtype
+   *   [4-8] reserved (5 bytes)
+   *   [9] itemsize   [10] height    [11] items     [12] padding
+   *   [13] separator [14] selectionchar  [15] cancelaid
+   *
+   * Followed by minor structures (type 0x10 = choice text, etc.)
+   */
+  private parseDefineSelectionField(data: Buffer, pos: number, end: number): void {
+    if (pos + 16 > end) return;
+
+    const _flagbyte1 = data[pos++];
+    const _flagbyte2 = data[pos++];
+    const _flagbyte3 = data[pos++];
+    const fieldType = data[pos++];    // 0x01=menubar, 0x11=single, 0x12=multi, etc.
+    pos += 5;                          // 5 reserved bytes
+    const itemSize = data[pos++];      // width of each choice text
+    const numRows = data[pos++];       // visible rows
+    const numItems = data[pos++];      // total choices
+    const _padding = data[pos++];
+    const _separator = data[pos++];
+    const _selectionChar = data[pos++];
+    const _cancelAid = data[pos++];
+
+    const baseRow = this.screen.cursorRow;
+    const baseCol = this.screen.cursorCol;
+
+    const choices: Array<{ text: string; row: number; col: number }> = [];
+    let choiceIndex = 0;
+
+    // Parse minor structures
+    while (pos < end) {
+      if (pos + 2 > end) break;
+      const minorLen = data[pos];
+      if (minorLen < 2 || pos + minorLen > end) break;
+
+      const minorType = data[pos + 1];
+
+      if (minorType === 0x10 && minorLen >= 5) {
+        // Choice text: flagbyte1(1) + flagbyte2(1) + flagbyte3(1) + optional fields + text
+        // Per lib5250: flagbyte3 bits 7-5 determine if this choice is used.
+        // If all zero, the entire minor structure is ignored.
+        const choiceFlagbyte1 = data[pos + 2];
+        const _choiceFlagbyte2 = data[pos + 3];
+        const choiceFlagbyte3 = data[pos + 4];
+
+        // Skip if flagbyte3 bits 7-5 are all zero (choice not applicable)
+        if ((choiceFlagbyte3 & 0xE0) !== 0) {
+          // Calculate text offset: skip flags, optional mnemonic/AID/numeric fields
+          let textOff = 5;
+          if (choiceFlagbyte1 & 0x08) textOff++; // mnemonic offset
+          if (choiceFlagbyte1 & 0x04) textOff++; // AID byte
+          const numericSel = choiceFlagbyte1 & 0x03;
+          if (numericSel === 1) textOff++;        // single-digit numeric
+          else if (numericSel === 2) textOff += 2; // double-digit numeric
+
+          let text = '';
+          for (let i = textOff; i < minorLen; i++) {
+            text += ebcdicToChar(data[pos + i]);
+          }
+
+          const choiceRow = baseRow + choiceIndex;
+          choices.push({ text, row: choiceRow, col: baseCol });
+          choiceIndex++;
+        }
+      }
+
+      pos += minorLen;
+    }
+
+    this.screen.selectionFields.push({
+      row: baseRow,
+      col: baseCol,
+      numRows,
+      numCols: itemSize,
+      choices,
+    });
   }
 
   /**

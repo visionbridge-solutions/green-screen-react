@@ -155,11 +155,11 @@ export class TN5250Handler extends ProtocolHandler {
         .sort((a, b) => this.screen.offset(a.row, a.col) - this.screen.offset(b.row, b.col));
       if (allInputs.length === 0) return false;
 
-      // Only include fields with visible underscore indicator. Non-display
-      // fields (like UIM artifacts with rawAttr 0x27) are excluded — they
-      // appear as invisible input areas that produce errors when used.
+      // Exclude non-display fields (like UIM artifacts with rawAttr 0x27) —
+      // they appear as invisible input areas that produce errors when used.
+      // All other input fields (underscored, normal display, etc.) are kept.
       const functional = allInputs.filter(f =>
-        this.screen.hasNativeUnderscore(f)
+        !this.screen.hasNativeNonDisplay(f)
       );
       // If no fields have visible input indicators, use only the last input
       // field (typically the command line). UIM artifact fields earlier in the
@@ -409,6 +409,52 @@ export class TN5250Handler extends ProtocolHandler {
     });
   }
 
+  /**
+   * Set cursor position (for click-to-position). Validates the target is
+   * inside an input field; if not, finds the nearest input field.
+   * Returns true if the cursor was repositioned.
+   */
+  setCursor(row: number, col: number): boolean {
+    // Clamp to screen bounds
+    row = Math.max(0, Math.min(row, this.screen.rows - 1));
+    col = Math.max(0, Math.min(col, this.screen.cols - 1));
+
+    // Check if target is directly in an input field
+    const field = this.screen.getFieldAt(row, col);
+    if (field && this.screen.isInputField(field)) {
+      this.screen.cursorRow = row;
+      this.screen.cursorCol = col;
+      return true;
+    }
+
+    // Find nearest input field (prefer same row, then closest overall)
+    const inputFields = this.screen.fields.filter(f => this.screen.isInputField(f) && this.screen.hasNativeUnderscore(f));
+    if (inputFields.length === 0) return false;
+
+    const targetPos = this.screen.offset(row, col);
+    let bestField: FieldDef | null = null;
+    let bestDist = Infinity;
+
+    for (const f of inputFields) {
+      const fStart = this.screen.offset(f.row, f.col);
+      const fEnd = fStart + f.length - 1;
+      // Distance: 0 if inside, else distance to nearest edge
+      const dist = targetPos < fStart ? fStart - targetPos
+        : targetPos > fEnd ? targetPos - fEnd : 0;
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestField = f;
+      }
+    }
+
+    if (bestField) {
+      this.screen.cursorRow = bestField.row;
+      this.screen.cursorCol = bestField.col;
+      return true;
+    }
+    return false;
+  }
+
   sendRaw(data: Buffer): void {
     this.connection.sendRaw(data);
   }
@@ -430,6 +476,14 @@ export class TN5250Handler extends ProtocolHandler {
 
     if (modified) {
       this.parser.calculateFieldLengths();
+
+      // If we're in a SAVE_SCREEN context but the host didn't send CREATE_WINDOW,
+      // synthesize a window by overlaying the content on the saved screen.
+      // Check if a real CREATE_WINDOW was used (parser sets winRowOff/winColOff).
+      if (this.screen.screenStack.length > 0 && this.parser.winRowOff === 0 && this.parser.winColOff === 0) {
+        this.screen.synthesizeWindow();
+      }
+
       this.emit('screenChange', this.screen.toScreenData());
     }
   }

@@ -145,6 +145,13 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
       break;
     }
 
+    case 'setCursor': {
+      const controller = client.controller;
+      if (!controller) { wsSend(ws, { type: 'error', message: 'Not connected' }); return; }
+      controller.handleSetCursor(msg.row, msg.col);
+      break;
+    }
+
     case 'reattach': {
       const { sessionId } = msg;
       // Reattach is local-proxy-specific (session persistence across page reloads).

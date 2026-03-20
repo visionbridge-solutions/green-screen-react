@@ -17,6 +17,7 @@ const noopAdapter: TerminalAdapter = {
   getStatus: async () => ({ connected: false, status: 'disconnected' }),
   sendText: async () => noopResult,
   sendKey: async () => noopResult,
+  setCursor: async () => noopResult,
   connect: async () => noopResult,
   disconnect: async () => noopResult,
   reconnect: async () => noopResult,
@@ -357,11 +358,49 @@ export function GreenScreenTerminal({
     if (readOnly && isFocused) { setIsFocused(false); inputRef.current?.blur(); }
   }, [readOnly, isFocused]);
 
-  const handleTerminalClick = useCallback(() => {
+  const screenContentRef = useRef<HTMLDivElement>(null);
+  const charWidthRef = useRef<number>(0);
+
+  const handleTerminalClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (readOnly) return;
     setIsFocused(true);
     inputRef.current?.focus();
-  }, [readOnly]);
+
+    // Click-to-cursor: calculate which row/col was clicked
+    const contentEl = screenContentRef.current;
+    if (!contentEl || !screenData?.fields) return;
+
+    // Measure 1ch width in current font
+    if (!charWidthRef.current) {
+      const span = document.createElement('span');
+      span.style.cssText = 'position:absolute;visibility:hidden;font:inherit;white-space:pre';
+      span.textContent = 'X';
+      contentEl.appendChild(span);
+      charWidthRef.current = span.getBoundingClientRect().width;
+      contentEl.removeChild(span);
+    }
+
+    const rect = contentEl.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const ROW_HEIGHT = 21;
+    const charWidth = charWidthRef.current;
+    if (!charWidth) return;
+
+    const clickedRow = Math.floor(y / ROW_HEIGHT);
+    const clickedCol = Math.floor(x / charWidth);
+
+    if (clickedRow < 0 || clickedRow >= (screenData.rows || 24) ||
+        clickedCol < 0 || clickedCol >= (screenData.cols || 80)) return;
+
+    // Send cursor position to proxy (async, fire-and-forget for responsiveness)
+    setSyncedCursor({ row: clickedRow, col: clickedCol });
+    adapter.setCursor?.(clickedRow, clickedCol).then(r => {
+      if (r?.cursor_row !== undefined) {
+        setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
+      }
+    });
+  }, [readOnly, screenData, adapter]);
 
   // --- Field helpers ---
   const getCurrentField = useCallback(() => {
@@ -710,7 +749,7 @@ export function GreenScreenTerminal({
               <span>{String(screenError)}</span>
             </div>
           )}
-          <div className="gs-screen-content">{renderScreen()}</div>
+          <div ref={screenContentRef} className="gs-screen-content">{renderScreen()}</div>
           {overlay}
           {showShortcuts && (
             <div className="gs-shortcuts-panel">
@@ -725,7 +764,7 @@ export function GreenScreenTerminal({
                   <tr><td className="gs-shortcut-key">Insert</td><td>Insert / Overwrite</td></tr>
                   <tr><td className="gs-shortcut-key">Page Up</td><td>Roll Down</td></tr>
                   <tr><td className="gs-shortcut-key">Page Down</td><td>Roll Up</td></tr>
-                  <tr><td className="gs-shortcut-key">Click</td><td>Enter focus mode</td></tr>
+                  <tr><td className="gs-shortcut-key">Click</td><td>Focus / Position cursor</td></tr>
                   <tr><td className="gs-shortcut-key">Escape</td><td>Exit focus mode</td></tr>
                 </tbody>
               </table>

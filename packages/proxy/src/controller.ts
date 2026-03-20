@@ -125,6 +125,18 @@ export class SessionController {
     }
   }
 
+  handleSetCursor(row: number, col: number): void {
+    if (!this.handler || !this.connected) {
+      this.send({ type: 'error', message: 'Not connected' });
+      return;
+    }
+    if (this.handler instanceof TN5250Handler) {
+      this.handler.setCursor(row, col);
+    }
+    const sd = this.handler.getScreenData();
+    this.send({ type: 'cursor', data: { cursor_row: sd.cursor_row, cursor_col: sd.cursor_col } });
+  }
+
   handleDisconnect(): void {
     if (this.handler) {
       this.handler.destroy();
