@@ -134,8 +134,7 @@ export class TN5250Parser {
           data[i] === CMD.CLEAR_UNIT_ALT ||
           data[i] === CMD.WRITE_STRUCTURED_FIELD ||
           data[i] === CMD.WRITE_ERROR_CODE ||
-          data[i] === CMD.WRITE_ERROR_CODE_WIN ||
-          data[i] === CMD.RESTORE_SCREEN) {
+          data[i] === CMD.WRITE_ERROR_CODE_WIN) {
         return this.parseCommands(data, i);
       }
     }
@@ -310,21 +309,6 @@ export class TN5250Parser {
             }
             modified = true;
           }
-          break;
-        }
-
-        case CMD.SAVE_SCREEN: {
-          pos++;
-          this.screen.saveState();
-          modified = true;
-          break;
-        }
-
-        case CMD.RESTORE_SCREEN: {
-          pos++;
-          this.screen.restoreState();
-          this.screen.windowList = [];
-          modified = true;
           break;
         }
 
