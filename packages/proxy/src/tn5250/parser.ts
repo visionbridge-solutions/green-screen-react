@@ -159,6 +159,9 @@ export class TN5250Parser {
         case CMD.CLEAR_UNIT:
         case CMD.CLEAR_UNIT_ALT:
           this.screen.clear();
+          this.screen.windowList = [];
+          this.winRowOff = 0;
+          this.winColOff = 0;
           pos++;
           modified = true;
           break;
