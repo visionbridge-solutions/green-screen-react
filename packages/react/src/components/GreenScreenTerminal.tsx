@@ -553,6 +553,11 @@ export function GreenScreenTerminal({
     const ROW_HEIGHT = 21;
     const cursor = getCursorPos();
     const hasCursor = screenData.cursor_row !== undefined && screenData.cursor_col !== undefined;
+    // Only show cursor when it's inside an input field
+    const cursorInInputField = hasCursor && fields.some(f =>
+      f.is_input && f.row === cursor.row &&
+      cursor.col >= f.col && cursor.col < f.col + f.length
+    );
 
     return (
       <div style={{ fontFamily: 'var(--gs-font)', fontSize: '13px', position: 'relative', width: `${cols}ch` }}>
@@ -568,7 +573,7 @@ export function GreenScreenTerminal({
               {headerSegments
                 ? headerSegments.map((seg, i) => <span key={i} className={seg.colorClass}>{seg.text}</span>)
                 : renderRowWithFields(displayLine, index, fields)}
-              {hasCursor && !showSignInHint && index === cursor.row && (
+              {cursorInInputField && !showSignInHint && index === cursor.row && (
                 <span className="gs-cursor" style={{ position: 'absolute', left: `${cursor.col}ch`, width: '1ch', height: `${ROW_HEIGHT}px`, top: 0, pointerEvents: 'none' }} />
               )}
             </div>
