@@ -67,43 +67,48 @@ export class TN5250Handler extends ProtocolHandler {
     // KEY_TO_AID uses mixed case (Enter, PageUp). Handle both.
     const normalizedKey = this.normalizeKeyName(keyName);
 
-    // Arrow keys: local cursor movement per lib5250 dbuffer.c:556-625
+    // Arrow keys: local cursor movement within input fields.
+    // Left/Right: move within current field, stop at field boundaries.
+    // Up/Down: move to previous/next input field.
     if (normalizedKey === 'ArrowLeft' || normalizedKey === 'ArrowRight' ||
         normalizedKey === 'ArrowUp' || normalizedKey === 'ArrowDown') {
-      let { cursorRow, cursorCol } = this.screen;
-      switch (normalizedKey) {
-        case 'ArrowLeft':
-          cursorCol--;
-          if (cursorCol < 0) { cursorCol = this.screen.cols - 1; cursorRow--; }
-          if (cursorRow < 0) cursorRow = this.screen.rows - 1;
-          break;
-        case 'ArrowRight':
-          cursorCol++;
-          if (cursorCol >= this.screen.cols) { cursorCol = 0; cursorRow++; }
-          if (cursorRow >= this.screen.rows) cursorRow = 0;
-          break;
-        case 'ArrowUp':
-          cursorRow--;
-          if (cursorRow < 0) cursorRow = this.screen.rows - 1;
-          break;
-        case 'ArrowDown':
-          cursorRow++;
-          if (cursorRow >= this.screen.rows) cursorRow = 0;
-          break;
+      const field = this.screen.getFieldAtCursor();
+      if (!field || !this.screen.isInputField(field)) return true; // no-op outside input
+
+      if (normalizedKey === 'ArrowLeft') {
+        if (this.screen.cursorCol > field.col) {
+          this.screen.cursorCol--;
+        }
+      } else if (normalizedKey === 'ArrowRight') {
+        if (this.screen.cursorCol < field.col + field.length - 1) {
+          this.screen.cursorCol++;
+        }
+      } else {
+        // Up/Down: move to prev/next input field (reuse Tab/Backtab logic)
+        return this.sendKey(normalizedKey === 'ArrowUp' ? 'Backtab' : 'Tab');
       }
-      this.screen.cursorRow = cursorRow;
-      this.screen.cursorCol = cursorCol;
       return true;
     }
 
-    // Home: move cursor to home position (first input field or IC position)
+    // Home: move cursor to start of current input field
     if (normalizedKey === 'Home') {
-      const firstInput = this.screen.fields
-        .filter(f => this.screen.isInputField(f))
-        .sort((a, b) => this.screen.offset(a.row, a.col) - this.screen.offset(b.row, b.col))[0];
-      if (firstInput) {
-        this.screen.cursorRow = firstInput.row;
-        this.screen.cursorCol = firstInput.col;
+      const field = this.screen.getFieldAtCursor();
+      if (field && this.screen.isInputField(field)) {
+        this.screen.cursorCol = field.col;
+      }
+      return true;
+    }
+
+    // End: move cursor to end of data in current input field
+    if (normalizedKey === 'End') {
+      const field = this.screen.getFieldAtCursor();
+      if (field && this.screen.isInputField(field)) {
+        const start = this.screen.offset(field.row, field.col);
+        let lastData = field.col;
+        for (let i = 0; i < field.length; i++) {
+          if (this.screen.buffer[start + i] !== ' ') lastData = field.col + i + 1;
+        }
+        this.screen.cursorCol = Math.min(lastData, field.col + field.length - 1);
       }
       return true;
     }

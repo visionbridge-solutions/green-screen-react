@@ -100,7 +100,7 @@ export class SessionController {
       'Tab', 'Backtab', 'TAB', 'BACKTAB',
       'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
       'LEFT', 'RIGHT', 'UP', 'DOWN',
-      'Home', 'HOME',
+      'Home', 'HOME', 'End', 'END',
     ];
     if (localKeys.includes(key)) {
       this.send({ type: 'screen', data: this.handler.getScreenData() });
