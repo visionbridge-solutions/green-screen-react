@@ -24,6 +24,9 @@ proxy.app.get('*', (req, res, next) => {
 import { existsSync } from 'node:fs';
 
 const url = `http://localhost:${proxy.port}?mode=standalone`;
+if (proxy.port !== 3001) {
+  console.log(`Port 3001 was in use, using port ${proxy.port} instead`);
+}
 console.log(`Green Screen Terminal running at http://localhost:${proxy.port}`);
 if (isMock) {
   console.log('Running in MOCK mode');

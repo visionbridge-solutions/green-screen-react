@@ -56,14 +56,18 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
   }
 
   const server = createServer(app);
-  if (setupWebSocket) setupWebSocket(server);
 
   let resolvedPort = port;
+  const maxPort = port + 20;
 
   return new Promise<ProxyServer>((resolve, reject) => {
     server.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
         resolvedPort++;
+        if (resolvedPort > maxPort) {
+          reject(new Error(`All ports ${port}–${maxPort} are in use`));
+          return;
+        }
         server.listen(resolvedPort);
       } else {
         reject(err);
@@ -71,6 +75,10 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
     });
 
     server.listen(resolvedPort, () => {
+      // Attach WebSocket after successful listen to avoid EADDRINUSE
+      // being re-emitted as an unhandled error on the WebSocketServer
+      if (setupWebSocket) setupWebSocket(server);
+
       resolve({
         server,
         app,
