@@ -209,6 +209,22 @@ export class WebSocketAdapter implements TerminalAdapter {
         break;
       }
 
+      case 'cursor': {
+        // Lightweight cursor-only response for local operations (arrows, Tab)
+        // Resolve pending promise with just cursor position, no screen update
+        if (this.pendingScreenResolver) {
+          const resolver = this.pendingScreenResolver;
+          this.pendingScreenResolver = null;
+          resolver({
+            cursor_row: msg.data.cursor_row,
+            cursor_col: msg.data.cursor_col,
+            content: this.screen?.content ?? '',
+            screen_signature: this.screen?.screen_signature ?? '',
+          } as any);
+        }
+        break;
+      }
+
       case 'status':
         this.status = msg.data;
         for (const listener of this.statusListeners) listener(msg.data);

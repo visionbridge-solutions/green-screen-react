@@ -104,7 +104,15 @@ export class SessionController {
       'Backspace', 'BACKSPACE', 'Delete', 'DELETE',
     ];
     if (localKeys.includes(key)) {
-      this.send({ type: 'screen', data: this.handler.getScreenData() });
+      // Local buffer-modifying ops need full screen; cursor-only ops don't
+      const bufferOps = ['Backspace', 'BACKSPACE', 'Delete', 'DELETE'];
+      if (bufferOps.includes(key)) {
+        this.send({ type: 'screen', data: this.handler.getScreenData() });
+      } else {
+        // Cursor-only movement — send lightweight response
+        const sd = this.handler.getScreenData();
+        this.send({ type: 'cursor', data: { cursor_row: sd.cursor_row, cursor_col: sd.cursor_col } });
+      }
     } else {
       await this.waitForScreen(3000);
       this.send({ type: 'screen', data: this.handler.getScreenData() });
