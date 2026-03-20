@@ -18,6 +18,8 @@ interface WsClient {
 const clients: Set<WsClient> = new Set();
 const sessionClients: Map<string, Set<WsClient>> = new Map();
 const unassignedClients: Set<WsClient> = new Set();
+/** Controllers whose WebSocket disconnected but TCP is still alive (for reattach) */
+const orphanedControllers: Map<string, SessionController> = new Map();
 
 function indexClient(client: WsClient): void {
   if (client.sessionId) {
@@ -34,6 +36,10 @@ function removeClient(client: WsClient): void {
   clients.delete(client);
   unassignedClients.delete(client);
   if (client.sessionId) {
+    // If this client has a live controller, orphan it for potential reattach
+    if (client.controller && client.controller.connected) {
+      orphanedControllers.set(client.sessionId, client.controller);
+    }
     const set = sessionClients.get(client.sessionId);
     if (set) {
       set.delete(client);
@@ -79,7 +85,18 @@ export function setupWebSocket(server: HttpServer): WebSocketServer {
 async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promise<void> {
   switch (msg.type) {
     case 'connect': {
-      const { host = 'pub400.com', port = 23, protocol = 'tn5250', username, password } = msg;
+      const { host = 'pub400.com', port = 23, protocol = 'tn5250', username, password, terminalType } = msg;
+
+      // Destroy previous session if this client had one
+      const oldSessionId = client.sessionId;
+      if (oldSessionId) {
+        destroySession(oldSessionId);
+        const orphan = orphanedControllers.get(oldSessionId);
+        if (orphan) { orphan.handleDisconnect(); orphanedControllers.delete(oldSessionId); }
+        if (client.controller) { client.controller.handleDisconnect(); }
+        const set = sessionClients.get(oldSessionId);
+        if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(oldSessionId); }
+      }
 
       const controller = new SessionController((m) => {
         wsSend(ws, m);
@@ -92,12 +109,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
 
       // Generate a session ID and track it
       const sessionId = crypto.randomUUID();
-      const oldSessionId = client.sessionId;
       client.sessionId = sessionId;
-      if (oldSessionId) {
-        const set = sessionClients.get(oldSessionId);
-        if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(oldSessionId); }
-      }
       unassignedClients.delete(client);
       indexClient(client);
 
@@ -109,6 +121,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
           username,
           password,
           sessionId,
+          terminalType,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -132,25 +145,72 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
       break;
     }
 
+    case 'setCursor': {
+      const controller = client.controller;
+      if (!controller) { wsSend(ws, { type: 'error', message: 'Not connected' }); return; }
+      controller.handleSetCursor(msg.row, msg.col);
+      break;
+    }
+
     case 'reattach': {
       const { sessionId } = msg;
       // Reattach is local-proxy-specific (session persistence across page reloads).
-      // Find the existing controller by matching the old session's handler.
-      const session = sessionId ? getSession(sessionId) : undefined;
-      if (session && session.status.connected) {
+      // Find the existing controller by scanning all clients with this session ID.
+      let existingController: SessionController | null = null;
+      if (sessionId) {
+        // Check orphaned controllers first (from page reloads)
+        const orphan = orphanedControllers.get(sessionId);
+        if (orphan && orphan.connected) {
+          existingController = orphan;
+          orphanedControllers.delete(sessionId);
+        }
+        // Also check active clients
+        if (!existingController) {
+          const targets = sessionClients.get(sessionId);
+          if (targets) {
+            for (const c of targets) {
+              if (c.controller && c.controller.connected) {
+                existingController = c.controller;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      if (existingController) {
+        // Reuse the existing controller — just re-bind this WebSocket to it
         const oldSessionId = client.sessionId;
-        client.sessionId = session.id;
-        if (oldSessionId) {
+        client.sessionId = sessionId;
+        client.controller = existingController;
+        if (oldSessionId && oldSessionId !== sessionId) {
           const set = sessionClients.get(oldSessionId);
           if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(oldSessionId); }
         }
         unassignedClients.delete(client);
         indexClient(client);
-        wsSend(ws, { type: 'screen', data: session.getScreenData() });
-        wsSend(ws, { type: 'status', data: session.status });
-        wsSend(ws, { type: 'connected', sessionId: session.id });
+        const screen = existingController.getScreenData();
+        if (screen) wsSend(ws, { type: 'screen', data: screen });
+        wsSend(ws, { type: 'status', data: { connected: true, status: 'connected' } });
+        wsSend(ws, { type: 'connected', sessionId });
       } else {
-        wsSend(ws, { type: 'error', message: 'Session not found or disconnected' });
+        // Also try the session manager (REST sessions)
+        const session = sessionId ? getSession(sessionId) : undefined;
+        if (session && session.status.connected) {
+          const oldSessionId = client.sessionId;
+          client.sessionId = session.id;
+          if (oldSessionId) {
+            const set = sessionClients.get(oldSessionId);
+            if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(oldSessionId); }
+          }
+          unassignedClients.delete(client);
+          indexClient(client);
+          wsSend(ws, { type: 'screen', data: session.getScreenData() });
+          wsSend(ws, { type: 'status', data: session.status });
+          wsSend(ws, { type: 'connected', sessionId: session.id });
+        } else {
+          wsSend(ws, { type: 'error', message: 'Session not found or disconnected' });
+        }
       }
       break;
     }

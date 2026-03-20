@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { ProtocolHandler, createProtocolHandler } from './protocols/index.js';
-import type { ProtocolType, ScreenData } from './protocols/index.js';
+import type { ProtocolType, ProtocolOptions, ScreenData } from './protocols/index.js';
 import type { ConnectionStatus } from 'green-screen-types';
 
 export class Session extends EventEmitter {
@@ -36,13 +36,13 @@ export class Session extends EventEmitter {
     return { ...this._status };
   }
 
-  async connect(host: string, port: number): Promise<void> {
+  async connect(host: string, port: number, options?: ProtocolOptions): Promise<void> {
     this._host = host;
     this._port = port;
     this._status = { connected: false, status: 'connecting', protocol: this.protocol, host };
     this.emit('statusChange', this._status);
 
-    await this.handler.connect(host, port);
+    await this.handler.connect(host, port, options);
 
     this._status = { connected: true, status: 'connected', protocol: this.protocol, host };
     this.emit('statusChange', this._status);

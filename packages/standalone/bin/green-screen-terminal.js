@@ -21,15 +21,56 @@ proxy.app.get('*', (req, res, next) => {
   res.sendFile(join(uiPath, 'index.html'));
 });
 
-const url = `http://localhost:${proxy.port}`;
-console.log(`Green Screen Terminal running at ${url}`);
+import { existsSync } from 'node:fs';
+
+const url = `http://localhost:${proxy.port}?mode=standalone`;
+console.log(`Green Screen Terminal running at http://localhost:${proxy.port}`);
 if (isMock) {
   console.log('Running in MOCK mode');
 }
 
-// Open browser
-const openCmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-execFile(openCmd, [url]);
+// Open browser — prefer Chrome app mode for a native terminal-like window
+function openBrowser(target) {
+  const platform = process.platform;
+  const appArgs = [`--app=${target}`, '--window-size=800,600'];
+
+  if (platform === 'darwin') {
+    // --app flag opens a chromeless window; --window-size is ignored when
+    // Chrome is already running, so we resize via AppleScript after a delay.
+    execFile('open', ['-na', 'Google Chrome', '--args', `--app=${target}`], (err) => {
+      if (err) { execFile('open', [target]); return; }
+      setTimeout(() => {
+        const resize = 'tell application "Google Chrome" to set bounds of front window to {100, 100, 900, 700}';
+        execFile('osascript', ['-e', resize]);
+      }, 500);
+    });
+  } else if (platform === 'win32') {
+    const chromePaths = [
+      `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    ];
+    const chrome = chromePaths.find(p => existsSync(p));
+    if (chrome) {
+      execFile(chrome, appArgs);
+    } else {
+      execFile('cmd', ['/c', 'start', target]);
+    }
+  } else {
+    execFile('which', ['google-chrome'], (err) => {
+      if (!err) {
+        execFile('google-chrome', appArgs);
+      } else {
+        execFile('which', ['chromium-browser'], (err2) => {
+          if (!err2) execFile('chromium-browser', appArgs);
+          else execFile('xdg-open', [target]);
+        });
+      }
+    });
+  }
+}
+
+openBrowser(url);
 
 function shutdown() {
   proxy.close().then(() => process.exit(0));

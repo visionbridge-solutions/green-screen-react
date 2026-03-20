@@ -29,6 +29,7 @@ export class SessionController {
     username?: string;
     password?: string;
     sessionId: string;
+    terminalType?: string;
   }): Promise<ProtocolHandler> {
     if (this.handler) {
       this.handler.destroy();
@@ -36,7 +37,7 @@ export class SessionController {
       this.connected = false;
     }
 
-    const { host, port = 23, protocol = 'tn5250', username, password, sessionId } = opts;
+    const { host, port = 23, protocol = 'tn5250', username, password, sessionId, terminalType } = opts;
 
     this.handler = createProtocolHandler(protocol);
     this.send({ type: 'status', data: { connected: false, status: 'connecting', protocol, host } });
@@ -54,7 +55,7 @@ export class SessionController {
       this.send({ type: 'status', data: { connected: false, status: 'error', protocol, host, error: err.message } });
     });
 
-    await this.handler.connect(host, port);
+    await this.handler.connect(host, port, terminalType ? { terminalType } : undefined);
     this.connected = true;
     this.send({ type: 'status', data: { connected: true, status: 'connected', protocol, host } });
 
@@ -94,14 +95,46 @@ export class SessionController {
       return;
     }
 
-    // Tab/Backtab are local cursor movements — respond immediately
-    const localKeys = ['Tab', 'Backtab', 'TAB', 'BACKTAB'];
+    // Local operations — respond immediately without waiting for host
+    const localKeys = [
+      'Tab', 'Backtab', 'TAB', 'BACKTAB',
+      'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+      'LEFT', 'RIGHT', 'UP', 'DOWN',
+      'Home', 'HOME', 'End', 'END',
+      'Backspace', 'BACKSPACE', 'Delete', 'DELETE',
+      'Insert', 'INSERT',
+      'Reset', 'RESET',
+      'FieldExit', 'FIELD_EXIT', 'FIELDEXIT',
+    ];
     if (localKeys.includes(key)) {
-      this.send({ type: 'screen', data: this.handler.getScreenData() });
+      // Local buffer-modifying ops need full screen; cursor-only ops don't
+      const bufferOps = ['Backspace', 'BACKSPACE', 'Delete', 'DELETE',
+        'Insert', 'INSERT',
+        'Reset', 'RESET',
+        'FieldExit', 'FIELD_EXIT', 'FIELDEXIT'];
+      if (bufferOps.includes(key)) {
+        this.send({ type: 'screen', data: this.handler.getScreenData() });
+      } else {
+        // Cursor-only movement — send lightweight response
+        const sd = this.handler.getScreenData();
+        this.send({ type: 'cursor', data: { cursor_row: sd.cursor_row, cursor_col: sd.cursor_col } });
+      }
     } else {
       await this.waitForScreen(3000);
       this.send({ type: 'screen', data: this.handler.getScreenData() });
     }
+  }
+
+  handleSetCursor(row: number, col: number): void {
+    if (!this.handler || !this.connected) {
+      this.send({ type: 'error', message: 'Not connected' });
+      return;
+    }
+    if (this.handler instanceof TN5250Handler) {
+      this.handler.setCursor(row, col);
+    }
+    const sd = this.handler.getScreenData();
+    this.send({ type: 'cursor', data: { cursor_row: sd.cursor_row, cursor_col: sd.cursor_col } });
   }
 
   handleDisconnect(): void {

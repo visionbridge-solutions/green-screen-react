@@ -23,14 +23,14 @@ function resolveSession(req: Request): Session | undefined {
 // POST /connect
 router.post('/connect', async (req: Request, res: Response) => {
   try {
-    const { host = 'pub400.com', port = 23, protocol = 'tn5250' } = req.body || {};
+    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType } = req.body || {};
 
     const session = createSession(protocol);
 
     // Store session ID in response header
     res.setHeader('X-Session-Id', session.id);
 
-    await session.connect(host, port);
+    await session.connect(host, port, terminalType ? { terminalType } : undefined);
 
     // Wait briefly for initial screen data
     await new Promise(resolve => setTimeout(resolve, 2000));

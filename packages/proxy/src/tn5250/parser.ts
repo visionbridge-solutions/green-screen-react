@@ -1,5 +1,5 @@
 import { ScreenBuffer, FieldDef } from './screen.js';
-import { CMD, ORDER, OPCODE, ATTR } from './constants.js';
+import { CMD, ORDER, OPCODE, ATTR, WDSF_TYPE, WDSF_CLASS } from './constants.js';
 import { ebcdicToChar, ebcdicSymbolChar, EBCDIC_SPACE } from './ebcdic.js';
 
 /**
@@ -9,6 +9,15 @@ export class TN5250Parser {
   private screen: ScreenBuffer;
   /** When true, the next SF order should clear stale fields first */
   private pendingFieldsClear = false;
+  /** Set when a WSF 5250 Query is received; handler should send query reply */
+  pendingQueryReply = false;
+  /** Set when an IC order was applied during the last parseOrders call.
+   *  When true, calculateFieldLengths should NOT override the cursor. */
+  private icApplied = false;
+  /** Active window offset — after CREATE_WINDOW, SBA/RA/EA addresses are
+   *  relative to the window content area, not the full screen. */
+  winRowOff = 0;
+  winColOff = 0;
 
   constructor(screen: ScreenBuffer) {
     this.screen = screen;
@@ -19,6 +28,7 @@ export class TN5250Parser {
    * Returns true if the screen was modified.
    */
   parseRecord(record: Buffer): boolean {
+    this.icApplied = false;
     if (record.length < 2) return false;
 
     // 5250 record header:
@@ -62,7 +72,6 @@ export class TN5250Parser {
     }
 
     let modified = false;
-
     switch (opcode) {
       case OPCODE.OUTPUT:
       case OPCODE.PUT_GET:
@@ -79,10 +88,22 @@ export class TN5250Parser {
         break;
 
       case OPCODE.SAVE_SCREEN:
-      case OPCODE.RESTORE_SCREEN:
+        this.screen.saveState();
         if (record.length > dataOffset) {
           modified = this.parseCommandsFromOffset(record, dataOffset);
         }
+        modified = true;
+        break;
+
+      case OPCODE.RESTORE_SCREEN:
+        this.screen.restoreState();
+        this.screen.windowList = [];
+        this.winRowOff = 0;
+        this.winColOff = 0;
+        if (record.length > dataOffset) {
+          modified = this.parseCommandsFromOffset(record, dataOffset);
+        }
+        modified = true;
         break;
 
       default:
@@ -137,6 +158,9 @@ export class TN5250Parser {
         case CMD.CLEAR_UNIT:
         case CMD.CLEAR_UNIT_ALT:
           this.screen.clear();
+          this.screen.windowList = [];
+          this.winRowOff = 0;
+          this.winColOff = 0;
           pos++;
           modified = true;
           break;
@@ -154,25 +178,52 @@ export class TN5250Parser {
             const cc1 = data[pos++];
             const cc2 = data[pos++];
 
-            // CC1 bit 5: Reset MDT flags
-            if (cc1 & 0x20) {
-              for (const f of this.screen.fields) {
-                f.modified = false;
-              }
-              // Mark that subsequent SF orders in this WTD should clear stale fields
-              this.pendingFieldsClear = true;
+            // CC1 upper 3 bits (0xE0 mask) control MDT reset + null fill.
+            // Per lib5250 session.c:820-851, this is a 7-value switch:
+            let resetNonBypassMdt = false;
+            let resetAllMdt = false;
+            let nullNonBypassMdt = false;
+            let nullNonBypass = false;
+
+            // CC1: lock keyboard for all values except 0x00
+            // Per lib5250 session.c:853-858
+            if ((cc1 & 0xE0) !== 0x00) {
+              this.screen.keyboardLocked = true;
             }
-            // CC1 bit 6: Clear all input fields (null fill)
-            if (cc1 & 0x40) {
-              for (const f of this.screen.fields) {
-                if (this.screen.isInputField(f)) {
-                  const start = this.screen.offset(f.row, f.col);
-                  for (let i = start; i < start + f.length; i++) {
-                    this.screen.buffer[i] = ' ';
-                  }
+
+            switch (cc1 & 0xE0) {
+              case 0x00: break; // no action (don't lock keyboard)
+              case 0x20: break; // reserved / no action in lib5250
+              case 0x40: resetNonBypassMdt = true; break;
+              case 0x60: resetAllMdt = true; break;
+              case 0x80: nullNonBypassMdt = true; break;
+              case 0xA0: resetNonBypassMdt = true; nullNonBypass = true; break;
+              case 0xC0: resetNonBypassMdt = true; nullNonBypassMdt = true; break;
+              case 0xE0: resetAllMdt = true; nullNonBypass = true; break;
+            }
+
+            for (const f of this.screen.fields) {
+              const isInput = this.screen.isInputField(f);
+              // Null fill: clear input field content
+              if (isInput && (nullNonBypass || (nullNonBypassMdt && f.modified))) {
+                const start = this.screen.offset(f.row, f.col);
+                for (let i = start; i < start + f.length; i++) {
+                  this.screen.buffer[i] = ' ';
                 }
               }
+              // MDT reset
+              if (resetAllMdt || (resetNonBypassMdt && isInput)) {
+                f.modified = false;
+              }
             }
+
+            // Mark that subsequent SF orders in this WTD should clear stale fields
+            if (resetAllMdt || resetNonBypassMdt) {
+              this.pendingFieldsClear = true;
+            }
+
+            // CC2 handling per lib5250 session.c:1033-1066
+            this.handleCC2(cc2);
           }
           // Parse orders and data following WTD
           pos = this.parseOrders(data, pos);
@@ -182,35 +233,97 @@ export class TN5250Parser {
 
         case CMD.WRITE_ERROR_CODE:
         case CMD.WRITE_ERROR_CODE_WIN: {
-          pos++; // skip command byte
-          // Skip the error line data — just advance past it
-          // Error code commands are followed by data until next command
-          pos = this.parseOrders(data, pos);
+          // Per lib5250 session.c:733-799: writes error message to message line
+          pos++;
+          // WRITE_ERROR_CODE_WIN has 2 extra bytes (start/end window)
+          if (cmd === CMD.WRITE_ERROR_CODE_WIN && pos + 1 < data.length) {
+            pos += 2; // skip startwin, endwin
+          }
+          // Save cursor so Reset can restore it after unlocking
+          this.screen.savedCursorBeforeError = { row: this.screen.cursorRow, col: this.screen.cursorCol };
+          // Message line is the last row (row = rows - 1)
+          const msgRow = this.screen.rows - 1;
+          let msgCol = 0;
+          let endY = this.screen.cursorRow;
+          let endX = this.screen.cursorCol;
+          // Parse error message data: printable chars go to message line,
+          // IC sets cursor position (but NOT pending insert per spec)
+          while (pos < data.length) {
+            const c = data[pos];
+            if (c === 0x27) { // ESC — end of error code data
+              break;
+            }
+            if (c === ORDER.IC && pos + 2 < data.length) {
+              // IC within error code: just move cursor, don't set pending insert
+              pos++;
+              endY = data[pos++] - 1;
+              endX = data[pos++] - 1;
+              continue;
+            }
+            // Printable EBCDIC character → write to message line
+            if (c >= 0x40 || c === 0x00) {
+              const ch = ebcdicToChar(c);
+              const addr = this.screen.offset(msgRow, msgCol);
+              if (addr < this.screen.size) {
+                this.screen.setCharAt(addr, ch);
+              }
+              msgCol++;
+            }
+            pos++;
+          }
+          // Set cursor to the IC position from within the error code
+          if (endY >= 0 && endY < this.screen.rows && endX >= 0 && endX < this.screen.cols) {
+            this.screen.cursorRow = endY;
+            this.screen.cursorCol = endX;
+          }
+          // Lock keyboard after error
+          this.screen.keyboardLocked = true;
           modified = true;
           break;
         }
 
         case CMD.WRITE_STRUCTURED_FIELD: {
           pos++;
-          // Structured fields have their own length prefix
+          // WSF: length(2) + class(1) + type(1) + data
+          // Per lib5250 session.c:2220-2275
           if (pos + 1 < data.length) {
             const sfLen = (data[pos] << 8) | data[pos + 1];
-            pos += sfLen; // skip the entire structured field
+            const sfEnd = pos + sfLen;
+
+            // Check for 5250 Query (class 0xD9, type 0x70)
+            if (pos + 3 < data.length && data[pos + 2] === WDSF_CLASS && data[pos + 3] === 0x70) {
+              this.pendingQueryReply = true;
+            }
+
+            pos = Math.min(sfEnd, data.length);
           }
           break;
         }
 
         case CMD.ROLL: {
-          pos++; // skip command byte
-          if (pos + 1 < data.length) {
-            const rollCC = data[pos++];
-            const rollCount = data[pos++];
-            // Simple roll: move content up or down
-            // For now just mark as modified
+          // ROLL: 3 bytes — direction, topRow(1-based), bottomRow(1-based)
+          // Per lib5250 session.c:1463-1487
+          pos++;
+          if (pos + 2 < data.length) {
+            const direction = data[pos++];
+            const top = data[pos++] - 1; // convert 1-based to 0-based
+            const bot = data[pos++] - 1;
+            let lines = direction & 0x1F;
+            if ((direction & 0x80) === 0) {
+              lines = -lines; // scroll up (negative)
+            }
+            if (lines !== 0 && top >= 0 && bot >= top && bot < this.screen.rows) {
+              this.rollBuffer(top, bot, lines);
+            }
             modified = true;
           }
           break;
         }
+
+        case 0x04:
+          // Sub-record marker — skip (appears between commands in some hosts)
+          pos++;
+          break;
 
         default:
           // Not a recognized command at this position
@@ -233,6 +346,8 @@ export class TN5250Parser {
     let currentAttr: number = ATTR.NORMAL;
     let useSymbolCharSet = false; // SA type 0x22 can switch to APL/symbol CGCS
     let afterSBA = false; // Track if we just processed an SBA order (field attrs follow SBA)
+    let pendingICRow = -1; // IC stores pending cursor position, applied after WTD
+    let pendingICCol = -1;
 
     while (pos < data.length) {
       const byte = data[pos];
@@ -244,83 +359,130 @@ export class TN5250Parser {
 
       switch (byte) {
         case ORDER.SBA: {
-          // Set Buffer Address: 2 bytes follow (row, col)
+          // Set Buffer Address: 2 bytes follow (row, col) — 1-based from host
           if (pos + 2 >= data.length) return data.length;
           pos++;
-          const row = data[pos++];
-          const col = data[pos++];
-          currentAddr = this.screen.offset(row, col);
+          const rawRow = data[pos++];
+          const rawCol = data[pos++];
+          const row = rawRow - 1 + this.winRowOff;
+          const col = rawCol - 1 + this.winColOff;
+          if (row >= 0 && row < this.screen.rows && col >= 0 && col < this.screen.cols) {
+            currentAddr = this.screen.offset(row, col);
+          }
           afterSBA = true; // Field attribute may follow
           continue; // skip the afterSBA = false at end of loop
         }
 
         case ORDER.IC: {
-          // Insert Cursor: set cursor to current address
+          // Insert Cursor: 2 bytes follow (row, col) — 1-based from host.
+          // Per lib5250, IC stores a pending position applied after WTD.
+          if (pos + 2 >= data.length) return data.length;
           pos++;
-          const { row, col } = this.screen.toRowCol(currentAddr);
-          this.screen.cursorRow = row;
-          this.screen.cursorCol = col;
+          const icRow = data[pos++] - 1 + this.winRowOff;
+          const icCol = data[pos++] - 1 + this.winColOff;
+          pendingICRow = icRow;
+          pendingICCol = icCol;
           break;
         }
 
         case ORDER.MC: {
-          // Move Cursor: 2 bytes follow (row, col)
+          // Move Cursor: 2 bytes follow (row, col) — 1-based from host
           if (pos + 2 >= data.length) return data.length;
           pos++;
-          const row = data[pos++];
-          const col = data[pos++];
-          this.screen.cursorRow = row;
-          this.screen.cursorCol = col;
-          currentAddr = this.screen.offset(row, col);
+          const mcRow = data[pos++] - 1 + this.winRowOff;
+          const mcCol = data[pos++] - 1 + this.winColOff;
+          if (mcRow >= 0 && mcRow < this.screen.rows && mcCol >= 0 && mcCol < this.screen.cols) {
+            this.screen.cursorRow = mcRow;
+            this.screen.cursorCol = mcCol;
+            currentAddr = this.screen.offset(mcRow, mcCol);
+          }
           break;
         }
 
         case ORDER.RA: {
-          // Repeat to Address: repeat a char up to an address
+          // Repeat to Address: 3 bytes (row, col, char) — 1-based address
           if (pos + 3 >= data.length) return data.length;
           pos++;
-          const toRow = data[pos++];
-          const toCol = data[pos++];
+          const raRow = data[pos++] - 1 + this.winRowOff;
+          const raCol = data[pos++] - 1 + this.winColOff;
           const charByte = data[pos++];
-          const targetAddr = this.screen.offset(toRow, toCol);
+          const targetAddr = this.screen.offset(raRow, raCol);
           const ch = ebcdicToChar(charByte);
-          while (currentAddr < targetAddr && currentAddr < this.screen.size) {
-            this.screen.setCharAt(currentAddr, ch);
-            currentAddr++;
+          // lib5250 uses addch which wraps; we fill up to target (inclusive of current pos)
+          if (targetAddr >= currentAddr) {
+            while (currentAddr < targetAddr && currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ch);
+              currentAddr++;
+            }
+          } else {
+            // Wrap-around: fill to end of screen, then from start to target
+            while (currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ch);
+              currentAddr++;
+            }
+            currentAddr = 0;
+            while (currentAddr < targetAddr && currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ch);
+              currentAddr++;
+            }
           }
           break;
         }
 
         case ORDER.EA: {
-          // Erase to Address: fill with spaces up to an address
+          // Erase to Address: 2 bytes — row(1-based), col(1-based)
+          // Per 5250 spec (5494 Functions Reference) and lib5250: EA takes
+          // only row + col, erases from current address to target address.
           if (pos + 2 >= data.length) return data.length;
           pos++;
-          const toRow = data[pos++];
-          const toCol = data[pos++];
-          const targetAddr = this.screen.offset(toRow, toCol);
-          while (currentAddr < targetAddr && currentAddr < this.screen.size) {
-            this.screen.setCharAt(currentAddr, ' ');
-            currentAddr++;
+          const eaRow = data[pos++] - 1 + this.winRowOff;
+          const eaCol = data[pos++] - 1 + this.winColOff;
+          const eaTarget = this.screen.offset(eaRow, eaCol);
+          if (eaTarget >= currentAddr) {
+            while (currentAddr < eaTarget && currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ' ');
+              currentAddr++;
+            }
+          } else {
+            // Wrap-around
+            while (currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ' ');
+              currentAddr++;
+            }
+            currentAddr = 0;
+            while (currentAddr < eaTarget && currentAddr < this.screen.size) {
+              this.screen.setCharAt(currentAddr, ' ');
+              currentAddr++;
+            }
           }
+          currentAddr = eaTarget;
           break;
         }
 
         case ORDER.SOH: {
           // Start of Header: variable-length header for input fields.
+          // Per lib5250: SOH clears format table and pending insert cursor.
           // Format: [0x01] [length] [data...]
-          // The length byte includes SOH byte + itself, so remaining = length - 2.
+          // The length byte specifies the number of data bytes following it
+          // (NOT including SOH or length byte itself).
           if (pos + 1 >= data.length) return data.length;
           pos++;
+          this.screen.fields = [];
+          this.screen.selectionFields = [];
+          pendingICRow = -1;
+          pendingICCol = -1;
           const hdrLen = data[pos++];
-          pos += Math.max(0, hdrLen - 2);
+          pos += Math.max(0, hdrLen);
           break;
         }
 
         case ORDER.TD: {
-          // Transparent Data: length byte followed by raw data
-          if (pos + 1 >= data.length) return data.length;
+          // Transparent Data: 2-byte length followed by raw data
+          // Per lib5250 session.c:2002-2019
+          if (pos + 2 >= data.length) return data.length;
           pos++;
-          const tdLen = data[pos++];
+          const tdLen = (data[pos] << 8) | data[pos + 1];
+          pos += 2;
           for (let i = 0; i < tdLen && pos < data.length; i++) {
             this.screen.setCharAt(currentAddr++, ebcdicToChar(data[pos++]));
           }
@@ -361,6 +523,49 @@ export class TN5250Parser {
           continue;
         }
 
+        case ORDER.WDSF: {
+          // Write Display Structured Field: 2-byte length + class + type + data
+          // Per lib5250 session.c:1909-1984 (0x15 within WTD)
+          if (pos + 2 >= data.length) return data.length;
+          pos++;
+          const wdsfLen = (data[pos] << 8) | data[pos + 1];
+          const wdsfEnd = pos + Math.max(2, wdsfLen);
+          pos += 2; // past length bytes
+
+          if (pos + 1 < data.length) {
+            const wdsfClass = data[pos++];
+            const wdsfType = data[pos++];
+
+            if (wdsfClass === WDSF_CLASS) {
+              switch (wdsfType) {
+                case WDSF_TYPE.CREATE_WINDOW:
+                  this.parseCreateWindow(data, pos, wdsfEnd);
+                  break;
+                case WDSF_TYPE.DEFINE_SELECTION_FIELD:
+                  this.parseDefineSelectionField(data, pos, wdsfEnd);
+                  break;
+                case WDSF_TYPE.REM_GUI_WINDOW:
+                  if (this.screen.windowList.length > 0) {
+                    this.screen.windowList.pop();
+                  }
+                  this.winRowOff = 0;
+                  this.winColOff = 0;
+                  break;
+                case WDSF_TYPE.REM_ALL_GUI_CONSTRUCTS:
+                  this.screen.windowList = [];
+                  this.winRowOff = 0;
+                  this.winColOff = 0;
+                  break;
+                default:
+                  break;
+              }
+            }
+          }
+
+          pos = Math.min(wdsfEnd, data.length);
+          break;
+        }
+
         case ORDER.SF: {
           // Start Field: explicit SF order with FFW + optional FCW
           pos++;
@@ -380,14 +585,21 @@ export class TN5250Parser {
             if (currentAddr < this.screen.size) {
               this.screen.setCharAt(currentAddr, ch);
               this.screen.setAttrAt(currentAddr, currentAttr);
-              currentAddr++;
             }
+            currentAddr++;
             pos++;
           }
           break;
         }
       }
       afterSBA = false;
+    }
+
+    // Apply deferred IC cursor position (last IC wins, per lib5250)
+    if (pendingICRow >= 0 && pendingICCol >= 0) {
+      this.screen.cursorRow = pendingICRow;
+      this.screen.cursorCol = pendingICCol;
+      this.icApplied = true;
     }
 
     return pos;
@@ -435,69 +647,63 @@ export class TN5250Parser {
   }
 
   /**
-   * Parse SF (Start Field) order with FFW and optional FCW.
-   * Format: SF(0x1D) FFW1 FFW2 [FCW1 FCW2]
-   * FFW1 always has bit 6 set (0x40+). No trailing attribute byte.
-   * Display attribute is derived from FFW2.
+   * Parse SF (Start Field) order.
+   * Per lib5250 session.c:1499-1797:
+   *   First byte: if (byte & 0xE0) != 0x20 → input field with FFW
+   *               if (byte & 0xE0) == 0x20 → output field, byte IS the attribute
+   *   Input field: FFW1, FFW2, then loop reading FCW pairs while (byte & 0xE0) != 0x20,
+   *                then attribute byte (0x20-0x3F), then 2-byte field length.
+   *   Output field: attribute byte, then 2-byte field length.
    */
   private parseStartField(data: Buffer, pos: number, addr: number, displayAttr: number): number {
     if (addr < this.screen.size) {
       this.screen.setCharAt(addr, ' ');
     }
 
-    // Parse FFW (Field Format Word) — 2 bytes (FFW1 has bit 6 set)
-    if (pos + 1 >= data.length) return pos;
-    const ffw1 = data[pos++];
-    const ffw2 = data[pos++];
+    if (pos >= data.length) return pos;
+    let curByte = data[pos++];
 
-    // Check for FCW (Field Control Word) — optional, 2 bytes
-    // FCW1 has bit 7 set (>= 0x80)
-    let fcw1 = 0, fcw2 = 0;
-    if (pos + 1 < data.length) {
-      const maybeFcw = data[pos];
-      if (maybeFcw >= 0x80 && maybeFcw !== 0xFF) {
-        fcw1 = data[pos++];
+    let ffw1 = 0, ffw2 = 0, fcw1 = 0, fcw2 = 0;
+    let inputField = false;
+
+    if ((curByte & 0xE0) !== 0x20) {
+      // Input field: curByte is FFW1
+      inputField = true;
+      ffw1 = curByte;
+      if (pos >= data.length) return pos;
+      ffw2 = data[pos++];
+
+      // Read FCW pairs: keep reading while next byte is NOT in attribute range
+      if (pos >= data.length) return pos;
+      curByte = data[pos++];
+      while ((curByte & 0xE0) !== 0x20 && pos < data.length) {
+        fcw1 = curByte;
         fcw2 = data[pos++];
+        if (pos >= data.length) return pos;
+        curByte = data[pos++];
       }
     }
+    // else: output field, curByte is already the attribute byte
 
-    // Consume the trailing field attribute byte (always present after FFW/FCW).
-    // This byte (0x20–0x3F) specifies the display attribute for the field.
-    let fieldDisplayAttr = displayAttr;
-    let rawAttrByte = 0;
-    if (pos < data.length) {
-      const attrByte = data[pos];
-      if (attrByte >= 0x20 && attrByte <= 0x3F) {
-        pos++;
-        rawAttrByte = attrByte;
-        fieldDisplayAttr = this.decodeDisplayAttr(attrByte, displayAttr);
-      }
+    // curByte is now the attribute byte (0x20-0x3F)
+    const rawAttrByte = curByte;
+    const fieldDisplayAttr = this.decodeDisplayAttr(rawAttrByte, displayAttr);
+
+    // Read 2-byte field length (always present after attribute byte per lib5250)
+    let fieldLength = 0;
+    if (pos + 1 < data.length) {
+      fieldLength = (data[pos] << 8) | data[pos + 1];
+      pos += 2;
     }
 
     const fieldStartAddr = addr + 1;
     const { row, col } = this.screen.toRowCol(fieldStartAddr);
 
-    // After SF + FFW + optional FCW + ATTR, the host may include a few stale
-    // bytes (field content initializers like nulls) before the next SBA order.
-    // These should not be displayed. Scan ahead (up to 4 bytes) for the next
-    // SBA — if found, skip everything in between.
-    {
-      let scan = pos;
-      const limit = Math.min(pos + 4, data.length);
-      while (scan < limit) {
-        if (data[scan] === ORDER.SBA) {
-          pos = scan; // skip stale bytes
-          break;
-        }
-        scan++;
-      }
-    }
-
     const field: FieldDef = {
       row,
       col,
-      length: 0,
-      ffw1,
+      length: fieldLength,
+      ffw1: inputField ? ffw1 : 0x20, // BYPASS bit for output fields
       ffw2,
       fcw1,
       fcw2,
@@ -513,15 +719,256 @@ export class TN5250Parser {
 
   /**
    * Decode a display attribute byte (0x20–0x3F) into an ATTR constant.
-   * Only recognises the bits that determine display type; falls back to
-   * the SA context (displayAttr) for modifier-only bytes (0x30, 0x38, etc.).
+   *
+   * 5250 field attribute byte layout (bits of lower nibble):
+   *   Lower 3 bits (0x07) determine display type:
+   *     0 = normal, 1 = column separator, 2 = high intensity,
+   *     3 = column separator + HI, 4 = underscore, 5 = underscore + reverse,
+   *     6 = underscore + HI, 7 = non-display
+   *   Bit 3 (0x08): when set, indicates color field (RED, TURQ, etc.)
+   *     Color is determined by the full byte value (0x28=RED, 0x30=TURQ, etc.)
+   *     For color fields, the lower 3 bits still encode the display type.
    */
   private decodeDisplayAttr(attrByte: number, displayAttr: number = ATTR.NORMAL): number {
-    if ((attrByte & 0x07) === 0x07) return ATTR.NON_DISPLAY;
-    if (attrByte & 0x04) return ATTR.UNDERSCORE;
-    if (attrByte & 0x02) return ATTR.HIGH_INTENSITY;
-    if (attrByte & 0x08) return ATTR.HIGH_INTENSITY;
-    return displayAttr;
+    const type = attrByte & 0x07;
+    if (type === 0x07) return ATTR.NON_DISPLAY;
+    if (type >= 0x04) return ATTR.UNDERSCORE; // 4, 5, 6 all have underscore
+    if (type === 0x02 || type === 0x03) return ATTR.HIGH_INTENSITY;
+    if (type === 0x01) return ATTR.COLUMN_SEPARATOR;
+    // type === 0x00: normal or color field
+    // Bit 3 (0x08) set = color field, treat as normal display (green on most terminals)
+    return ATTR.NORMAL;
+  }
+
+  /**
+   * Parse CREATE_WINDOW structured field data.
+   * Per lib5250 session.c:3129-3349.
+   * Window position = current cursor position. Renders border and erases content area.
+   */
+  private parseCreateWindow(data: Buffer, pos: number, end: number): void {
+    if (pos + 4 >= end) return;
+
+    const _flagbyte1 = data[pos++]; // 0x80=cursor restricted, 0x40=pull-down
+    pos += 2; // 2 reserved bytes
+    const depth = data[pos++];     // content height
+    const width = data[pos++];     // content width
+
+    // Parse border minor structures per lib5250 session.c:3129-3349
+    let borderChars = { ul: '.', top: '.', ur: '.', left: ':', right: ':', ll: ':', bot: '.', lr: ':' };
+    let titleText = '';
+    let footerText = '';
+
+    while (pos < end) {
+      if (pos + 2 > end) break;
+      const minorLen = data[pos];
+      if (minorLen < 2 || pos + minorLen > end) break;
+      const minorType = data[pos + 1];
+
+      if (minorType === 0x01 && minorLen >= 13) {
+        // Border Presentation: flags(1) + mono_attr(1) + color_attr(1) + 8 border chars
+        borderChars = {
+          ul:    ebcdicToChar(data[pos + 5]),
+          top:   ebcdicToChar(data[pos + 6]),
+          ur:    ebcdicToChar(data[pos + 7]),
+          left:  ebcdicToChar(data[pos + 8]),
+          right: ebcdicToChar(data[pos + 9]),
+          ll:    ebcdicToChar(data[pos + 10]),
+          bot:   ebcdicToChar(data[pos + 11]),
+          lr:    ebcdicToChar(data[pos + 12]),
+        };
+      } else if (minorType === 0x10 && minorLen > 6) {
+        // Window Title/Footer: flags(1) + mono_attr(1) + color_attr(1) + reserved(1) + text
+        const isFooter = (data[pos + 2] & 0x40) !== 0;
+        let text = '';
+        for (let i = 6; i < minorLen; i++) {
+          text += ebcdicToChar(data[pos + i]);
+        }
+        if (isFooter) footerText = text;
+        else titleText = text;
+      }
+
+      pos += minorLen;
+    }
+
+    const winRow = this.screen.cursorRow;
+    const winCol = this.screen.cursorCol;
+
+    this.screen.windowList.push({ row: winRow, col: winCol, height: depth, width: width });
+
+    // Render border with custom characters from host
+    this.screen.renderWindowBorderCustom(winRow, winCol, depth, width, borderChars, titleText, footerText);
+
+    // Erase content area inside the border
+    this.screen.eraseRegion(winRow + 1, winCol + 1, winRow + depth, winCol + width);
+
+    // Set window offset — subsequent SBA/RA/EA addresses are relative to
+    // the window content area (row+1, col+1)
+    this.winRowOff = winRow + 1;
+    this.winColOff = winCol + 1;
+  }
+
+  /**
+   * Parse DEFINE_SELECTION_FIELD structured field data.
+   * Per lib5250 session.c:2930-3128 (tn5250_session_handle_define_selection).
+   *
+   * 16-byte fixed header:
+   *   [0] flagbyte1  [1] flagbyte2  [2] flagbyte3  [3] fieldtype
+   *   [4-8] reserved (5 bytes)
+   *   [9] itemsize   [10] height    [11] items     [12] padding
+   *   [13] separator [14] selectionchar  [15] cancelaid
+   *
+   * Followed by minor structures (type 0x10 = choice text, etc.)
+   */
+  private parseDefineSelectionField(data: Buffer, pos: number, end: number): void {
+    if (pos + 16 > end) return;
+
+    const _flagbyte1 = data[pos++];
+    const _flagbyte2 = data[pos++];
+    const _flagbyte3 = data[pos++];
+    const fieldType = data[pos++];    // 0x01=menubar, 0x11=single, 0x12=multi, etc.
+    pos += 5;                          // 5 reserved bytes
+    const itemSize = data[pos++];      // width of each choice text
+    const numRows = data[pos++];       // visible rows
+    const numItems = data[pos++];      // total choices
+    const _padding = data[pos++];
+    const _separator = data[pos++];
+    const _selectionChar = data[pos++];
+    const _cancelAid = data[pos++];
+
+    const baseRow = this.screen.cursorRow;
+    const baseCol = this.screen.cursorCol;
+
+    const choices: Array<{ text: string; row: number; col: number }> = [];
+    let choiceIndex = 0;
+
+    // Parse minor structures
+    while (pos < end) {
+      if (pos + 2 > end) break;
+      const minorLen = data[pos];
+      if (minorLen < 2 || pos + minorLen > end) break;
+
+      const minorType = data[pos + 1];
+
+      if (minorType === 0x10 && minorLen >= 5) {
+        // Choice text: flagbyte1(1) + flagbyte2(1) + flagbyte3(1) + optional fields + text
+        // Per lib5250: flagbyte3 bits 7-5 determine if this choice is used.
+        // If all zero, the entire minor structure is ignored.
+        const choiceFlagbyte1 = data[pos + 2];
+        const _choiceFlagbyte2 = data[pos + 3];
+        const choiceFlagbyte3 = data[pos + 4];
+
+        // Skip if flagbyte3 bits 7-5 are all zero (choice not applicable)
+        if ((choiceFlagbyte3 & 0xE0) !== 0) {
+          // Calculate text offset: skip flags, optional mnemonic/AID/numeric fields
+          let textOff = 5;
+          if (choiceFlagbyte1 & 0x08) textOff++; // mnemonic offset
+          if (choiceFlagbyte1 & 0x04) textOff++; // AID byte
+          const numericSel = choiceFlagbyte1 & 0x03;
+          if (numericSel === 1) textOff++;        // single-digit numeric
+          else if (numericSel === 2) textOff += 2; // double-digit numeric
+
+          let text = '';
+          for (let i = textOff; i < minorLen; i++) {
+            text += ebcdicToChar(data[pos + i]);
+          }
+
+          const choiceRow = baseRow + choiceIndex;
+          choices.push({ text, row: choiceRow, col: baseCol });
+          choiceIndex++;
+        }
+      }
+
+      pos += minorLen;
+    }
+
+    this.screen.selectionFields.push({
+      row: baseRow,
+      col: baseCol,
+      numRows,
+      numCols: itemSize,
+      choices,
+    });
+  }
+
+  /**
+   * Roll (scroll) screen buffer rows within [top, bot] by `lines` rows.
+   * Negative = scroll up, positive = scroll down.
+   * Per lib5250 dbuffer.c:869-899.
+   */
+  private rollBuffer(top: number, bot: number, lines: number): void {
+    const cols = this.screen.cols;
+    if (lines < 0) {
+      // Scroll up: move rows upward
+      for (let r = top; r <= bot; r++) {
+        if (r + lines >= top) {
+          const dstOff = (r + lines) * cols;
+          const srcOff = r * cols;
+          for (let c = 0; c < cols; c++) {
+            this.screen.buffer[dstOff + c] = this.screen.buffer[srcOff + c];
+          }
+        }
+      }
+      // Clear vacated rows at bottom
+      for (let r = bot + lines + 1; r <= bot; r++) {
+        if (r >= top) {
+          const off = r * cols;
+          for (let c = 0; c < cols; c++) {
+            this.screen.buffer[off + c] = ' ';
+          }
+        }
+      }
+    } else {
+      // Scroll down: move rows downward
+      for (let r = bot; r >= top; r--) {
+        if (r + lines <= bot) {
+          const dstOff = (r + lines) * cols;
+          const srcOff = r * cols;
+          for (let c = 0; c < cols; c++) {
+            this.screen.buffer[dstOff + c] = this.screen.buffer[srcOff + c];
+          }
+        }
+      }
+      // Clear vacated rows at top
+      for (let r = top; r < top + lines; r++) {
+        if (r <= bot) {
+          const off = r * cols;
+          for (let c = 0; c < cols; c++) {
+            this.screen.buffer[off + c] = ' ';
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Handle CC2 (Control Character 2) from WTD.
+   * Per lib5250 session.c:1033-1066.
+   *
+   * CC2 bit flags:
+   *   0x40  IC_ULOCK — suppress IC cursor positioning when unlocking
+   *   0x20  CLR_BLINK — clear blink
+   *   0x10  SET_BLINK — set blink
+   *   0x08  UNLOCK — unlock keyboard
+   *   0x04  ALARM — sound audible alarm
+   *   0x02  MESSAGE_OFF — clear message waiting indicator
+   *   0x01  MESSAGE_ON — set message waiting indicator
+   */
+  private handleCC2(cc2: number): void {
+    // Message waiting indicator
+    if (cc2 & 0x01) {
+      this.screen.messageWaiting = true;
+    }
+    if ((cc2 & 0x02) && !(cc2 & 0x01)) {
+      this.screen.messageWaiting = false;
+    }
+    // Alarm
+    if (cc2 & 0x04) {
+      this.screen.pendingAlarm = true;
+    }
+    // Unlock keyboard
+    if (cc2 & 0x08) {
+      this.screen.keyboardLocked = false;
+    }
   }
 
   /** Clear stale fields when the first SF order arrives after a Reset MDT WTD */
@@ -549,6 +996,11 @@ export class TN5250Parser {
 
     for (let i = 0; i < fields.length; i++) {
       const current = fields[i];
+
+      // If the field already has an explicit length from SF order, keep it
+      if (current.length > 0) continue;
+
+      // Otherwise infer length from adjacent field positions (bare field attributes)
       const currentStart = this.screen.offset(current.row, current.col);
 
       if (i + 1 < fields.length) {
@@ -571,33 +1023,28 @@ export class TN5250Parser {
       if (current.length <= 0) current.length = 1;
     }
 
-    // Ensure cursor is in a functional input field. Skip UIM framework
-    // artifact fields whose OWN attribute byte doesn't indicate underscore
-    // or non-display (they may inherit underscore from SA context but aren't
-    // real interactive fields — they exist in the panel header).
+    // Cursor homing per lib5250 display.c:614-635 (set_cursor_home):
+    //   1. If cursor is inside a field (input or protected) — trust it.
+    //   2. If cursor is outside all fields, nudge to the first functional
+    //      input field (with native underscore). This avoids landing on
+    //      UIM NON_DISPLAY artifact fields that aren't interactive.
+    //   3. If no functional fields exist, leave cursor where IC put it.
     {
-      const allInputs = fields.filter(f => this.screen.isInputField(f));
-      if (allInputs.length > 0) {
-        const lastPos = this.screen.offset(
-          allInputs[allInputs.length - 1].row,
-          allInputs[allInputs.length - 1].col,
+      const cursorAddr = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
+      const cursorInField = fields.some(f => {
+        const start = this.screen.offset(f.row, f.col);
+        return cursorAddr >= start && cursorAddr < start + f.length;
+      });
+      if (!cursorInField) {
+        const functional = fields.find(f =>
+          this.screen.isInputField(f) && this.screen.hasNativeUnderscore(f)
         );
-        const functional = allInputs.filter(f =>
-          this.screen.hasNativeUnderscore(f) || this.screen.hasNativeNonDisplay(f) ||
-          this.screen.offset(f.row, f.col) === lastPos
-        );
-        const targets = functional.length > 0 ? functional : allInputs;
-        const cursorAddr = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
-        const inTarget = targets.some(f => {
-          const start = this.screen.offset(f.row, f.col);
-          return cursorAddr >= start && cursorAddr < start + f.length;
-        });
-        if (!inTarget) {
-          const after = targets.find(f => this.screen.offset(f.row, f.col) >= cursorAddr);
-          const target = after || targets[targets.length - 1];
-          this.screen.cursorRow = target.row;
-          this.screen.cursorCol = target.col;
+        if (functional) {
+          this.screen.cursorRow = functional.row;
+          this.screen.cursorCol = functional.col;
         }
+        // If no functional fields, leave cursor at IC position — the screen
+        // may not have interactive input (e.g. DSPMSG with only F-key actions)
       }
     }
 

@@ -232,6 +232,7 @@ export class TerminalSession {
             username: msg.username,
             password: msg.password,
             sessionId: this.state.id.toString(),
+            terminalType: msg.terminalType,
           })
           break
         }

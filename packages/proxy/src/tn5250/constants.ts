@@ -76,6 +76,7 @@ export const ORDER = {
   TD: 0x10,    // Transparent Data
   WEA: 0x04,   // Write Extended Attribute
   SF: 0x1D,    // Start Field (used in field attribute)
+  WDSF: 0x15,  // Write Display Structured Field (within WTD)
   SA: 0x28,    // Set Attribute
 } as const;
 
@@ -157,6 +158,20 @@ export const ATTR = {
   COLUMN_SEPARATOR: 0x23,
 } as const;
 
+// Write Display Structured Field (WDSF) types — within WTD (ORDER.WDSF = 0x15)
+export const WDSF_TYPE = {
+  DEFINE_SELECTION_FIELD: 0x50,
+  CREATE_WINDOW: 0x51,
+  UNRESTRICT_CURSOR: 0x52,
+  DEFINE_SCROLL_BAR: 0x53,
+  WRITE_DATA: 0x54,
+  REM_GUI_WINDOW: 0x59,
+  REM_ALL_GUI_CONSTRUCTS: 0x5F,
+} as const;
+
+// Structured field class byte (IBM Display class)
+export const WDSF_CLASS = 0xD9;
+
 // Screen dimensions
 export const SCREEN = {
   ROWS_24: 24,
@@ -168,3 +183,9 @@ export const SCREEN = {
 // Terminal type strings for negotiation
 export const TERMINAL_TYPE = 'IBM-3179-2';
 export const TERMINAL_TYPE_WIDE = 'IBM-3477-FC';
+
+// Terminal type → screen dimensions lookup
+export const TERMINAL_DIMENSIONS: Record<string, { rows: number; cols: number }> = {
+  [TERMINAL_TYPE]: { rows: SCREEN.ROWS_24, cols: SCREEN.COLS_80 },
+  [TERMINAL_TYPE_WIDE]: { rows: SCREEN.ROWS_27, cols: SCREEN.COLS_132 },
+};

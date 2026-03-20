@@ -6,7 +6,7 @@ import { useTerminalScreen, useTerminalInput, useTerminalConnection } from '../h
 import { useTypingAnimation } from '../hooks/useTypingAnimation';
 import { getProtocolProfile } from '../protocols/registry';
 import { TerminalBootLoader as DefaultBootLoader } from './TerminalBootLoader';
-import { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, KeyIcon, MinimizeIcon } from './Icons';
+import { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, KeyIcon, MinimizeIcon, HelpIcon } from './Icons';
 import { InlineSignIn } from './InlineSignIn';
 
 /* ── No-op adapter (placeholder before connection) ───────────────── */
@@ -17,6 +17,7 @@ const noopAdapter: TerminalAdapter = {
   getStatus: async () => ({ connected: false, status: 'disconnected' }),
   sendText: async () => noopResult,
   sendKey: async () => noopResult,
+  setCursor: async () => noopResult,
   connect: async () => noopResult,
   disconnect: async () => noopResult,
   reconnect: async () => noopResult,
@@ -53,7 +54,7 @@ export interface GreenScreenTerminalProps {
   embedded?: boolean;
   /** Show the header bar (default true) */
   showHeader?: boolean;
-  /** Enable typing animation (default true) */
+  /** Enable typing animation (default false) */
   typingAnimation?: boolean;
   /** Typing animation budget in ms (default 60) */
   typingBudgetMs?: number;
@@ -115,7 +116,7 @@ export function GreenScreenTerminal({
   maxReconnectAttempts: maxAttempts = 5,
   embedded = false,
   showHeader = true,
-  typingAnimation = true,
+  typingAnimation = false,
   typingBudgetMs = 60,
   inlineSignIn = true,
   defaultProtocol: signInDefaultProtocol,
@@ -185,10 +186,23 @@ export function GreenScreenTerminal({
   const sendText = useCallback(async (text: string) => _sendText(text), [_sendText]);
   const sendKey = useCallback(async (key: string) => _sendKey(key), [_sendKey]);
 
+  // --- Optimistic edits ---
+  // Characters typed by the user are applied optimistically to the displayed
+  // content before the proxy responds. Cleared on full screen updates.
+  const [optimisticEdits, setOptimisticEdits] = useState<Array<{ row: number; col: number; ch: string }>>([]);
+  const prevScreenSigForEdits = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (rawScreenData?.screen_signature && rawScreenData.screen_signature !== prevScreenSigForEdits.current) {
+      prevScreenSigForEdits.current = rawScreenData.screen_signature;
+      setOptimisticEdits([]);
+    }
+  }, [rawScreenData?.screen_signature]);
+
   // --- UI State ---
   const [inputText, setInputText] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const [showSignInHint, setShowSignInHint] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const prevAutoSignedIn = useRef(false);
   useEffect(() => {
     if (autoSignedIn && !prevAutoSignedIn.current) setShowSignInHint(true);
@@ -344,11 +358,49 @@ export function GreenScreenTerminal({
     if (readOnly && isFocused) { setIsFocused(false); inputRef.current?.blur(); }
   }, [readOnly, isFocused]);
 
-  const handleTerminalClick = useCallback(() => {
+  const screenContentRef = useRef<HTMLDivElement>(null);
+  const charWidthRef = useRef<number>(0);
+
+  const handleTerminalClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (readOnly) return;
     setIsFocused(true);
     inputRef.current?.focus();
-  }, [readOnly]);
+
+    // Click-to-cursor: calculate which row/col was clicked
+    const contentEl = screenContentRef.current;
+    if (!contentEl || !screenData?.fields) return;
+
+    // Measure 1ch width in current font
+    if (!charWidthRef.current) {
+      const span = document.createElement('span');
+      span.style.cssText = 'position:absolute;visibility:hidden;font:inherit;white-space:pre';
+      span.textContent = 'X';
+      contentEl.appendChild(span);
+      charWidthRef.current = span.getBoundingClientRect().width;
+      contentEl.removeChild(span);
+    }
+
+    const rect = contentEl.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const ROW_HEIGHT = 21;
+    const charWidth = charWidthRef.current;
+    if (!charWidth) return;
+
+    const clickedRow = Math.floor(y / ROW_HEIGHT);
+    const clickedCol = Math.floor(x / charWidth);
+
+    if (clickedRow < 0 || clickedRow >= (screenData.rows || 24) ||
+        clickedCol < 0 || clickedCol >= (screenData.cols || 80)) return;
+
+    // Send cursor position to proxy (async, fire-and-forget for responsiveness)
+    setSyncedCursor({ row: clickedRow, col: clickedCol });
+    adapter.setCursor?.(clickedRow, clickedCol).then(r => {
+      if (r?.cursor_row !== undefined) {
+        setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
+      }
+    });
+  }, [readOnly, screenData, adapter]);
 
   // --- Field helpers ---
   const getCurrentField = useCallback(() => {
@@ -361,55 +413,51 @@ export function GreenScreenTerminal({
     return null;
   }, [screenData, syncedCursor]);
 
-  const canTypeMore = useCallback((additionalChars: number = 1) => {
-    const currentField = getCurrentField();
-    if (!currentField) return true;
-    const cursorCol = (syncedCursor?.col ?? screenData?.cursor_col ?? 0) + inputText.length;
-    return cursorCol + additionalChars <= currentField.col + currentField.length;
-  }, [getCurrentField, syncedCursor, screenData, inputText]);
-
   // --- Keyboard handling ---
+  // Characters are sent immediately to the proxy (no client-side buffering).
+  // This keeps the proxy screen buffer in sync so arrow keys, backspace,
+  // delete, and insert mode all work correctly at any cursor position.
   const handleKeyDown = async (e: React.KeyboardEvent) => {
     if (readOnly) { e.preventDefault(); return; }
 
     if (e.key === 'Escape') { e.preventDefault(); setIsFocused(false); inputRef.current?.blur(); return; }
 
-    if (e.key === 'Backspace') {
+    // Ctrl+R: Reset (clear keyboard lock and error line)
+    if (e.ctrlKey && e.key === 'r') {
       e.preventDefault();
-      if (inputText.length > 0) { setInputText(prev => prev.slice(0, -1)); }
-      else {
-        const keyResult = await sendKey('BACKSPACE');
-        if (keyResult.cursor_row !== undefined) setSyncedCursor({ row: keyResult.cursor_row, col: keyResult.cursor_col! });
-      }
+      const kr = await sendKey('RESET');
+      if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
+      return;
+    }
+
+    // Ctrl+Enter: Field Exit (right-adjust and advance)
+    if (e.ctrlKey && e.key === 'Enter') {
+      e.preventDefault();
+      const kr = await sendKey('FIELD_EXIT');
+      if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
       return;
     }
 
     const keyMap: Record<string, string> = {
-      Enter: 'ENTER', Tab: 'TAB', Delete: 'DELETE',
+      Enter: 'ENTER', Tab: 'TAB', Backspace: 'BACKSPACE', Delete: 'DELETE',
       ArrowUp: 'UP', ArrowDown: 'DOWN', ArrowLeft: 'LEFT', ArrowRight: 'RIGHT',
       PageUp: 'PAGEUP', PageDown: 'PAGEDOWN', Home: 'HOME', End: 'END', Insert: 'INSERT',
     };
 
+    // F-keys
     if (e.key.startsWith('F') && e.key.length <= 3) {
       e.preventDefault();
       const fKey = e.key.toUpperCase();
       if (/^F([1-9]|1[0-9]|2[0-4])$/.test(fKey)) {
-        if (inputText) {
-          const r = await sendText(inputText); setInputText('');
-          if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
-        }
         const kr = await sendKey(fKey);
         if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
         return;
       }
     }
 
+    // Action/navigation keys
     if (keyMap[e.key]) {
       e.preventDefault();
-      if (inputText) {
-        const r = await sendText(inputText); setInputText('');
-        if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
-      }
       const kr = await sendKey(keyMap[e.key]);
       if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
     }
@@ -418,20 +466,24 @@ export function GreenScreenTerminal({
   const handleInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (readOnly) { e.target.value = ''; return; }
     const newText = e.target.value;
-    if (newText.includes('\n')) {
-      const textToSend = newText.replace('\n', '');
-      if (textToSend) {
-        const r = await sendText(textToSend);
-        if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
+    if (newText.length > inputText.length) {
+      const newChars = newText.substring(inputText.length);
+      // Optimistic: show character immediately at cursor position
+      const curRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
+      const curCol = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
+      const edits: Array<{ row: number; col: number; ch: string }> = [];
+      for (let i = 0; i < newChars.length; i++) {
+        edits.push({ row: curRow, col: curCol + i, ch: newChars[i] });
       }
-      const kr = await sendKey('ENTER');
-      if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
-      setInputText(''); e.target.value = '';
-    } else {
-      const charsToAdd = newText.length - inputText.length;
-      if (charsToAdd > 0 && !canTypeMore(charsToAdd)) { e.target.value = inputText; return; }
-      setInputText(newText);
+      setOptimisticEdits(prev => [...prev, ...edits]);
+      setSyncedCursor({ row: curRow, col: curCol + newChars.length });
+      // Send to proxy in background (cursor-only response)
+      sendText(newChars).then(r => {
+        if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
+      });
     }
+    setInputText('');
+    e.target.value = '';
   };
 
   // --- Cursor ---
@@ -439,7 +491,7 @@ export function GreenScreenTerminal({
   const getCursorPos = () => {
     if (animatedCursorPos) return animatedCursorPos;
     let cursorRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
-    let cursorCol = (syncedCursor?.col ?? screenData?.cursor_col ?? 0) + inputText.length;
+    let cursorCol = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
     while (cursorCol >= termCols) { cursorCol -= termCols; cursorRow += 1; }
     return { row: cursorRow, col: cursorCol };
   };
@@ -466,7 +518,8 @@ export function GreenScreenTerminal({
     const inputFields = fields.filter(f => f.row === rowIndex && f.is_input);
     const highlightedFields = fields.filter(f => f.row === rowIndex && f.is_protected && f.is_highlighted);
     const reverseFields = fields.filter(f => f.row === rowIndex && f.is_protected && f.is_reverse);
-    const allRowFields = [...inputFields, ...highlightedFields, ...reverseFields];
+    const colorFields = fields.filter(f => f.row === rowIndex && f.is_protected && (f as any).color && !f.is_highlighted && !f.is_reverse);
+    const allRowFields = [...inputFields, ...highlightedFields, ...reverseFields, ...colorFields];
 
     if (allRowFields.length === 0) return <span>{line}</span>;
 
@@ -480,12 +533,20 @@ export function GreenScreenTerminal({
       const fe = Math.min(field.col + field.length, cols);
       if (fs > lastEnd) segs.push(<span key={`t${idx}`}>{line.substring(lastEnd, fs)}</span>);
       const fc = line.substring(fs, fe);
+
+      // Resolve color from field's 5250 color attribute
+      const colorVar = (field as any).color
+        ? `var(--gs-${(field as any).color}, var(--gs-green))`
+        : undefined;
+
       if (field.is_input) {
         const fieldWidth = Math.min(field.length, cols - fs);
         const fieldClass = showSignInHint ? 'gs-confirmed-field' : (field.is_underscored ? 'gs-input-field' : undefined);
-        segs.push(<span key={`f${idx}`} className={fieldClass || undefined} style={{ display: 'inline-block', width: `${fieldWidth}ch`, overflow: 'hidden' }}>{fc}</span>);
+        segs.push(<span key={`f${idx}`} className={fieldClass || undefined} style={{ display: 'inline-block', width: `${fieldWidth}ch`, overflow: 'hidden', color: colorVar }}>{fc}</span>);
       } else if (field.is_reverse) {
-        segs.push(<span key={`v${idx}`} style={{ color: '#ef4444', fontWeight: 'bold' }}>{fc}</span>);
+        segs.push(<span key={`v${idx}`} style={{ color: colorVar || 'var(--gs-red, #FF5555)', fontWeight: 'bold' }}>{fc}</span>);
+      } else if (colorVar) {
+        segs.push(<span key={`h${idx}`} style={{ color: colorVar }}>{fc}</span>);
       } else if (field.is_highlighted) {
         segs.push(<span key={`h${idx}`} style={{ color: 'var(--gs-white, #FFFFFF)' }}>{fc}</span>);
       } else {
@@ -544,14 +605,24 @@ export function GreenScreenTerminal({
     const ROW_HEIGHT = 21;
     const cursor = getCursorPos();
     const hasCursor = screenData.cursor_row !== undefined && screenData.cursor_col !== undefined;
+    // Only show cursor when it's inside an input field
+    const cursorInInputField = hasCursor && fields.some(f =>
+      f.is_input && f.row === cursor.row &&
+      cursor.col >= f.col && cursor.col < f.col + f.length
+    );
 
     return (
       <div style={{ fontFamily: 'var(--gs-font)', fontSize: '13px', position: 'relative', width: `${cols}ch` }}>
         {rows.map((line, index) => {
+          // Apply optimistic edits to this row
           let displayLine = line;
-          if (hasCursor && index === cursor.row && inputText && !animatedCursorPos) {
-            const baseCol = syncedCursor?.col ?? screenData.cursor_col ?? 0;
-            displayLine = (line.substring(0, baseCol) + inputText + line.substring(baseCol + inputText.length)).substring(0, cols).padEnd(cols, ' ');
+          const rowEdits = optimisticEdits.filter(e => e.row === index);
+          if (rowEdits.length > 0) {
+            const chars = displayLine.split('');
+            for (const edit of rowEdits) {
+              if (edit.col >= 0 && edit.col < chars.length) chars[edit.col] = edit.ch;
+            }
+            displayLine = chars.join('');
           }
           const headerSegments = index === 0 ? profile.colors.parseHeaderRow(displayLine) : null;
           return (
@@ -559,7 +630,7 @@ export function GreenScreenTerminal({
               {headerSegments
                 ? headerSegments.map((seg, i) => <span key={i} className={seg.colorClass}>{seg.text}</span>)
                 : renderRowWithFields(displayLine, index, fields)}
-              {hasCursor && !showSignInHint && index === cursor.row && (
+              {cursorInInputField && !showSignInHint && index === cursor.row && (
                 <span className="gs-cursor" style={{ position: 'absolute', left: `${cursor.col}ch`, width: '1ch', height: `${ROW_HEIGHT}px`, top: 0, pointerEvents: 'none' }} />
               )}
             </div>
@@ -608,6 +679,8 @@ export function GreenScreenTerminal({
                 {isFocused && <span className="gs-badge-focused">FOCUSED</span>}
                 {screenData?.timestamp && <span className="gs-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
                 <span className="gs-hint">{readOnly ? 'Read-only' : isFocused ? 'ESC to exit focus' : 'Click to control'}</span>
+                {screenData?.keyboard_locked && <span className="gs-badge-lock">X II</span>}
+                {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
               </span>
               <div className="gs-header-right">
                 {connStatus?.status && <KeyIcon size={12} style={{ color: getStatusColor(connStatus.status) }} />}
@@ -615,6 +688,7 @@ export function GreenScreenTerminal({
                   ? <WifiIcon size={12} style={{ color: 'var(--gs-green, #10b981)' }} />
                   : <WifiOffIcon size={12} style={{ color: '#FF6B00' }} />)}
                 {onMinimize && <button onClick={(e) => { e.stopPropagation(); onMinimize(); }} className="gs-btn-icon" title="Minimize terminal"><MinimizeIcon /></button>}
+                <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><HelpIcon size={12} /></button>
                 {headerRight}
               </div>
             </>
@@ -626,6 +700,8 @@ export function GreenScreenTerminal({
                 {isFocused && <span className="gs-badge-focused">FOCUSED</span>}
                 {screenData?.timestamp && <span className="gs-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
                 <span className="gs-hint">{readOnly ? 'Read-only mode' : isFocused ? 'ESC to exit focus' : 'Click terminal to control'}</span>
+                {screenData?.keyboard_locked && <span className="gs-badge-lock">X II</span>}
+                {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
               </span>
               <div className="gs-header-right">
                 {connStatus && (
@@ -656,6 +732,7 @@ export function GreenScreenTerminal({
                     {connStatus.username && <span className="gs-host">{connStatus.username}</span>}
                   </div>
                 )}
+                <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><HelpIcon size={12} /></button>
                 {headerRight}
               </div>
             </>
@@ -672,8 +749,27 @@ export function GreenScreenTerminal({
               <span>{String(screenError)}</span>
             </div>
           )}
-          <div className="gs-screen-content">{renderScreen()}</div>
+          <div ref={screenContentRef} className="gs-screen-content">{renderScreen()}</div>
           {overlay}
+          {showShortcuts && (
+            <div className="gs-shortcuts-panel">
+              <div className="gs-shortcuts-header">
+                <span>Keyboard Shortcuts</span>
+                <button className="gs-btn-icon" onClick={() => setShowShortcuts(false)} style={{ pointerEvents: 'auto' }}>&times;</button>
+              </div>
+              <table className="gs-shortcuts-table">
+                <tbody>
+                  <tr><td className="gs-shortcut-key">Ctrl+Enter</td><td>Field Exit</td></tr>
+                  <tr><td className="gs-shortcut-key">Ctrl+R</td><td>Reset</td></tr>
+                  <tr><td className="gs-shortcut-key">Insert</td><td>Insert / Overwrite</td></tr>
+                  <tr><td className="gs-shortcut-key">Page Up</td><td>Roll Down</td></tr>
+                  <tr><td className="gs-shortcut-key">Page Down</td><td>Roll Up</td></tr>
+                  <tr><td className="gs-shortcut-key">Click</td><td>Focus / Position cursor</td></tr>
+                  <tr><td className="gs-shortcut-key">Escape</td><td>Exit focus mode</td></tr>
+                </tbody>
+              </table>
+            </div>
+          )}
           {connStatus && !connStatus.connected && screenData && (
             <div className="gs-overlay">
               <WifiOffIcon size={28} />
@@ -681,7 +777,7 @@ export function GreenScreenTerminal({
             </div>
           )}
           <input ref={inputRef} type="text" value={inputText} onChange={handleInput} onKeyDown={handleKeyDown}
-            style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}
+            style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', fontSize: '13px', lineHeight: '21px', fontFamily: 'var(--gs-font)', padding: 0, border: 'none', height: '21px' }}
             autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
         </div>
       </div>
