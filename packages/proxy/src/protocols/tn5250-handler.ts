@@ -67,6 +67,47 @@ export class TN5250Handler extends ProtocolHandler {
     // KEY_TO_AID uses mixed case (Enter, PageUp). Handle both.
     const normalizedKey = this.normalizeKeyName(keyName);
 
+    // Arrow keys: local cursor movement per lib5250 dbuffer.c:556-625
+    if (normalizedKey === 'ArrowLeft' || normalizedKey === 'ArrowRight' ||
+        normalizedKey === 'ArrowUp' || normalizedKey === 'ArrowDown') {
+      let { cursorRow, cursorCol } = this.screen;
+      switch (normalizedKey) {
+        case 'ArrowLeft':
+          cursorCol--;
+          if (cursorCol < 0) { cursorCol = this.screen.cols - 1; cursorRow--; }
+          if (cursorRow < 0) cursorRow = this.screen.rows - 1;
+          break;
+        case 'ArrowRight':
+          cursorCol++;
+          if (cursorCol >= this.screen.cols) { cursorCol = 0; cursorRow++; }
+          if (cursorRow >= this.screen.rows) cursorRow = 0;
+          break;
+        case 'ArrowUp':
+          cursorRow--;
+          if (cursorRow < 0) cursorRow = this.screen.rows - 1;
+          break;
+        case 'ArrowDown':
+          cursorRow++;
+          if (cursorRow >= this.screen.rows) cursorRow = 0;
+          break;
+      }
+      this.screen.cursorRow = cursorRow;
+      this.screen.cursorCol = cursorCol;
+      return true;
+    }
+
+    // Home: move cursor to home position (first input field or IC position)
+    if (normalizedKey === 'Home') {
+      const firstInput = this.screen.fields
+        .filter(f => this.screen.isInputField(f))
+        .sort((a, b) => this.screen.offset(a.row, a.col) - this.screen.offset(b.row, b.col))[0];
+      if (firstInput) {
+        this.screen.cursorRow = firstInput.row;
+        this.screen.cursorCol = firstInput.col;
+      }
+      return true;
+    }
+
     // Tab/Backtab: move cursor to next/previous input field.
     // Filter out UIM framework artifact fields that are technically non-bypass
     // but not functional for user input (e.g. the selection field at (1,2) on

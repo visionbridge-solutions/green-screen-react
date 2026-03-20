@@ -95,8 +95,13 @@ export class SessionController {
       return;
     }
 
-    // Tab/Backtab are local cursor movements — respond immediately
-    const localKeys = ['Tab', 'Backtab', 'TAB', 'BACKTAB'];
+    // Local cursor movements — respond immediately without waiting for host
+    const localKeys = [
+      'Tab', 'Backtab', 'TAB', 'BACKTAB',
+      'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+      'LEFT', 'RIGHT', 'UP', 'DOWN',
+      'Home', 'HOME',
+    ];
     if (localKeys.includes(key)) {
       this.send({ type: 'screen', data: this.handler.getScreenData() });
     } else {
