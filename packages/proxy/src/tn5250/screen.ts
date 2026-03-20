@@ -1,6 +1,21 @@
 import { createHash } from 'crypto';
 import { SCREEN } from './constants.js';
 
+interface SavedScreenState {
+  buffer: string[];
+  attrBuffer: number[];
+  fields: FieldDef[];
+  cursorRow: number;
+  cursorCol: number;
+}
+
+export interface WindowDef {
+  row: number;       // 0-based top-left of border
+  col: number;       // 0-based top-left of border
+  height: number;    // content height (inside border)
+  width: number;     // content width (inside border)
+}
+
 export interface FieldDef {
   row: number;
   col: number;
@@ -30,6 +45,10 @@ export class ScreenBuffer {
   messageWaiting: boolean = false;
   /** Pending alarm/beep from CC2 */
   pendingAlarm: boolean = false;
+  /** Stack of saved screen states for SAVE_SCREEN / RESTORE_SCREEN */
+  private screenStack: SavedScreenState[] = [];
+  /** Active windows (for tracking; borders rendered directly into buffer) */
+  windowList: WindowDef[] = [];
 
   constructor(rows = SCREEN.ROWS_24, cols = SCREEN.COLS_80) {
     this.rows = rows;
@@ -215,6 +234,76 @@ export class ScreenBuffer {
       case 0x10: return highIntensity ? 'yellow' : 'turquoise';
       case 0x18: return highIntensity ? 'blue' : 'pink';
       default: return 'green';
+    }
+  }
+
+  /** Save current screen state to the stack */
+  saveState(): void {
+    this.screenStack.push({
+      buffer: [...this.buffer],
+      attrBuffer: [...this.attrBuffer],
+      fields: this.fields.map(f => ({ ...f })),
+      cursorRow: this.cursorRow,
+      cursorCol: this.cursorCol,
+    });
+  }
+
+  /** Restore screen state from the stack. Returns false if stack is empty. */
+  restoreState(): boolean {
+    const state = this.screenStack.pop();
+    if (!state) return false;
+    this.buffer = state.buffer;
+    this.attrBuffer = state.attrBuffer;
+    this.fields = state.fields;
+    this.cursorRow = state.cursorRow;
+    this.cursorCol = state.cursorCol;
+    return true;
+  }
+
+  /** Erase a rectangular region (inclusive bounds, 0-based) */
+  eraseRegion(startRow: number, startCol: number, endRow: number, endCol: number): void {
+    for (let r = startRow; r <= endRow; r++) {
+      for (let c = startCol; c <= endCol; c++) {
+        const addr = this.offset(r, c);
+        if (addr >= 0 && addr < this.size) {
+          this.buffer[addr] = ' ';
+          this.attrBuffer[addr] = 0x20;
+        }
+      }
+    }
+  }
+
+  /** Render a window border into the character buffer.
+   *  (row, col) is the top-left corner of the border.
+   *  Content area is (row+1, col+1) to (row+height, col+width). */
+  renderWindowBorder(row: number, col: number, height: number, width: number): void {
+    const botRow = row + height + 1;
+    const rightCol = col + width + 1;
+
+    const setBorder = (r: number, c: number, ch: string) => {
+      if (r >= 0 && r < this.rows && c >= 0 && c < this.cols) {
+        const addr = this.offset(r, c);
+        this.buffer[addr] = ch;
+        this.attrBuffer[addr] = 0x22; // high intensity for border
+      }
+    };
+
+    // Corners
+    setBorder(row, col, '.');
+    setBorder(row, rightCol, '.');
+    setBorder(botRow, col, ':');
+    setBorder(botRow, rightCol, ':');
+
+    // Top and bottom edges
+    for (let c = col + 1; c < rightCol; c++) {
+      setBorder(row, c, '.');
+      setBorder(botRow, c, '.');
+    }
+
+    // Left and right edges
+    for (let r = row + 1; r < botRow; r++) {
+      setBorder(r, col, ':');
+      setBorder(r, rightCol, ':');
     }
   }
 

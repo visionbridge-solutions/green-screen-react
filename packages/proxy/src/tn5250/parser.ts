@@ -1,5 +1,5 @@
 import { ScreenBuffer, FieldDef } from './screen.js';
-import { CMD, ORDER, OPCODE, ATTR } from './constants.js';
+import { CMD, ORDER, OPCODE, ATTR, WDSF_TYPE, WDSF_CLASS } from './constants.js';
 import { ebcdicToChar, ebcdicSymbolChar, EBCDIC_SPACE } from './ebcdic.js';
 
 /**
@@ -9,6 +9,8 @@ export class TN5250Parser {
   private screen: ScreenBuffer;
   /** When true, the next SF order should clear stale fields first */
   private pendingFieldsClear = false;
+  /** Set when a WSF 5250 Query is received; handler should send query reply */
+  pendingQueryReply = false;
   /** Set when an IC order was applied during the last parseOrders call.
    *  When true, calculateFieldLengths should NOT override the cursor. */
   private icApplied = false;
@@ -83,10 +85,20 @@ export class TN5250Parser {
         break;
 
       case OPCODE.SAVE_SCREEN:
-      case OPCODE.RESTORE_SCREEN:
+        this.screen.saveState();
         if (record.length > dataOffset) {
           modified = this.parseCommandsFromOffset(record, dataOffset);
         }
+        modified = true;
+        break;
+
+      case OPCODE.RESTORE_SCREEN:
+        this.screen.restoreState();
+        this.screen.windowList = [];
+        if (record.length > dataOffset) {
+          modified = this.parseCommandsFromOffset(record, dataOffset);
+        }
+        modified = true;
         break;
 
       default:
@@ -122,7 +134,8 @@ export class TN5250Parser {
           data[i] === CMD.CLEAR_UNIT_ALT ||
           data[i] === CMD.WRITE_STRUCTURED_FIELD ||
           data[i] === CMD.WRITE_ERROR_CODE ||
-          data[i] === CMD.WRITE_ERROR_CODE_WIN) {
+          data[i] === CMD.WRITE_ERROR_CODE_WIN ||
+          data[i] === CMD.RESTORE_SCREEN) {
         return this.parseCommands(data, i);
       }
     }
@@ -262,10 +275,18 @@ export class TN5250Parser {
 
         case CMD.WRITE_STRUCTURED_FIELD: {
           pos++;
-          // Structured fields have their own length prefix
+          // WSF: length(2) + class(1) + type(1) + data
+          // Per lib5250 session.c:2220-2275
           if (pos + 1 < data.length) {
             const sfLen = (data[pos] << 8) | data[pos + 1];
-            pos += sfLen; // skip the entire structured field
+            const sfEnd = pos + sfLen;
+
+            // Check for 5250 Query (class 0xD9, type 0x70)
+            if (pos + 3 < data.length && data[pos + 2] === WDSF_CLASS && data[pos + 3] === 0x70) {
+              this.pendingQueryReply = true;
+            }
+
+            pos = Math.min(sfEnd, data.length);
           }
           break;
         }
@@ -287,6 +308,21 @@ export class TN5250Parser {
             }
             modified = true;
           }
+          break;
+        }
+
+        case CMD.SAVE_SCREEN: {
+          pos++;
+          this.screen.saveState();
+          modified = true;
+          break;
+        }
+
+        case CMD.RESTORE_SCREEN: {
+          pos++;
+          this.screen.restoreState();
+          this.screen.windowList = [];
+          modified = true;
           break;
         }
 
@@ -496,12 +532,36 @@ export class TN5250Parser {
         }
 
         case ORDER.WDSF: {
-          // Write Display Structured Field: 2-byte length + data
+          // Write Display Structured Field: 2-byte length + class + type + data
           // Per lib5250 session.c:1909-1984 (0x15 within WTD)
           if (pos + 2 >= data.length) return data.length;
           pos++;
           const wdsfLen = (data[pos] << 8) | data[pos + 1];
-          pos += Math.max(2, wdsfLen); // length includes the 2 length bytes
+          const wdsfEnd = pos + Math.max(2, wdsfLen);
+          pos += 2; // past length bytes
+
+          if (pos + 1 < data.length) {
+            const wdsfClass = data[pos++];
+            const wdsfType = data[pos++];
+
+            if (wdsfClass === WDSF_CLASS) {
+              switch (wdsfType) {
+                case WDSF_TYPE.CREATE_WINDOW:
+                  this.parseCreateWindow(data, pos, wdsfEnd);
+                  break;
+                case WDSF_TYPE.REM_GUI_WINDOW:
+                  if (this.screen.windowList.length > 0) {
+                    this.screen.windowList.pop();
+                  }
+                  break;
+                case WDSF_TYPE.REM_ALL_GUI_CONSTRUCTS:
+                  this.screen.windowList = [];
+                  break;
+              }
+            }
+          }
+
+          pos = Math.min(wdsfEnd, data.length);
           break;
         }
 
@@ -677,6 +737,33 @@ export class TN5250Parser {
     // type === 0x00: normal or color field
     // Bit 3 (0x08) set = color field, treat as normal display (green on most terminals)
     return ATTR.NORMAL;
+  }
+
+  /**
+   * Parse CREATE_WINDOW structured field data.
+   * Per lib5250 session.c:3129-3349.
+   * Window position = current cursor position. Renders border and erases content area.
+   */
+  private parseCreateWindow(data: Buffer, pos: number, end: number): void {
+    if (pos + 4 >= end) return;
+
+    const flagbyte1 = data[pos++]; // 0x80=cursor restricted, 0x40=pull-down
+    pos += 2; // 2 reserved bytes
+    const depth = data[pos++];     // content height
+    const width = data[pos++];     // content width
+
+    // Remaining bytes are border minor structures — skip for now
+
+    const winRow = this.screen.cursorRow;
+    const winCol = this.screen.cursorCol;
+
+    this.screen.windowList.push({ row: winRow, col: winCol, height: depth, width: width });
+
+    // Render border into character buffer
+    this.screen.renderWindowBorder(winRow, winCol, depth, width);
+
+    // Erase content area inside the border
+    this.screen.eraseRegion(winRow + 1, winCol + 1, winRow + depth, winCol + width);
   }
 
   /**

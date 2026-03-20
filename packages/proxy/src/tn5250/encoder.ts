@@ -107,6 +107,98 @@ export class TN5250Encoder {
   }
 
   /**
+   * Build a 5250 Query Reply response.
+   * Per lib5250 session.c:2367-2580. Tells the host our terminal capabilities,
+   * including enhanced 5250 WDSF support (windows, selection fields, etc.).
+   */
+  buildQueryReply(terminalType = 'IBM-3179-2'): Buffer {
+    const temp = Buffer.alloc(67, 0x00);
+
+    temp[0] = 0x00; // Cursor Row (zero)
+    temp[1] = 0x00; // Cursor Column (zero)
+    temp[2] = 0x88; // Inbound Write Structured Field Aid
+
+    // Length of query reply data (including these 2 bytes)
+    temp[3] = 0x00;
+    temp[4] = 0x40; // 64 bytes (enhanced mode)
+
+    temp[5] = 0xD9; // Command class
+    temp[6] = 0x70; // Command type — Query
+    temp[7] = 0x80; // Flag byte
+
+    temp[8] = 0x06; // Controller hardware class
+    temp[9] = 0x00; // Other WSF / 5250 emulator
+
+    temp[10] = 0x01; // Controller code level: Version 1 Release 1.0
+    temp[11] = 0x01;
+    temp[12] = 0x00;
+
+    // Bytes 13-28: Reserved (already zero)
+
+    temp[29] = 0x01; // Display emulation
+
+    // Device type and model from terminal type string (e.g., "IBM-3179-2")
+    const dashIdx = terminalType.indexOf('-');
+    const suffix = dashIdx >= 0 ? terminalType.substring(dashIdx + 1) : '3179-2';
+    const parts = suffix.split('-');
+    const devType = (parts[0] || '3179').padStart(4, '0');
+    const devModel = (parts[1] || '2').padStart(2, '0');
+
+    // Convert device type/model to EBCDIC
+    for (let i = 0; i < 4 && i < devType.length; i++) {
+      temp[30 + i] = charToEbcdic(devType[i]);
+    }
+    temp[34] = charToEbcdic(' '); // separator
+    for (let i = 0; i < 2 && i < devModel.length; i++) {
+      temp[35 + i] = charToEbcdic(devModel[i]);
+    }
+
+    temp[37] = 0x02; // Standard keyboard
+    temp[38] = 0x00; // Extended keyboard ID
+    temp[39] = 0x00; // Reserved
+
+    // Serial number (bytes 40-43)
+    temp[40] = 0x00;
+    temp[41] = 0x61;
+    temp[42] = 0x50;
+    temp[43] = 0x00;
+
+    temp[44] = 0xFF; // Max input fields (high byte)
+    temp[45] = 0xFF; // Max input fields (low byte)
+
+    temp[46] = 0x00; // Control unit customization
+    temp[47] = 0x00; // Reserved
+    temp[48] = 0x00;
+
+    temp[49] = 0x23; // Controller/Display capability
+    temp[50] = 0x31;
+    temp[51] = 0x00;
+    temp[52] = 0x00;
+
+    // Byte 53 bit 6: Enhanced 5250 FCW & WDSFs
+    // Byte 53 bit 7: WRITE ERROR CODE TO WINDOW support
+    temp[53] = 0x02;
+    // Byte 54 bit 0: Enhanced UI level 2
+    temp[54] = 0x80;
+
+    // Bytes 55-66: Reserved (already zero)
+
+    // Wrap in GDS header and Telnet EOR framing
+    const gdsHeader = Buffer.from([
+      0x00, 0x00,       // length placeholder
+      0x12, 0xA0,       // record type GDS
+      0x00, 0x00,       // reserved
+      0x04,             // sub-header length
+      0x00,             // flags
+      0x00,             // reserved
+      0x00,             // opcode NO_OP
+    ]);
+
+    const packet = Buffer.concat([gdsHeader, temp]);
+    return this.wrapWithEOR(packet);
+  }
+
+  /**
    * Insert text at the current cursor position in the current field.
    * Updates the screen buffer and marks the field as modified.
    * Returns true if text was successfully inserted.

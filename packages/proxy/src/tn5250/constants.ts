@@ -158,6 +158,20 @@ export const ATTR = {
   COLUMN_SEPARATOR: 0x23,
 } as const;
 
+// Write Display Structured Field (WDSF) types — within WTD (ORDER.WDSF = 0x15)
+export const WDSF_TYPE = {
+  DEFINE_SELECTION_FIELD: 0x50,
+  CREATE_WINDOW: 0x51,
+  UNRESTRICT_CURSOR: 0x52,
+  DEFINE_SCROLL_BAR: 0x53,
+  WRITE_DATA: 0x54,
+  REM_GUI_WINDOW: 0x59,
+  REM_ALL_GUI_CONSTRUCTS: 0x5F,
+} as const;
+
+// Structured field class byte (IBM Display class)
+export const WDSF_CLASS = 0xD9;
+
 // Screen dimensions
 export const SCREEN = {
   ROWS_24: 24,

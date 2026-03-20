@@ -394,6 +394,14 @@ export class TN5250Handler extends ProtocolHandler {
 
   private onRecord(record: Buffer): void {
     const modified = this.parser.parseRecord(record);
+
+    // Send query reply if host sent a 5250 Query WSF
+    if (this.parser.pendingQueryReply) {
+      this.parser.pendingQueryReply = false;
+      const reply = this.encoder.buildQueryReply();
+      if (reply) this.connection.sendRaw(reply);
+    }
+
     if (modified) {
       this.parser.calculateFieldLengths();
       this.emit('screenChange', this.screen.toScreenData());
