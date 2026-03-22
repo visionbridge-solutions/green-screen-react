@@ -60,10 +60,7 @@ router.post('/connect', async (req: Request, res: Response) => {
     res.json({
       success: true,
       sessionId: session.id,
-      cursor_row: screenData.cursor_row,
-      cursor_col: screenData.cursor_col,
-      content: screenData.content,
-      screen_signature: screenData.screen_signature,
+      ...screenData,
     });
   } catch (err: any) {
     res.status(500).json({
@@ -97,10 +94,7 @@ router.post('/reconnect', async (req: Request, res: Response) => {
     const screenData = session.getScreenData();
     res.json({
       success: true,
-      cursor_row: screenData.cursor_row,
-      cursor_col: screenData.cursor_col,
-      content: screenData.content,
-      screen_signature: screenData.screen_signature,
+      ...screenData,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -221,10 +215,7 @@ router.post('/batch', async (req: Request, res: Response) => {
     const screenData = session.getScreenData();
     res.json({
       success: true,
-      cursor_row: screenData.cursor_row,
-      cursor_col: screenData.cursor_col,
-      content: screenData.content,
-      screen_signature: screenData.screen_signature,
+      ...screenData,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message || 'Batch operation failed' });
@@ -248,13 +239,23 @@ router.post('/send-text', (req: Request, res: Response) => {
 
   res.json({
     success: ok,
-    cursor_row: screenData.cursor_row,
-    cursor_col: screenData.cursor_col,
-    content: screenData.content,
-    screen_signature: screenData.screen_signature,
+    ...screenData,
     error: ok ? undefined : 'Cannot type at current cursor position',
   });
 });
+
+// Keys that are handled locally in the screen buffer (no host roundtrip needed).
+// Must match the set in controller.ts handleKey() for consistent behavior.
+const LOCAL_KEYS = new Set([
+  'Tab', 'Backtab', 'TAB', 'BACKTAB',
+  'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+  'LEFT', 'RIGHT', 'UP', 'DOWN',
+  'Home', 'HOME', 'End', 'END',
+  'Backspace', 'BACKSPACE', 'Delete', 'DELETE',
+  'Insert', 'INSERT',
+  'Reset', 'RESET',
+  'FieldExit', 'FIELD_EXIT', 'FIELDEXIT',
+]);
 
 // POST /send-key
 router.post('/send-key', async (req: Request, res: Response) => {
@@ -273,16 +274,21 @@ router.post('/send-key', async (req: Request, res: Response) => {
     return res.json({ success: false, error: `Unknown key: ${key}` });
   }
 
-  // Wait for the host to respond with a new screen
-  await new Promise(resolve => setTimeout(resolve, session.screenTimeout));
+  // Local keys (arrows, tab, backspace, etc.) are handled in the screen buffer
+  // and return immediately — no need to wait for a host response.
+  // Remote keys (Enter, F1-F24, etc.) require waiting for the host.
+  if (!LOCAL_KEYS.has(key)) {
+    const screenData = await session.waitForScreen(session.screenTimeout);
+    return res.json({
+      success: true,
+      ...screenData,
+    });
+  }
 
   const screenData = session.getScreenData();
   res.json({
     success: true,
-    cursor_row: screenData.cursor_row,
-    cursor_col: screenData.cursor_col,
-    content: screenData.content,
-    screen_signature: screenData.screen_signature,
+    ...screenData,
   });
 });
 
