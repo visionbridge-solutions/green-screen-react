@@ -14,6 +14,8 @@ export interface WindowDef {
   col: number;       // 0-based top-left of border
   height: number;    // content height (inside border)
   width: number;     // content width (inside border)
+  title?: string;    // title text from Window Title/Footer minor structure
+  footer?: string;   // footer text from Window Title/Footer minor structure
 }
 
 export interface FieldDef {
@@ -224,6 +226,11 @@ export class ScreenBuffer {
   /** Whether a field has the underscore display attribute */
   isUnderscored(field: FieldDef): boolean {
     return field.attribute === 0x24;
+  }
+
+  /** Whether a field has the FFW mandatory entry flag (CHECK(ME)) */
+  isMandatory(field: FieldDef): boolean {
+    return (field.ffw2 & 0x08) !== 0;
   }
 
   /** Whether an input field is visually interactive (underscored or password) */
@@ -480,6 +487,7 @@ export class ScreenBuffer {
       is_highlighted?: boolean;
       is_reverse?: boolean;
       is_underscored?: boolean;
+      is_mandatory?: boolean;
       color?: 'green' | 'white' | 'red' | 'turquoise' | 'yellow' | 'pink' | 'blue';
     }>;
     screen_signature: string;
@@ -488,6 +496,10 @@ export class ScreenBuffer {
     message_waiting?: boolean;
     alarm?: boolean;
     insert_mode?: boolean;
+    windows?: Array<{ row: number; col: number; height: number; width: number; title?: string; footer?: string }>;
+    selection_fields?: Array<{ row: number; col: number; num_rows: number; num_cols: number; choices: Array<{ text: string; row: number; col: number }> }>;
+    screen_stack_depth?: number;
+    is_popup?: boolean;
   } {
     // Build content as newline-separated rows, sanitising control characters
     // and replacing 5250 indicator characters that the host sends without
@@ -522,7 +534,7 @@ export class ScreenBuffer {
 
     // Map fields to frontend format
     const fields = this.fields.map(f => {
-      const color = f.rawAttrByte ? ScreenBuffer.attrColor(f.rawAttrByte) : undefined;
+      const color = f.rawAttrByte ? ScreenBuffer.attrColor(f.rawAttrByte) : 'green';
       return {
         row: f.row,
         col: f.col,
@@ -533,7 +545,8 @@ export class ScreenBuffer {
         is_reverse: this.isReverse(f) || undefined,
         is_underscored: this.isUnderscored(f) || undefined,
         is_non_display: this.isNonDisplay(f) || undefined,
-        color: color !== 'green' ? color : undefined, // only send non-default
+        is_mandatory: this.isMandatory(f) || undefined,
+        color,
       };
     });
 
@@ -543,6 +556,30 @@ export class ScreenBuffer {
     // Consume pending alarm (one-shot)
     const alarm = this.pendingAlarm;
     this.pendingAlarm = false;
+
+    const windows = this.windowList.length > 0
+      ? this.windowList.map(w => ({
+          row: w.row,
+          col: w.col,
+          height: w.height,
+          width: w.width,
+          ...(w.title ? { title: w.title } : {}),
+          ...(w.footer ? { footer: w.footer } : {}),
+        }))
+      : undefined;
+
+    const selection_fields = this.selectionFields.length > 0
+      ? this.selectionFields.map(sf => ({
+          row: sf.row,
+          col: sf.col,
+          num_rows: sf.numRows,
+          num_cols: sf.numCols,
+          choices: sf.choices,
+        }))
+      : undefined;
+
+    const screen_stack_depth = this.screenStack.length || undefined;
+    const is_popup = this.screenStack.length > 0 || undefined;
 
     return {
       content,
@@ -557,6 +594,10 @@ export class ScreenBuffer {
       insert_mode: this.insertMode || undefined,
       message_waiting: this.messageWaiting || undefined,
       alarm: alarm || undefined,
+      windows,
+      selection_fields,
+      screen_stack_depth,
+      is_popup,
     };
   }
 }

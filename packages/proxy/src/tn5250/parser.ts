@@ -118,8 +118,10 @@ export class TN5250Parser {
 
   /** Try to parse data that doesn't have a proper GDS header */
   private tryParseRawData(record: Buffer): boolean {
-    // Some servers send command data without the full GDS wrapper
-    return this.parseCommands(record, 0);
+    // Some servers send command data without the full GDS wrapper.
+    // Use parseCommandsFromOffset to skip 0x04 escape markers and find
+    // the first known command byte — handles mock servers and non-GDS hosts.
+    return this.parseCommandsFromOffset(record, 0);
   }
 
   /**
@@ -793,7 +795,14 @@ export class TN5250Parser {
     const winRow = this.screen.cursorRow;
     const winCol = this.screen.cursorCol;
 
-    this.screen.windowList.push({ row: winRow, col: winCol, height: depth, width: width });
+    this.screen.windowList.push({
+      row: winRow,
+      col: winCol,
+      height: depth,
+      width: width,
+      title: titleText || undefined,
+      footer: footerText || undefined,
+    });
 
     // Render border with custom characters from host
     this.screen.renderWindowBorderCustom(winRow, winCol, depth, width, borderChars, titleText, footerText);
