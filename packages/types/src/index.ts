@@ -40,6 +40,40 @@ export interface Field {
   color?: FieldColor;
 }
 
+/** Window metadata from CREATE_WINDOW or synthesized from SAVE_SCREEN */
+export interface Window {
+  /** 0-based row of border top-left */
+  row: number;
+  /** 0-based col of border top-left */
+  col: number;
+  /** Content height (rows inside border) */
+  height: number;
+  /** Content width (columns inside border) */
+  width: number;
+  /** Title text from Window Title minor structure (if provided by host) */
+  title?: string;
+  /** Footer text from Window Footer minor structure (if provided by host) */
+  footer?: string;
+}
+
+/** A single choice within a selection field */
+export interface SelectionChoice {
+  text: string;
+  row: number;
+  col: number;
+}
+
+/** Selection field from DEFINE_SELECTION_FIELD (menus, radio buttons, choice lists) */
+export interface SelectionField {
+  row: number;
+  col: number;
+  /** Number of visible rows for this selection field */
+  num_rows: number;
+  /** Width of each choice text */
+  num_cols: number;
+  choices: SelectionChoice[];
+}
+
 /**
  * Screen data — the canonical representation of the terminal screen
  * sent from the proxy to the client over WebSocket/REST.
@@ -69,6 +103,14 @@ export interface ScreenData {
   alarm?: boolean;
   /** Whether insert mode is active (vs overwrite mode) */
   insert_mode?: boolean;
+  /** Active popup windows (from CREATE_WINDOW or synthesized); absent when no popup */
+  windows?: Window[];
+  /** Selection fields defined by host (menus, radio buttons, choice lists); absent when none */
+  selection_fields?: SelectionField[];
+  /** Number of screens on the save/restore stack (0 = no popup) */
+  screen_stack_depth?: number;
+  /** True when a popup window is active (screen_stack_depth > 0) */
+  is_popup?: boolean;
 }
 
 /**
@@ -78,7 +120,7 @@ export interface ConnectionStatus {
   /** Whether a TCP connection is established */
   connected: boolean;
   /** Current connection state */
-  status: 'disconnected' | 'connecting' | 'connected' | 'authenticated' | 'error';
+  status: 'disconnected' | 'connecting' | 'connected' | 'authenticated' | 'error' | 'loading';
   /** Terminal protocol in use */
   protocol?: ProtocolType;
   /** Host address */
