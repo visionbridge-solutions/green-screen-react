@@ -29,8 +29,8 @@
 }
 
 .gs-terminal-focused {
-  border-color: var(--gs-green);
-  box-shadow: 0 0 20px rgba(16, 185, 129, 0.4), inset 0 0 10px rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.4);
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.1);
 }
 
 /* ── Header ───────────────────────────────────────────────────────── */
@@ -51,8 +51,8 @@
 }
 
 .gs-terminal-focused .gs-header {
-  background-color: rgba(16, 185, 129, 0.1);
-  border-bottom-color: var(--gs-green);
+  background-color: rgba(16, 185, 129, 0.04);
+  border-bottom-color: rgba(16, 185, 129, 0.3);
 }
 
 .gs-header-left {
@@ -75,12 +75,12 @@
 
 .gs-badge-focused {
   padding: 2px 8px;
-  background-color: var(--gs-green);
-  color: black;
+  background-color: rgba(16, 185, 129, 0.15);
+  color: var(--gs-green);
   font-size: 10px;
-  font-weight: bold;
+  font-weight: 600;
   border-radius: 4px;
-  animation: gs-pulse 2s infinite;
+  border: 1px solid rgba(16, 185, 129, 0.3);
 }
 
 .gs-badge-lock {

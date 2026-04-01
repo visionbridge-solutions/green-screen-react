@@ -21,6 +21,9 @@ export class TN5250Connection extends EventEmitter {
   private recvBuffer: Buffer = Buffer.alloc(0);
   private negotiationDone: boolean = false;
   private terminalType: string = DEFAULT_TERMINAL_TYPE;
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly KEEP_ALIVE_INTERVAL = 15_000; // 15s — well under PUB400's ~30s idle timeout
+  private static readonly KEEP_ALIVE_NOP = Buffer.from([TELNET.IAC, TELNET.NOP]);
 
   get isConnected(): boolean {
     return this.connected;
@@ -76,6 +79,7 @@ export class TN5250Connection extends EventEmitter {
 
         this.socket!.on('data', (data: Buffer) => this.onData(data));
 
+        this.startKeepAlive();
         this.emit('connected');
         resolve();
       });
@@ -84,7 +88,9 @@ export class TN5250Connection extends EventEmitter {
 
   disconnect(): void {
     if (this.socket) {
-      this.socket.destroy();
+      console.log(`[tn5250] Disconnecting socket to ${this.socket.remoteAddress}:${this.socket.remotePort}`);
+      // Send FIN first, then destroy to ensure TCP session closes on the host
+      try { this.socket.end(); } catch { /* ignore */ }
       this.cleanup();
     }
   }
@@ -96,7 +102,24 @@ export class TN5250Connection extends EventEmitter {
     }
   }
 
+  private startKeepAlive(): void {
+    this.stopKeepAlive();
+    this.keepAliveTimer = setInterval(() => {
+      if (this.socket && this.connected) {
+        this.sendRaw(TN5250Connection.KEEP_ALIVE_NOP);
+      }
+    }, TN5250Connection.KEEP_ALIVE_INTERVAL);
+  }
+
+  private stopKeepAlive(): void {
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+    }
+  }
+
   private cleanup(): void {
+    this.stopKeepAlive();
     this.connected = false;
     if (this.socket) {
       this.socket.removeAllListeners();

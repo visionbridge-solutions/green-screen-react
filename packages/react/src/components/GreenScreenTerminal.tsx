@@ -72,8 +72,14 @@ export interface GreenScreenTerminalProps {
 
   /** Custom boot loader element, or false to disable */
   bootLoader?: React.ReactNode | false;
+  /** When true, dismiss the boot loader. If provided, overrides the default
+   *  "dismiss when screen data arrives" behavior. Use to keep the boot loader
+   *  visible during sign-in, startup command execution, etc. */
+  bootLoaderReady?: boolean;
   /** Content for the right side of the header */
   headerRight?: React.ReactNode;
+  /** Content rendered after the connection status groups (WiFi+host, Key+username) */
+  statusActions?: React.ReactNode;
   /** Overlay content (e.g. "Extracting..." state) */
   overlay?: React.ReactNode;
   /** Callback for notifications (replaces toast) */
@@ -124,7 +130,9 @@ export function GreenScreenTerminal({
   autoSignedIn,
   autoFocusDisabled = false,
   bootLoader,
+  bootLoaderReady,
   headerRight,
+  statusActions,
   overlay,
   onNotification,
   onScreenChange,
@@ -190,13 +198,17 @@ export function GreenScreenTerminal({
   // Characters typed by the user are applied optimistically to the displayed
   // content before the proxy responds. Cleared on full screen updates.
   const [optimisticEdits, setOptimisticEdits] = useState<Array<{ row: number; col: number; ch: string }>>([]);
-  const prevScreenSigForEdits = useRef<string | undefined>(undefined);
+  const prevScreenContentForEdits = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (rawScreenData?.screen_signature && rawScreenData.screen_signature !== prevScreenSigForEdits.current) {
-      prevScreenSigForEdits.current = rawScreenData.screen_signature;
+    // Clear optimistic edits whenever the screen content changes (not just signature).
+    // This prevents stale keystrokes from persisting across screen transitions when
+    // the adapter talks to the proxy directly and the WS broadcast hasn't caught up.
+    const content = rawScreenData?.content;
+    if (content && content !== prevScreenContentForEdits.current) {
+      prevScreenContentForEdits.current = content;
       setOptimisticEdits([]);
     }
-  }, [rawScreenData?.screen_signature]);
+  }, [rawScreenData?.content]);
 
   // --- UI State ---
   const [inputText, setInputText] = useState('');
@@ -303,13 +315,19 @@ export function GreenScreenTerminal({
   const [bootFadingOut, setBootFadingOut] = useState(false);
 
   useEffect(() => {
-    if (screenData?.content && showBootLoader) {
+    if (!showBootLoader) return;
+    // If bootLoaderReady is provided, only dismiss when it becomes true.
+    // Otherwise fall back to dismissing when screen data arrives.
+    const shouldDismiss = bootLoaderReady !== undefined
+      ? bootLoaderReady
+      : !!screenData?.content;
+    if (shouldDismiss) {
       setBootFadingOut(true);
       setShowBootLoader(false);
       const timer = setTimeout(() => setBootFadingOut(false), 400);
       return () => clearTimeout(timer);
     }
-  }, [screenData?.content, showBootLoader]);
+  }, [screenData?.content, showBootLoader, bootLoaderReady]);
 
   // --- Focus management ---
   const FOCUS_STORAGE_KEY = 'gs-terminal-focused';
@@ -578,8 +596,8 @@ export function GreenScreenTerminal({
         <div style={{ width: `${screenData?.cols || profile.defaultCols}ch`, height: `${(screenData?.rows || profile.defaultRows) * 21}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ color: '#808080', marginBottom: '12px' }}><TerminalIcon size={40} /></div>
-            <p style={{ fontFamily: 'var(--gs-font)', fontSize: '12px', color: '#808080' }}>
-              {connStatus?.connected ? 'Waiting for screen data...' : 'Not connected'}
+            <p style={{ fontFamily: 'var(--gs-font)', fontSize: '12px', color: connStatus?.status === 'connecting' ? '#f59e0b' : connStatus?.status === 'loading' ? '#94a3b8' : '#808080' }}>
+              {connStatus?.connected ? 'Waiting for screen data...' : connStatus?.status === 'connecting' ? 'Connecting...' : connStatus?.status === 'loading' ? 'Loading...' : 'Not connected'}
             </p>
             {!connStatus?.connected && isUsingDefaultAdapter && (
               <p style={{ fontFamily: 'var(--gs-font)', fontSize: '11px', color: '#606060', marginTop: '8px' }}>
@@ -605,9 +623,10 @@ export function GreenScreenTerminal({
     const ROW_HEIGHT = 21;
     const cursor = getCursorPos();
     const hasCursor = screenData.cursor_row !== undefined && screenData.cursor_col !== undefined;
-    // Only show cursor when it's inside an input field
+    // Only show cursor when it's inside a visible input field (not non-display/password)
     const cursorInInputField = hasCursor && fields.some(f =>
-      f.is_input && f.row === cursor.row &&
+      f.is_input && !(f as any).is_non_display &&
+      f.row === cursor.row &&
       cursor.col >= f.col && cursor.col < f.col + f.length
     );
 
@@ -683,10 +702,11 @@ export function GreenScreenTerminal({
                 {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
               </span>
               <div className="gs-header-right">
-                {connStatus?.status && <KeyIcon size={12} style={{ color: getStatusColor(connStatus.status) }} />}
-                {connStatus && (connStatus.connected
+                {connStatus?.status && connStatus.status !== 'loading' && <KeyIcon size={12} style={{ color: getStatusColor(connStatus.status) }} />}
+                {connStatus && connStatus.status !== 'loading' && (connStatus.connected
                   ? <WifiIcon size={12} style={{ color: 'var(--gs-green, #10b981)' }} />
                   : <WifiOffIcon size={12} style={{ color: '#FF6B00' }} />)}
+                {statusActions}
                 {onMinimize && <button onClick={(e) => { e.stopPropagation(); onMinimize(); }} className="gs-btn-icon" title="Minimize terminal"><MinimizeIcon /></button>}
                 <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><HelpIcon size={12} /></button>
                 {headerRight}
@@ -704,7 +724,7 @@ export function GreenScreenTerminal({
                 {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
               </span>
               <div className="gs-header-right">
-                {connStatus && (
+                {connStatus && connStatus.status !== 'loading' && (
                   <div className="gs-status-group">
                     {connStatus.connected ? (
                       <>
@@ -732,6 +752,7 @@ export function GreenScreenTerminal({
                     {connStatus.username && <span className="gs-host">{connStatus.username}</span>}
                   </div>
                 )}
+                {statusActions}
                 <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><HelpIcon size={12} /></button>
                 {headerRight}
               </div>
@@ -773,7 +794,10 @@ export function GreenScreenTerminal({
           {connStatus && !connStatus.connected && screenData && (
             <div className="gs-overlay">
               <WifiOffIcon size={28} />
-              <span>{isAutoReconnecting || reconnecting ? 'Reconnecting...' : 'Disconnected'}</span>
+              <span>{isAutoReconnecting || reconnecting ? 'Reconnecting...' : connStatus?.status === 'connecting' ? 'Connecting...' : 'Disconnected'}</span>
+              {connStatus.error && !isAutoReconnecting && !reconnecting && (
+                <span style={{ fontSize: '0.75em', opacity: 0.7, maxWidth: '80%', textAlign: 'center', wordBreak: 'break-word' }}>{connStatus.error}</span>
+              )}
             </div>
           )}
           <input ref={inputRef} type="text" value={inputText} onChange={handleInput} onKeyDown={handleKeyDown}

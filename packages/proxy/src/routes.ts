@@ -4,21 +4,22 @@ import {
   createSession,
   getSession,
   getDefaultSession,
+  getAllSessions,
   destroySession,
 } from './session.js';
 import { TN5250Handler } from './protocols/index.js';
+import { broadcastScreenToSession } from './websocket.js';
 const router = Router();
 
-/** Resolve session from header, query param, or default */
+/** Resolve session from header, query param, or default. Resets idle timer on access. */
 function resolveSession(req: Request): Session | undefined {
   const sessionId =
     (req.headers['x-session-id'] as string) ||
     (req.query.sessionId as string);
 
-  if (sessionId) {
-    return getSession(sessionId);
-  }
-  return getDefaultSession();
+  const session = sessionId ? getSession(sessionId) : getDefaultSession();
+  if (session) session.touch();
+  return session;
 }
 
 // POST /connect
@@ -26,7 +27,18 @@ router.post('/connect', async (req: Request, res: Response) => {
   try {
     const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, screenTimeout, connectTimeout, username, password } = req.body || {};
 
+    // Destroy any existing session connected to the same host:port.
+    // Prevents stale TCP sessions from accumulating (e.g., CPF1220 device limit).
+    for (const [id, existing] of getAllSessions()) {
+      const s = existing.status;
+      if (s.host === host && (s.connected || s.status === 'connecting')) {
+        console.log(`[connect] Destroying existing session ${id.slice(0, 8)} for ${host}:${port} before new connect`);
+        destroySession(id);
+      }
+    }
+
     const session = createSession(protocol);
+    console.log(`[connect] Created session ${session.id.slice(0, 8)} for ${host}:${port}`);
     if (typeof screenTimeout === 'number' && screenTimeout > 0) {
       session.screenTimeout = screenTimeout;
     }
@@ -72,11 +84,14 @@ router.post('/connect', async (req: Request, res: Response) => {
 
 // POST /disconnect
 router.post('/disconnect', (req: Request, res: Response) => {
+  const requestedId = req.headers['x-session-id'] as string || '(none)';
   const session = resolveSession(req);
   if (!session) {
+    console.log(`[disconnect] No session found for id=${requestedId.slice(0, 8)}`);
     return res.json({ success: true }); // Already disconnected
   }
 
+  console.log(`[disconnect] Destroying session ${session.id.slice(0, 8)} (requested=${requestedId.slice(0, 8)})`);
   destroySession(session.id);
   res.json({ success: true });
 });
@@ -206,13 +221,17 @@ router.post('/batch', async (req: Request, res: Response) => {
       }
     }
 
+    let screenData;
     if (readScreen && lastRemoteKey) {
-      // Wait for host response after remote key
-      const screenData = await session.waitForScreen(3000);
-      return res.json({ success: true, ...screenData });
+      // Wait for host response after last remote key
+      screenData = await session.waitForScreen(session.screenTimeout);
+    } else {
+      screenData = session.getScreenData();
     }
 
-    const screenData = session.getScreenData();
+    // Broadcast to WebSocket clients so dashboard stays in sync
+    broadcastScreenToSession(session.id, screenData);
+
     res.json({
       success: true,
       ...screenData,
@@ -236,6 +255,11 @@ router.post('/send-text', (req: Request, res: Response) => {
 
   const ok = session.sendText(text);
   const screenData = session.getScreenData();
+
+  // Broadcast to WebSocket clients so dashboard stays in sync
+  if (ok) {
+    broadcastScreenToSession(session.id, screenData);
+  }
 
   res.json({
     success: ok,
@@ -269,27 +293,24 @@ router.post('/send-key', async (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'key is required' });
   }
 
+  if (!LOCAL_KEYS.has(key)) {
+    // Remote key: race-free send + wait (listener set up before sendKey)
+    const { ok, screen } = await session.sendKeyAndWait(key, session.screenTimeout);
+    if (!ok) {
+      return res.json({ success: false, error: `Unknown key: ${key}` });
+    }
+    // Broadcast to WebSocket clients so dashboard stays in sync
+    broadcastScreenToSession(session.id, screen);
+    return res.json({ success: true, ...screen });
+  }
+
+  // Local key: immediate response, no host round-trip
   const ok = session.sendKey(key);
   if (!ok) {
     return res.json({ success: false, error: `Unknown key: ${key}` });
   }
-
-  // Local keys (arrows, tab, backspace, etc.) are handled in the screen buffer
-  // and return immediately — no need to wait for a host response.
-  // Remote keys (Enter, F1-F24, etc.) require waiting for the host.
-  if (!LOCAL_KEYS.has(key)) {
-    const screenData = await session.waitForScreen(session.screenTimeout);
-    return res.json({
-      success: true,
-      ...screenData,
-    });
-  }
-
   const screenData = session.getScreenData();
-  res.json({
-    success: true,
-    ...screenData,
-  });
+  res.json({ success: true, ...screenData });
 });
 
 export default router;

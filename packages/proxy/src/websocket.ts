@@ -253,3 +253,10 @@ function broadcastToSession(sessionId: string, message: string, exclude?: WebSoc
     }
   }
 }
+
+/** Broadcast a screen update to all WebSocket clients watching a session.
+ *  Called from HTTP routes (e.g. /send-key) so dashboard clients stay in sync. */
+export function broadcastScreenToSession(sessionId: string, screenData: object): void {
+  const message = JSON.stringify({ type: 'screen', data: screenData });
+  broadcastToSession(sessionId, message);
+}
