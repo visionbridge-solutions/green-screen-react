@@ -27,13 +27,15 @@ router.post('/connect', async (req: Request, res: Response) => {
   try {
     const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, screenTimeout, connectTimeout, username, password } = req.body || {};
 
-    // Destroy any existing session connected to the same host:port.
-    // Prevents stale TCP sessions from accumulating (e.g., CPF1220 device limit).
-    for (const [id, existing] of getAllSessions()) {
-      const s = existing.status;
-      if (s.host === host && (s.connected || s.status === 'connecting')) {
-        console.log(`[connect] Destroying existing session ${id.slice(0, 8)} for ${host}:${port} before new connect`);
-        destroySession(id);
+    // Destroy only the caller's previous session (identified by X-Session-Id),
+    // NOT all sessions for the same host:port. Multiple agents may legitimately
+    // maintain concurrent sessions to the same host.
+    const previousSessionId = req.headers['x-session-id'] as string;
+    if (previousSessionId) {
+      const prev = getSession(previousSessionId);
+      if (prev) {
+        console.log(`[connect] Destroying caller's previous session ${previousSessionId.slice(0, 8)} for ${host}:${port} before new connect`);
+        destroySession(previousSessionId);
       }
     }
 
