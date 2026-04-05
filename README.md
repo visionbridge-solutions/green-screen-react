@@ -49,10 +49,12 @@ Browsers can't open raw TCP sockets. The proxy bridges WebSocket to TCP:
 
 ```
 packages/
-  react/       → green-screen-react      (npm)  React component
-  proxy/       → green-screen-proxy      (npm)  WebSocket-to-TCP proxy
-  standalone/  → green-screen-terminal   (npm)  Standalone CLI
-  types/       → green-screen-types              Shared type definitions
+  react/       → green-screen-react      (npm)   React component
+  proxy/       → green-screen-proxy      (npm)   WebSocket-to-TCP proxy
+  standalone/  → green-screen-terminal   (npm)   Standalone CLI
+  types/       → green-screen-types               Shared type definitions
+  client-py/   → green-screen-client     (PyPI)  Python async client
+                                                 (ships independently)
 apps/
   demo/      Example Vite app
   worker/    Cloudflare Worker deployment
@@ -72,6 +74,15 @@ apps/
 - Inline sign-in form (host, credentials, protocol picker)
 - Pluggable adapter interface
 - Zero runtime dependencies (peer dep: React 18+)
+
+## What's New in v1.2.0
+
+- **Per-field MDT state on the wire** — `Field.modified` and a new `FieldValue` type let integrators do cheap post-write verification without diffing the entire screen.
+- **`/read-mdt` primitive** — REST `GET /read-mdt` and WS `readMdt` command return just the input fields whose modified-data-tag bit is set. Exposed on both `RestAdapter` and `WebSocketAdapter` as `readMdt()`.
+- **Pluggable session store** — implement `SessionStore` and call `setSessionStore()` before the proxy starts accepting traffic. Default is the built-in `InMemorySessionStore`.
+- **Session resumption** — REST `POST /session/resume`, WS `reattach`, plus `session.lost` / `session.resumed` lifecycle events (`WebSocketAdapter.onSessionLost()` / `onSessionResumed()` on the client).
+- **Lower-level sign-on primitives** — `markAuthenticated(username)` and `waitForScreenWithFields(min, timeoutMs)` so integrators can build robust sign-on cascades without the proxy growing host-specific logic.
+- **`green-screen-client`** — new standalone Python package (`packages/client-py/`) that mirrors the adapter contract for async Python clients. Ships separately on PyPI.
 
 ## License
 
