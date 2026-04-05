@@ -49,20 +49,50 @@ export const OPCODE = {
 } as const;
 
 // 5250 command codes (within WTD, etc.)
+// Per lib5250 codes5250.h:38-55
 export const CMD = {
   CLEAR_UNIT: 0x40,
   CLEAR_FORMAT_TABLE: 0x50,
   CLEAR_UNIT_ALT: 0x20,
-  WRITE_TO_DISPLAY: 0x11,   // WTD
+  WRITE_TO_DISPLAY: 0x11,      // WTD
   WRITE_ERROR_CODE: 0x21,
   WRITE_ERROR_CODE_WIN: 0x22,
-  READ_MDT_FIELDS: 0x52,
   READ_INPUT_FIELDS: 0x42,
+  READ_MDT_FIELDS: 0x52,
+  READ_MDT_FIELDS_ALT: 0x82,
+  READ_SCREEN_IMMEDIATE: 0x62,
   READ_IMMEDIATE: 0x72,
+  READ_IMMEDIATE_ALT: 0x83,
   WRITE_STRUCTURED_FIELD: 0xF3,
   SAVE_SCREEN: 0x02,
   RESTORE_SCREEN: 0x12,
   ROLL: 0x23,
+} as const;
+
+// Record header flag byte values (byte 8 of the GDS header).
+// Per lib5250 record.h:60-68.
+export const RECORD_H = {
+  NONE: 0x00,
+  HLP: 0x01,  // Help
+  TRQ: 0x02,  // Test request
+  SRQ: 0x04,  // System request
+  ATN: 0x40,  // Attention
+} as const;
+
+// Record header opcode byte (byte 10).
+// Per lib5250 record.h:70-78.
+export const RECORD_OPCODE = {
+  NO_OP: 0x00,
+  INVITE: 0x01,
+  OUTPUT_ONLY: 0x02,
+  PUT_GET: 0x03,
+  SAVE_SCREEN: 0x04,
+  RESTORE_SCREEN: 0x05,
+  READ_IMMEDIATE: 0x06,
+  READ_SCREEN: 0x08,
+  CANCEL_INVITE: 0x0A,
+  TURN_ON_MSG_LIGHT: 0x0B,
+  TURN_OFF_MSG_LIGHT: 0x0C,
 } as const;
 
 // 5250 order codes
@@ -74,7 +104,7 @@ export const ORDER = {
   EA: 0x03,    // Erase to Address
   SOH: 0x01,   // Start of Header
   TD: 0x10,    // Transparent Data
-  WEA: 0x04,   // Write Extended Attribute
+  WEA: 0x12,   // Write Extended Attribute (per lib5250 codes5250.h)
   SF: 0x1D,    // Start Field (used in field attribute)
   WDSF: 0x15,  // Write Display Structured Field (within WTD)
   SA: 0x28,    // Set Attribute
@@ -113,7 +143,12 @@ export const AID = {
   HELP: 0xF3,
   PRINT: 0xF6,
   RECORD_BACKSPACE: 0xF8,
-  SYS_REQUEST: 0x01, // Attention key
+  // Sentinel values (not real AID bytes — dispatched via record flags).
+  // Per lib5250 session.h: these are negative in C; TS uses values outside
+  // the 0x00-0xFF AID range so they cannot collide with real AID bytes.
+  SYS_REQUEST: 0x101,
+  ATTN: 0x102,
+  TEST_REQUEST: 0x103,
 } as const;
 
 // Map key names (from frontend) to AID bytes
@@ -130,6 +165,9 @@ export const KEY_TO_AID: Record<string, number> = {
   'Clear': AID.CLEAR,
   'Help': AID.HELP,
   'Print': AID.PRINT,
+  'SysReq': AID.SYS_REQUEST,
+  'Attn': AID.ATTN,
+  'TestReq': AID.TEST_REQUEST,
 };
 
 // Field attribute bits (in the FFW - Field Format Word)
@@ -138,6 +176,16 @@ export const FFW = {
   DUP_ENABLE: 0x10,
   MDT: 0x08,              // Modified Data Tag
   SHIFT_MASK: 0x07,       // Data type shift bits
+
+  // Shift-type values (FFW1 & SHIFT_MASK)
+  SHIFT_ALPHA: 0x00,
+  SHIFT_ALPHA_ONLY: 0x01,
+  SHIFT_NUMERIC_SHIFT: 0x02,
+  SHIFT_NUMERIC_ONLY: 0x03,
+  SHIFT_KATAKANA: 0x04,
+  SHIFT_DIGITS_ONLY: 0x05,
+  SHIFT_IO: 0x06,
+  SHIFT_SIGNED_NUM: 0x07,  // Signed numeric (last position is sign)
 
   // Second byte flags
   AUTO_ENTER: 0x80,
@@ -165,7 +213,10 @@ export const WDSF_TYPE = {
   UNRESTRICT_CURSOR: 0x52,
   DEFINE_SCROLL_BAR: 0x53,
   WRITE_DATA: 0x54,
+  PROGRAMMABLE_MOUSE_BUTTONS: 0x55,
+  REM_GUI_SEL_FIELD: 0x58,
   REM_GUI_WINDOW: 0x59,
+  REM_GUI_SCROLL_BAR: 0x5B,
   REM_ALL_GUI_CONSTRUCTS: 0x5F,
 } as const;
 

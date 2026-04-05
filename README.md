@@ -71,7 +71,6 @@ apps/
 - Themeable via CSS custom properties
 - Inline sign-in form (host, credentials, protocol picker)
 - Pluggable adapter interface
-- Mock mode for evaluation without a real host
 - Zero runtime dependencies (peer dep: React 18+)
 
 ## License

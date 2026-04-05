@@ -1,5 +1,5 @@
 import { ProtocolHandler } from './types.js';
-import type { ScreenData, ProtocolOptions, ProtocolType } from './types.js';
+import type { ScreenData, ProtocolOptions, ProtocolType, FieldValue } from './types.js';
 import { TN5250Connection } from '../tn5250/connection.js';
 import { ScreenBuffer, FieldDef } from '../tn5250/screen.js';
 import { TN5250Parser } from '../tn5250/parser.js';
@@ -47,6 +47,25 @@ export class TN5250Handler extends ProtocolHandler {
       this.screen.resize(dims.rows, dims.cols);
     }
 
+    // Resolve EBCDIC code page. Explicit option wins; otherwise derive from
+    // the terminal type string (IBM-5555-* is the standard Japanese DBCS
+    // terminal family) and fall back to CP37 for everything else.
+    if (options?.codePage) {
+      this.screen.codePage = options.codePage;
+    } else if (/^IBM-5555/i.test(termType) || /KATAKANA/i.test(termType)) {
+      this.screen.codePage = 'cp290';
+    } else {
+      this.screen.codePage = 'cp37';
+    }
+
+    // For Japanese sessions, register the built-in DBCS table so
+    // hiragana/katakana/symbols render without further setup. A full
+    // Kanji table can be layered on top via `registerDbcsTable(...)`.
+    if (this.screen.codePage === 'cp290') {
+      const { registerBuiltinDbcsTable } = await import('../tn5250/ebcdic-jp-builtin.js');
+      registerBuiltinDbcsTable();
+    }
+
     const connectTimeout = options?.connectTimeout as number | undefined;
     await this.connection.connect(host, port, termType, connectTimeout);
   }
@@ -57,6 +76,10 @@ export class TN5250Handler extends ProtocolHandler {
 
   getScreenData(): ScreenData {
     return this.screen.toScreenData();
+  }
+
+  readFieldValues(modifiedOnly: boolean = true): FieldValue[] {
+    return this.screen.readFieldValues(modifiedOnly);
   }
 
   sendText(text: string): boolean {
@@ -150,36 +173,56 @@ export class TN5250Handler extends ProtocolHandler {
     // the main menu produces "Type option number or command" error when used).
     // Keep fields with native underscore/non-display (real interactive fields).
     // Fall back to all input fields if none match the filter.
+    //
+    // Tab order: if ANY field has a non-zero `resequence` FCW (0x80xx), order
+    // fields by resequence ascending (resequence=0 → spatial), matching the
+    // IBM 5250 Functions Reference cursor progression rules. Otherwise fall
+    // back to pure spatial order. Per lib5250 session.c:1577-1579 (which
+    // stores the FCW but leaves sequencing as a FIXME).
     if (normalizedKey === 'Tab' || normalizedKey === 'Backtab') {
-      const allInputs = this.screen.fields
-        .filter(f => this.screen.isInputField(f))
-        .sort((a, b) => this.screen.offset(a.row, a.col) - this.screen.offset(b.row, b.col));
+      const allInputs = this.screen.fields.filter(f => this.screen.isInputField(f));
       if (allInputs.length === 0) return false;
+
+      // Determine ordering: resequence-aware if any field declares it.
+      const hasResequence = allInputs.some(f => f.resequence && f.resequence > 0);
+      const orderOf = (f: typeof allInputs[number]): number => {
+        if (hasResequence) {
+          // Resequenced fields come first in FCW order; non-resequenced
+          // fields sort after them in spatial order. Spatial offset is
+          // added as a tiebreaker within the same resequence value.
+          const base = f.resequence && f.resequence > 0 ? f.resequence : 10000;
+          return base * 1_000_000 + this.screen.offset(f.row, f.col);
+        }
+        return this.screen.offset(f.row, f.col);
+      };
+      allInputs.sort((a, b) => orderOf(a) - orderOf(b));
 
       // Exclude non-display fields (like UIM artifacts with rawAttr 0x27) —
       // they appear as invisible input areas that produce errors when used.
-      // All other input fields (underscored, normal display, etc.) are kept.
-      const functional = allInputs.filter(f =>
-        !this.screen.hasNativeNonDisplay(f)
-      );
-      // If no fields have visible input indicators, use only the last input
-      // field (typically the command line). UIM artifact fields earlier in the
-      // list are not functional — typing in them produces errors.
+      const functional = allInputs.filter(f => !this.screen.hasNativeNonDisplay(f));
       const inputFields = functional.length > 0 ? functional
         : [allInputs[allInputs.length - 1]];
 
+      // Find current field's index in the ordered list so we walk the
+      // resequenced chain even if the cursor isn't at an exact field start.
       const cursorPos = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
+      const curIdx = inputFields.findIndex(f => {
+        const start = this.screen.offset(f.row, f.col);
+        return cursorPos >= start && cursorPos < start + f.length;
+      });
+
+      let target: typeof inputFields[number];
       if (normalizedKey === 'Tab') {
-        const next = inputFields.find(f => this.screen.offset(f.row, f.col) > cursorPos);
-        const target = next || inputFields[0];
-        this.screen.cursorRow = target.row;
-        this.screen.cursorCol = target.col;
+        target = curIdx >= 0 && curIdx + 1 < inputFields.length
+          ? inputFields[curIdx + 1]
+          : inputFields[0];
       } else {
-        const prev = [...inputFields].reverse().find(f => this.screen.offset(f.row, f.col) < cursorPos);
-        const target = prev || inputFields[inputFields.length - 1];
-        this.screen.cursorRow = target.row;
-        this.screen.cursorCol = target.col;
+        target = curIdx > 0
+          ? inputFields[curIdx - 1]
+          : inputFields[inputFields.length - 1];
       }
+      this.screen.cursorRow = target.row;
+      this.screen.cursorCol = target.col;
       return true;
     }
 
@@ -189,10 +232,16 @@ export class TN5250Handler extends ProtocolHandler {
       return this.sendKey('Tab');
     }
 
-    // Reset: clear keyboard lock and error line (client-side only, nothing sent to host)
+    // Reset: clear keyboard lock and restore message line (per lib5250
+    // display.c:1861-1876: clearing the INHIBIT indicator restores
+    // saved_msg_line). Client-side only — nothing sent to host.
     if (normalizedKey === 'Reset') {
       this.screen.keyboardLocked = false;
-      this.screen.clearErrorLine();
+      if (this.screen.savedMsgLine) {
+        this.screen.restoreMsgLine();
+      } else {
+        this.screen.clearErrorLine();
+      }
       if (this.screen.savedCursorBeforeError) {
         this.screen.cursorRow = this.screen.savedCursorBeforeError.row;
         this.screen.cursorCol = this.screen.savedCursorBeforeError.col;
@@ -387,7 +436,7 @@ export class TN5250Handler extends ProtocolHandler {
   }
 
   /** Wait until the screen has at least `minFields` input fields, or timeout. */
-  private waitForScreenWithFields(minFields: number, timeoutMs: number): Promise<ScreenData> {
+  waitForScreenWithFields(minFields: number, timeoutMs: number): Promise<ScreenData> {
     return new Promise((resolve) => {
       const timer = setTimeout(() => resolve(this.getScreenData()), timeoutMs);
       const check = (data: ScreenData) => {

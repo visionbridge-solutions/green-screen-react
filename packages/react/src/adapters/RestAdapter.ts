@@ -1,4 +1,4 @@
-import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult, ConnectConfig } from './types';
+import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult, ConnectConfig, FieldValue } from './types';
 
 export interface RestAdapterOptions {
   /** Base URL for the terminal API (e.g. "https://myhost.com/api/terminal") */
@@ -85,6 +85,15 @@ export class RestAdapter implements TerminalAdapter {
 
   async setCursor(row: number, col: number): Promise<SendResult> {
     return this.request<SendResult>('POST', '/set-cursor', { row, col });
+  }
+
+  async readMdt(modifiedOnly: boolean = true): Promise<FieldValue[]> {
+    const qs = modifiedOnly ? '' : '?includeUnmodified=1';
+    const resp = await this.request<{ success: boolean; fields: FieldValue[] }>(
+      'GET',
+      `/read-mdt${qs}`,
+    );
+    return resp?.fields ?? [];
   }
 
   async connect(config?: ConnectConfig): Promise<SendResult> {

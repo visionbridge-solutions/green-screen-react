@@ -2,13 +2,19 @@
 export type {
   ProtocolType,
   Field,
+  FieldColor,
+  FieldValue,
+  Window,
+  SelectionChoice,
+  SelectionField,
+  CellExtAttr,
   ScreenData,
   ConnectionStatus,
   ConnectConfig,
 } from 'green-screen-types';
 
 // Import for use in this file
-import type { ScreenData, ConnectionStatus, ConnectConfig } from 'green-screen-types';
+import type { ScreenData, ConnectionStatus, ConnectConfig, FieldValue } from 'green-screen-types';
 
 /**
  * Alias for backward compatibility — consumers may import TerminalProtocol.
@@ -79,6 +85,15 @@ export interface TerminalAdapter {
   sendKey(key: string): Promise<SendResult>;
   /** Set cursor position (click-to-position) */
   setCursor?(row: number, col: number): Promise<SendResult>;
+  /**
+   * Read the current values of input fields, optionally restricted to the
+   * ones whose per-field modified-data-tag (MDT) bit is set. Used for cheap
+   * post-write verification: after entering a batch of field values, the
+   * caller can confirm what actually landed without re-reading the entire
+   * screen. Protocols without per-field MDT (VT, HP6530) return an empty
+   * array. Optional — adapters without this capability may omit it.
+   */
+  readMdt?(modifiedOnly?: boolean): Promise<FieldValue[]>;
   /** Establish a connection, optionally with sign-in config */
   connect(config?: ConnectConfig): Promise<SendResult>;
   /** Close the connection */

@@ -144,6 +144,110 @@ router.get('/screen', (req: Request, res: Response) => {
   res.json(session.getScreenData());
 });
 
+// POST /session/resume — idempotent session-alive probe for REST clients.
+//
+// Given a session id (body or X-Session-Id header), checks whether the
+// session still exists on the proxy and is connected. Returns the current
+// screen + connection status on success, 404 otherwise. REST-only
+// integrations use this on page reload to decide between "reattach the UI
+// to existing state" vs "start a fresh /connect flow".
+//
+// The corresponding WebSocket mechanism is the `reattach` command plus the
+// `session.resumed` / `session.lost` lifecycle events.
+router.post('/session/resume', (req: Request, res: Response) => {
+  const sessionId =
+    (req.body && req.body.sessionId) ||
+    (req.headers['x-session-id'] as string) ||
+    (req.query.sessionId as string);
+  if (!sessionId || typeof sessionId !== 'string') {
+    return res.status(400).json({ success: false, error: 'sessionId is required' });
+  }
+  const session = getSession(sessionId);
+  if (!session) {
+    return res.status(404).json({ success: false, error: 'Session not found' });
+  }
+  session.touch();
+  res.setHeader('X-Session-Id', session.id);
+  const screenData = session.status.connected ? session.getScreenData() : null;
+  res.json({
+    success: true,
+    sessionId: session.id,
+    status: session.status,
+    ...(screenData ? { screen: screenData } : {}),
+  });
+});
+
+// POST /session/authenticated — flip the session status to 'authenticated'.
+//
+// Integrators that implement their own sign-on cascade (e.g. LegacyBridge,
+// which needs to dismiss IBM i post-sign-on screens like QDSPSGNINF and
+// legal notices) use this to notify the proxy when sign-on has completed.
+// The proxy has no protocol-specific knowledge of what "signed-on" means,
+// so the caller owns the decision. Emits a status event to all WS clients
+// watching this session.
+router.post('/session/authenticated', (req: Request, res: Response) => {
+  const session = resolveSession(req);
+  if (!session) {
+    return res.status(404).json({ success: false, error: 'No active session' });
+  }
+  const { username } = req.body || {};
+  if (!username || typeof username !== 'string') {
+    return res.status(400).json({ success: false, error: 'username is required' });
+  }
+  session.markAuthenticated(username);
+  res.json({ success: true, status: session.status });
+});
+
+// POST /wait-for-fields — wait until the current screen has at least N
+// input fields (or timeout). Generic primitive that sign-on cascades use
+// to robustly wait for a form to appear before typing credentials. Short-
+// circuits when the screen already satisfies.
+//
+// Body:
+//   { minFields: number, timeoutMs?: number (default 5000) }
+router.post('/wait-for-fields', async (req: Request, res: Response) => {
+  const session = resolveSession(req);
+  if (!session) {
+    return res.status(404).json({ success: false, error: 'No active session' });
+  }
+  const { minFields, timeoutMs = 5000 } = req.body || {};
+  if (typeof minFields !== 'number' || minFields < 0) {
+    return res.status(400).json({ success: false, error: 'minFields (number) is required' });
+  }
+  const screen = await session.waitForScreenWithFields(minFields, timeoutMs);
+  const inputCount = (screen.fields || []).filter((f) => f.is_input).length;
+  res.json({
+    success: inputCount >= minFields,
+    matched: inputCount >= minFields,
+    inputFieldCount: inputCount,
+    ...screen,
+  });
+});
+
+// GET /read-mdt — cheap post-write verification primitive
+//
+// Returns just the input fields whose per-field modified-data-tag (MDT) bit
+// is set, with their current cell values. Use case: after a batch of
+// sendText/sendKey writes, the client wants to verify what actually landed
+// without diffing the entire screen payload.
+//
+// Query params:
+//   includeUnmodified=1 — also return input fields whose MDT bit is clear
+//                         (useful when you want a snapshot of all input
+//                         fields regardless of modification state).
+//
+// Protocols that don't track a per-field modified concept (VT, HP6530) will
+// return an empty array — this is a TN5250-first primitive.
+router.get('/read-mdt', (req: Request, res: Response) => {
+  const session = resolveSession(req);
+  if (!session) {
+    return res.status(404).json({ success: false, error: 'No active session' });
+  }
+  const modifiedOnly = req.query.includeUnmodified !== '1';
+  const values = session.readFieldValues(modifiedOnly);
+  res.json({ success: true, modifiedOnly, fields: values });
+});
+
 // POST /set-cursor
 router.post('/set-cursor', (req: Request, res: Response) => {
   const session = resolveSession(req);

@@ -1,6 +1,7 @@
-import { ScreenBuffer, FieldDef } from './screen.js';
+import { ScreenBuffer, FieldDef, ExtAttr } from './screen.js';
 import { CMD, ORDER, OPCODE, ATTR, WDSF_TYPE, WDSF_CLASS } from './constants.js';
 import { ebcdicToChar, ebcdicSymbolChar, EBCDIC_SPACE } from './ebcdic.js';
+import { SI, SO, decodeDbcsPair } from './ebcdic-jp.js';
 
 /**
  * Parses 5250 data stream records and updates the screen buffer.
@@ -120,7 +121,7 @@ export class TN5250Parser {
   private tryParseRawData(record: Buffer): boolean {
     // Some servers send command data without the full GDS wrapper.
     // Use parseCommandsFromOffset to skip 0x04 escape markers and find
-    // the first known command byte — handles mock servers and non-GDS hosts.
+    // the first known command byte — handles non-GDS hosts.
     return this.parseCommandsFromOffset(record, 0);
   }
 
@@ -158,12 +159,42 @@ export class TN5250Parser {
 
       switch (cmd) {
         case CMD.CLEAR_UNIT:
-        case CMD.CLEAR_UNIT_ALT:
-          this.screen.clear();
+          // Per lib5250 display.c:1889-1907: resize to 24x80, clear content,
+          // lock keyboard, clear pending insert cursor, clear message lines.
+          this.screen.resize(24, 80);
+          this.screen.keyboardLocked = true;
+          this.screen.insertMode = false;
+          this.screen.savedCursorBeforeError = null;
           this.screen.windowList = [];
+          this.screen.selectionFields = [];
+          this.screen.scrollbarList = [];
+          this.screen.savedMsgLine = null;
+          this.screen.savedMsgLineRow = -1;
+          this.screen.headerData = [];
           this.winRowOff = 0;
           this.winColOff = 0;
           pos++;
+          modified = true;
+          break;
+
+        case CMD.CLEAR_UNIT_ALT:
+          // Per lib5250 display.c:1919-1937: resize to 27x132 and reset state.
+          // A flag byte follows (0x00 = alt screen, others reserved).
+          this.screen.resize(27, 132);
+          this.screen.keyboardLocked = true;
+          this.screen.insertMode = false;
+          this.screen.savedCursorBeforeError = null;
+          this.screen.windowList = [];
+          this.screen.selectionFields = [];
+          this.screen.scrollbarList = [];
+          this.screen.savedMsgLine = null;
+          this.screen.savedMsgLineRow = -1;
+          this.screen.headerData = [];
+          this.winRowOff = 0;
+          this.winColOff = 0;
+          pos++;
+          // Skip the trailing flag byte (per 5250 spec)
+          if (pos < data.length) pos++;
           modified = true;
           break;
 
@@ -243,8 +274,12 @@ export class TN5250Parser {
           }
           // Save cursor so Reset can restore it after unlocking
           this.screen.savedCursorBeforeError = { row: this.screen.cursorRow, col: this.screen.cursorCol };
-          // Message line is the last row (row = rows - 1)
-          const msgRow = this.screen.rows - 1;
+          // Save the current contents of the message-line row so Reset can
+          // restore it (per lib5250 display.c:2489-2502).
+          this.screen.saveMsgLine();
+          // Message line row is configurable via SOH header byte 3, or the
+          // last row by default (per lib5250 dbuffer.c:934-944).
+          const msgRow = this.screen.msgLineRow();
           let msgCol = 0;
           let endY = this.screen.cursorRow;
           let endX = this.screen.cursorCol;
@@ -264,7 +299,7 @@ export class TN5250Parser {
             }
             // Printable EBCDIC character → write to message line
             if (c >= 0x40 || c === 0x00) {
-              const ch = ebcdicToChar(c);
+              const ch = ebcdicToChar(c, this.screen.codePage);
               const addr = this.screen.offset(msgRow, msgCol);
               if (addr < this.screen.size) {
                 this.screen.setCharAt(addr, ch);
@@ -299,6 +334,33 @@ export class TN5250Parser {
 
             pos = Math.min(sfEnd, data.length);
           }
+          break;
+        }
+
+        case CMD.READ_INPUT_FIELDS:
+        case CMD.READ_MDT_FIELDS:
+        case CMD.READ_MDT_FIELDS_ALT:
+        case CMD.READ_IMMEDIATE:
+        case CMD.READ_IMMEDIATE_ALT: {
+          // Per lib5250 session.c:2328-2354 (tn5250_session_read_cmd):
+          // Reads 2 CC bytes, handles CC1/CC2, unlocks the keyboard (if
+          // normally locked), and sets read_opcode. The CC bytes have the
+          // same semantics as WTD CC1/CC2.
+          const readOp = cmd;
+          pos++;
+          if (pos + 1 < data.length) {
+            const cc1 = data[pos++];
+            const cc2 = data[pos++];
+            // Lock keyboard if CC1 non-zero (same as WTD behavior)
+            if ((cc1 & 0xE0) !== 0x00) {
+              this.screen.keyboardLocked = true;
+            }
+            this.handleCC2(cc2);
+          }
+          // Unlock keyboard on Read command — host is requesting input
+          this.screen.keyboardLocked = false;
+          this.screen.readOpcode = readOp;
+          modified = true;
           break;
         }
 
@@ -350,6 +412,53 @@ export class TN5250Parser {
     let afterSBA = false; // Track if we just processed an SBA order (field attrs follow SBA)
     let pendingICRow = -1; // IC stores pending cursor position, applied after WTD
     let pendingICCol = -1;
+    // Pending extended attributes set by WEA orders; applied to subsequent
+    // cells until modified/reset. Per 5250 Functions Reference the ECB
+    // values persist across characters until explicitly changed.
+    let extColor = 0;
+    let extHighlight = 0;
+    let extCharSet = 0;
+    // DBCS shift state: once SO (0x0E) is seen, read bytes in pairs until
+    // SI (0x0F). Per 5250 Functions Reference and IBM i Japanese support.
+    let dbcsMode = false;
+    let dbcsPending = -1; // first byte of a pair awaiting its companion
+
+    // Helper: build an ExtAttr snapshot, or null if nothing is set.
+    const snapExt = (): ExtAttr | null =>
+      (extColor || extHighlight || extCharSet)
+        ? { color: extColor, highlight: extHighlight, charSet: extCharSet }
+        : null;
+
+    // Helper: write a single rendered character at currentAddr, applying
+    // current attributes and resetting the DBCS continuation flag for SBCS.
+    const writeChar = (ch: string): void => {
+      if (currentAddr < this.screen.size) {
+        this.screen.setCharAt(currentAddr, ch);
+        this.screen.setAttrAt(currentAddr, currentAttr);
+        this.screen.setExtAttrAt(currentAddr, snapExt());
+        this.screen.dbcsCont[currentAddr] = false;
+      }
+      currentAddr++;
+    };
+
+    // Helper: write a DBCS character — glyph in cell N, empty continuation
+    // in cell N+1, both flagged as DBCS.
+    const writeDbcs = (ch: string): void => {
+      if (currentAddr < this.screen.size) {
+        this.screen.setCharAt(currentAddr, ch);
+        this.screen.setAttrAt(currentAddr, currentAttr);
+        this.screen.setExtAttrAt(currentAddr, snapExt());
+        this.screen.dbcsCont[currentAddr] = false;
+      }
+      currentAddr++;
+      if (currentAddr < this.screen.size) {
+        this.screen.setCharAt(currentAddr, '');
+        this.screen.setAttrAt(currentAddr, currentAttr);
+        this.screen.setExtAttrAt(currentAddr, snapExt());
+        this.screen.dbcsCont[currentAddr] = true;
+      }
+      currentAddr++;
+    };
 
     while (pos < data.length) {
       const byte = data[pos];
@@ -402,28 +511,30 @@ export class TN5250Parser {
         }
 
         case ORDER.RA: {
-          // Repeat to Address: 3 bytes (row, col, char) — 1-based address
+          // Repeat to Address: 3 bytes (row, col, char) — 1-based address.
+          // Per lib5250 session.c:2161-2207: fill from current position up to
+          // AND INCLUDING the target position (the loop writes the target cell
+          // then breaks).
           if (pos + 3 >= data.length) return data.length;
           pos++;
           const raRow = data[pos++] - 1 + this.winRowOff;
           const raCol = data[pos++] - 1 + this.winColOff;
           const charByte = data[pos++];
           const targetAddr = this.screen.offset(raRow, raCol);
-          const ch = ebcdicToChar(charByte);
-          // lib5250 uses addch which wraps; we fill up to target (inclusive of current pos)
+          const ch = ebcdicToChar(charByte, this.screen.codePage);
           if (targetAddr >= currentAddr) {
-            while (currentAddr < targetAddr && currentAddr < this.screen.size) {
+            while (currentAddr <= targetAddr && currentAddr < this.screen.size) {
               this.screen.setCharAt(currentAddr, ch);
               currentAddr++;
             }
           } else {
-            // Wrap-around: fill to end of screen, then from start to target
+            // Wrap-around: fill to end of screen, then from start to target (inclusive)
             while (currentAddr < this.screen.size) {
               this.screen.setCharAt(currentAddr, ch);
               currentAddr++;
             }
             currentAddr = 0;
-            while (currentAddr < targetAddr && currentAddr < this.screen.size) {
+            while (currentAddr <= targetAddr && currentAddr < this.screen.size) {
               this.screen.setCharAt(currentAddr, ch);
               currentAddr++;
             }
@@ -432,32 +543,49 @@ export class TN5250Parser {
         }
 
         case ORDER.EA: {
-          // Erase to Address: 2 bytes — row(1-based), col(1-based)
-          // Per 5250 spec (5494 Functions Reference) and lib5250: EA takes
-          // only row + col, erases from current address to target address.
-          if (pos + 2 >= data.length) return data.length;
+          // Erase to Address: row, col, length, then (length-1) attribute type
+          // bytes. Per lib5250 session.c:2088-2148 — length is in [2,5]; the
+          // attribute list selects which kinds of attributes to erase (0xFF =
+          // all). Region is inclusive of the target address.
+          if (pos + 3 >= data.length) return data.length;
           pos++;
           const eaRow = data[pos++] - 1 + this.winRowOff;
           const eaCol = data[pos++] - 1 + this.winColOff;
-          const eaTarget = this.screen.offset(eaRow, eaCol);
-          if (eaTarget >= currentAddr) {
-            while (currentAddr < eaTarget && currentAddr < this.screen.size) {
-              this.screen.setCharAt(currentAddr, ' ');
-              currentAddr++;
-            }
-          } else {
-            // Wrap-around
-            while (currentAddr < this.screen.size) {
-              this.screen.setCharAt(currentAddr, ' ');
-              currentAddr++;
-            }
-            currentAddr = 0;
-            while (currentAddr < eaTarget && currentAddr < this.screen.size) {
-              this.screen.setCharAt(currentAddr, ' ');
-              currentAddr++;
-            }
+          const eaLength = data[pos++];
+          // Consume (length-1) attribute bytes
+          const attrCount = Math.max(0, eaLength - 1);
+          let eraseAll = false;
+          for (let i = 0; i < attrCount && pos < data.length; i++) {
+            if (data[pos] === 0xFF) eraseAll = true;
+            pos++;
           }
-          currentAddr = eaTarget;
+          // lib5250 only erases characters when attribute 0xFF is present
+          // (we don't track extended attributes separately). Default on any
+          // attribute list so the region is cleared — safe for typical hosts.
+          if (eraseAll || attrCount === 0) {
+            const eaTarget = this.screen.offset(eaRow, eaCol);
+            if (eaTarget >= currentAddr) {
+              while (currentAddr <= eaTarget && currentAddr < this.screen.size) {
+                this.screen.setCharAt(currentAddr, ' ');
+                currentAddr++;
+              }
+            } else {
+              // Wrap-around
+              while (currentAddr < this.screen.size) {
+                this.screen.setCharAt(currentAddr, ' ');
+                currentAddr++;
+              }
+              currentAddr = 0;
+              while (currentAddr <= eaTarget && currentAddr < this.screen.size) {
+                this.screen.setCharAt(currentAddr, ' ');
+                currentAddr++;
+              }
+            }
+            // Per lib5250: EA sets the current display address to target+1
+            // (wrapping if at screen boundary).
+            currentAddr = eaTarget + 1;
+            if (currentAddr >= this.screen.size) currentAddr = 0;
+          }
           break;
         }
 
@@ -474,7 +602,11 @@ export class TN5250Parser {
           pendingICRow = -1;
           pendingICCol = -1;
           const hdrLen = data[pos++];
-          pos += Math.max(0, hdrLen);
+          // Per lib5250 dbuffer.c:167-178: copy header bytes for later use
+          // (byte 3 carries the error message line row).
+          const safeLen = Math.max(0, Math.min(hdrLen, data.length - pos));
+          this.screen.headerData = Array.from(data.subarray(pos, pos + safeLen));
+          pos += safeLen;
           break;
         }
 
@@ -486,19 +618,34 @@ export class TN5250Parser {
           const tdLen = (data[pos] << 8) | data[pos + 1];
           pos += 2;
           for (let i = 0; i < tdLen && pos < data.length; i++) {
-            this.screen.setCharAt(currentAddr++, ebcdicToChar(data[pos++]));
+            this.screen.setCharAt(currentAddr++, ebcdicToChar(data[pos++], this.screen.codePage));
           }
           break;
         }
 
         case ORDER.WEA: {
-          // Write Extended Attribute: 2 bytes (attr type + value)
+          // Write Extended Attribute: 2 bytes (attr type + value).
+          // Per 5250 Functions Reference:
+          //   type 0x01 — extended color
+          //   type 0x02 — extended highlighting (underscore/blink/reverse/col-sep)
+          //   type 0x03 — character set (CGCS id)
+          //   type 0x04 — transparency / field outlining
+          //   type 0xFF with value 0xFF — reset all extended attributes
+          // Extended attributes persist for subsequent characters until changed.
           if (pos + 2 >= data.length) return data.length;
           pos++;
-          const attrType = data[pos++];
-          const attrValue = data[pos++];
-          // Apply attribute at current position
-          this.screen.setAttrAt(currentAddr, attrValue);
+          const extType = data[pos++];
+          const extValue = data[pos++];
+          switch (extType) {
+            case 0x01: extColor = extValue; break;
+            case 0x02: extHighlight = extValue; break;
+            case 0x03: extCharSet = extValue; break;
+            case 0xFF:
+              if (extValue === 0xFF) {
+                extColor = 0; extHighlight = 0; extCharSet = 0;
+              }
+              break;
+          }
           // Preserve afterSBA — WEA can appear between SBA and a field attribute
           continue;
         }
@@ -546,15 +693,44 @@ export class TN5250Parser {
                 case WDSF_TYPE.DEFINE_SELECTION_FIELD:
                   this.parseDefineSelectionField(data, pos, wdsfEnd);
                   break;
-                case WDSF_TYPE.REM_GUI_WINDOW:
-                  if (this.screen.windowList.length > 0) {
+                case WDSF_TYPE.DEFINE_SCROLL_BAR:
+                  this.parseDefineScrollbar(data, pos, wdsfEnd);
+                  break;
+                case WDSF_TYPE.REM_GUI_WINDOW: {
+                  // Per lib5250 session.c:3465-3505: find the window containing
+                  // the cursor (hit-test) and remove it, not the last-created.
+                  // Note: flagbyte1, flagbyte2, reserved are read but unused.
+                  const cy = this.screen.cursorRow;
+                  const cx = this.screen.cursorCol;
+                  const idx = this.screen.windowList.findIndex(w =>
+                    cy >= w.row && cy <= w.row + w.height &&
+                    cx >= w.col && cx <= w.col + w.width
+                  );
+                  if (idx >= 0) {
+                    this.screen.windowList.splice(idx, 1);
+                  } else if (this.screen.windowList.length > 0) {
+                    // Fallback: remove the top (last) window
                     this.screen.windowList.pop();
                   }
                   this.winRowOff = 0;
                   this.winColOff = 0;
                   break;
+                }
+                case WDSF_TYPE.REM_GUI_SEL_FIELD:
+                  // Per lib5250 session.c:3095-3116: destroys all menubars /
+                  // selection fields.
+                  this.screen.selectionFields = [];
+                  break;
+                case WDSF_TYPE.REM_GUI_SCROLL_BAR:
+                  // Per lib5250 stream handling: clear all scrollbars.
+                  this.screen.scrollbarList = [];
+                  break;
                 case WDSF_TYPE.REM_ALL_GUI_CONSTRUCTS:
+                  // Per lib5250 session.c:3518-3562: destroy all windows,
+                  // scrollbars and selection fields.
                   this.screen.windowList = [];
+                  this.screen.selectionFields = [];
+                  this.screen.scrollbarList = [];
                   this.winRowOff = 0;
                   this.winColOff = 0;
                   break;
@@ -581,14 +757,38 @@ export class TN5250Parser {
           if (afterSBA && byte >= 0x20 && byte <= 0x3F) {
             pos = this.parseFieldAttribute(data, pos, currentAddr, currentAttr);
             currentAddr++; // attribute byte occupies one screen position
-          } else {
-            // Regular EBCDIC character data
-            const ch = useSymbolCharSet ? ebcdicSymbolChar(byte) : ebcdicToChar(byte);
-            if (currentAddr < this.screen.size) {
-              this.screen.setCharAt(currentAddr, ch);
-              this.screen.setAttrAt(currentAddr, currentAttr);
+          } else if (byte === SO && !dbcsMode) {
+            // Shift-Out: enter DBCS Kanji mode (per IBM i Japanese DBCS/SBCS
+            // mixed code pages 930/939). SO itself occupies a screen cell as
+            // a space to preserve column alignment (matches IBM PCOMM).
+            dbcsMode = true;
+            dbcsPending = -1;
+            writeChar(' ');
+            pos++;
+          } else if (byte === SI && dbcsMode) {
+            // Shift-In: exit DBCS mode, return to SBCS. Any orphan pending
+            // byte is discarded (malformed stream). SI also occupies a cell.
+            dbcsMode = false;
+            dbcsPending = -1;
+            writeChar(' ');
+            pos++;
+          } else if (dbcsMode) {
+            // Collect DBCS byte pairs. Each pair renders as one full-width
+            // glyph occupying two screen cells.
+            if (dbcsPending < 0) {
+              dbcsPending = byte;
+            } else {
+              const glyph = decodeDbcsPair(dbcsPending, byte);
+              writeDbcs(glyph);
+              dbcsPending = -1;
             }
-            currentAddr++;
+            pos++;
+          } else {
+            // Regular EBCDIC character data in the active single-byte code page.
+            const ch = useSymbolCharSet
+              ? ebcdicSymbolChar(byte)
+              : ebcdicToChar(byte, this.screen.codePage);
+            writeChar(ch);
             pos++;
           }
           break;
@@ -667,6 +867,30 @@ export class TN5250Parser {
 
     let ffw1 = 0, ffw2 = 0, fcw1 = 0, fcw2 = 0;
     let inputField = false;
+    // Continuation / wordwrap flags collected from FCW pairs
+    // (per lib5250 session.c:1617-1641)
+    let continuous = false;
+    let contFirst = false;
+    let contMiddle = false;
+    let contLast = false;
+    let wordwrap = false;
+    // All other FCW metadata (per lib5250 session.c:1577-1661)
+    let resequence = 0;
+    let progressionId = 0;
+    let highlightEntryAttr = 0;
+    let transparency = 0;
+    let pointerAid = 0;
+    let forwardEdge = false;
+    let selfCheckMod10 = false;
+    let selfCheckMod11 = false;
+    let ideographicOnly = false;
+    let ideographicData = false;
+    let ideographicEither = false;
+    let ideographicOpen = false;
+    let magstripe = false;
+    let lightpen = false;
+    let magandlight = false;
+    let lightandattn = false;
 
     if ((curByte & 0xE0) !== 0x20) {
       // Input field: curByte is FFW1
@@ -681,6 +905,43 @@ export class TN5250Parser {
       while ((curByte & 0xE0) !== 0x20 && pos < data.length) {
         fcw1 = curByte;
         fcw2 = data[pos++];
+        const fcw = (fcw1 << 8) | fcw2;
+
+        // Resequence / cursor progression (per session.c:1577-1579, 1643-1645)
+        if (fcw1 === 0x80) resequence = fcw2;
+        else if (fcw1 === 0x88) progressionId = fcw2;
+        else if (fcw1 === 0x89) highlightEntryAttr = fcw2;
+        else if (fcw1 === 0x84) transparency = fcw2;
+        else if (fcw1 === 0x8A) pointerAid = fcw2;
+
+        // Peripheral input (per session.c:1581-1595)
+        else if (fcw === 0x8101) magstripe = true;
+        else if (fcw === 0x8102) lightpen = true;
+        else if (fcw === 0x8103) magandlight = true;
+        else if (fcw === 0x8106) lightandattn = true;
+
+        // Ideographic / DBCS (per session.c:1597-1611)
+        else if (fcw === 0x8200) ideographicOnly = true;
+        else if (fcw === 0x8220) ideographicData = true;
+        else if (fcw === 0x8240) ideographicEither = true;
+        else if (fcw === 0x8280 || fcw === 0x82C0) ideographicOpen = true;
+
+        // Forward-edge trigger (per session.c:1617-1619)
+        else if (fcw === 0x8501) forwardEdge = true;
+
+        // Continuation flags (per session.c:1621-1641)
+        else if (fcw === 0x8601) { continuous = true; contFirst = true; }
+        else if (fcw === 0x8603) { continuous = true; contMiddle = true; }
+        else if (fcw === 0x8602) { continuous = true; contLast = true; }
+        else if (fcw === 0x8680) { wordwrap = true; }
+
+        // Self-check (per session.c:1655-1661)
+        else if (fcw === 0xB140) selfCheckMod11 = true;
+        else if (fcw === 0xB1A0) selfCheckMod10 = true;
+
+        // Per C: if this is the "last" with wordwrap flag, drop wordwrap.
+        if (fcw === 0x8602 && wordwrap) wordwrap = false;
+
         if (pos >= data.length) return pos;
         curByte = data[pos++];
       }
@@ -712,6 +973,27 @@ export class TN5250Parser {
       attribute: fieldDisplayAttr,
       rawAttrByte,
       modified: false,
+      continuous: continuous || undefined,
+      continuedFirst: contFirst || undefined,
+      continuedMiddle: contMiddle || undefined,
+      continuedLast: contLast || undefined,
+      wordwrap: wordwrap || undefined,
+      resequence: resequence || undefined,
+      progressionId: progressionId || undefined,
+      highlightEntryAttr: highlightEntryAttr || undefined,
+      transparency: transparency || undefined,
+      pointerAid: pointerAid || undefined,
+      forwardEdge: forwardEdge || undefined,
+      selfCheckMod10: selfCheckMod10 || undefined,
+      selfCheckMod11: selfCheckMod11 || undefined,
+      ideographicOnly: ideographicOnly || undefined,
+      ideographicData: ideographicData || undefined,
+      ideographicEither: ideographicEither || undefined,
+      ideographicOpen: ideographicOpen || undefined,
+      magstripe: magstripe || undefined,
+      lightpen: lightpen || undefined,
+      magandlight: magandlight || undefined,
+      lightandattn: lightandattn || undefined,
     };
 
     this.clearStaleFieldsOnce();
@@ -900,12 +1182,73 @@ export class TN5250Parser {
   }
 
   /**
+   * Parse DEFINE_SCROLL_BAR structured field data.
+   * Per lib5250 session.c:3362-3451.
+   *
+   * Payload format (after WDSF class/type):
+   *   [flagbyte1]  0x80 = horizontal, else vertical
+   *   [reserved]
+   *   [totalrowscols1..4]   BCD digits (1000s, 100s, 10s, 1s)
+   *   [sliderpos1..4]       BCD digits (1000s, 100s, 10s, 1s)
+   *   [size]
+   *
+   * Position is the current cursor (1-based per lib5250 convention).
+   */
+  private parseDefineScrollbar(data: Buffer, pos: number, end: number): void {
+    if (pos + 11 > end) return;
+
+    const flagbyte1 = data[pos++];
+    pos++; // reserved
+
+    const totalrowscols =
+      1000 * data[pos++] +
+      100 * data[pos++] +
+      10 * data[pos++] +
+      data[pos++];
+
+    const sliderpos =
+      1000 * data[pos++] +
+      100 * data[pos++] +
+      10 * data[pos++] +
+      data[pos++];
+
+    const size = data[pos++];
+
+    const row = this.screen.cursorRow + 1;
+    const col = this.screen.cursorCol + 1;
+    const direction: 0 | 1 = (flagbyte1 & 0x80) !== 0 ? 1 : 0;
+
+    // Hit-test: if an existing scrollbar is at the same position, update it
+    // rather than creating a duplicate (per session.c:3385-3391).
+    const existing = this.screen.scrollbarList.find(
+      s => s.row === row && s.col === col,
+    );
+    if (existing) {
+      existing.direction = direction;
+      existing.rowscols = totalrowscols;
+      existing.sliderpos = sliderpos;
+      existing.size = size;
+    } else {
+      this.screen.scrollbarList.push({
+        row,
+        col,
+        direction,
+        rowscols: totalrowscols,
+        sliderpos,
+        size,
+      });
+    }
+  }
+
+  /**
    * Roll (scroll) screen buffer rows within [top, bot] by `lines` rows.
    * Negative = scroll up, positive = scroll down.
    * Per lib5250 dbuffer.c:869-899.
    */
   private rollBuffer(top: number, bot: number, lines: number): void {
     const cols = this.screen.cols;
+    const buf = this.screen.buffer;
+    const attr = this.screen.attrBuffer;
     if (lines < 0) {
       // Scroll up: move rows upward
       for (let r = top; r <= bot; r++) {
@@ -913,7 +1256,8 @@ export class TN5250Parser {
           const dstOff = (r + lines) * cols;
           const srcOff = r * cols;
           for (let c = 0; c < cols; c++) {
-            this.screen.buffer[dstOff + c] = this.screen.buffer[srcOff + c];
+            buf[dstOff + c] = buf[srcOff + c];
+            attr[dstOff + c] = attr[srcOff + c];
           }
         }
       }
@@ -922,7 +1266,8 @@ export class TN5250Parser {
         if (r >= top) {
           const off = r * cols;
           for (let c = 0; c < cols; c++) {
-            this.screen.buffer[off + c] = ' ';
+            buf[off + c] = ' ';
+            attr[off + c] = ATTR.NORMAL;
           }
         }
       }
@@ -933,7 +1278,8 @@ export class TN5250Parser {
           const dstOff = (r + lines) * cols;
           const srcOff = r * cols;
           for (let c = 0; c < cols; c++) {
-            this.screen.buffer[dstOff + c] = this.screen.buffer[srcOff + c];
+            buf[dstOff + c] = buf[srcOff + c];
+            attr[dstOff + c] = attr[srcOff + c];
           }
         }
       }
@@ -942,7 +1288,8 @@ export class TN5250Parser {
         if (r <= bot) {
           const off = r * cols;
           for (let c = 0; c < cols; c++) {
-            this.screen.buffer[off + c] = ' ';
+            buf[off + c] = ' ';
+            attr[off + c] = ATTR.NORMAL;
           }
         }
       }

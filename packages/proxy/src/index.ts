@@ -2,11 +2,20 @@ import express from 'express';
 import cors from 'cors';
 import { createServer, Server as HttpServer } from 'http';
 
+// Re-export session store primitives so integrators can swap the default
+// in-memory store for a custom implementation (e.g. Redis routing for
+// multi-process deployments) before createProxy() is called.
+export {
+  type SessionStore,
+  InMemorySessionStore,
+  setSessionStore,
+  getSessionStore,
+  sessionLifecycle,
+} from './session-store.js';
+
 export interface ProxyOptions {
   /** Port to listen on (default: 3001) */
   port?: number;
-  /** Use mock screens instead of real connections */
-  mock?: boolean;
 }
 
 export interface ProxyServer {
@@ -35,25 +44,17 @@ export interface ProxyServer {
  * ```
  */
 export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServer> {
-  const { port = 3001, mock = false } = options;
+  const { port = 3001 } = options;
 
   const app = express();
   app.use(cors());
   app.use(express.json());
 
-  let setupWebSocket: ((server: HttpServer) => void) | undefined;
-
-  if (mock) {
-    const { default: mockRoutes } = await import('./mock/mock-routes.js');
-    app.use('/', mockRoutes);
-  } else {
-    const [{ default: routes }, { setupWebSocket: setupWs }] = await Promise.all([
-      import('./routes.js'),
-      import('./websocket.js'),
-    ]);
-    app.use('/', routes);
-    setupWebSocket = setupWs;
-  }
+  const [{ default: routes }, { setupWebSocket }] = await Promise.all([
+    import('./routes.js'),
+    import('./websocket.js'),
+  ]);
+  app.use('/', routes);
 
   const server = createServer(app);
 
@@ -77,7 +78,7 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
     server.listen(resolvedPort, () => {
       // Attach WebSocket after successful listen to avoid EADDRINUSE
       // being re-emitted as an unhandled error on the WebSocketServer
-      if (setupWebSocket) setupWebSocket(server);
+      setupWebSocket(server);
 
       resolve({
         server,

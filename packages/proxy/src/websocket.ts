@@ -6,8 +6,10 @@ import {
   getDefaultSession,
   destroySession,
 } from './session.js';
+import { sessionLifecycle } from './session-store.js';
 import { SessionController } from './controller.js';
 import type { ProtocolType } from './protocols/index.js';
+import type { ConnectionStatus } from 'green-screen-types';
 
 interface WsClient {
   ws: WebSocket;
@@ -48,7 +50,36 @@ function removeClient(client: WsClient): void {
   }
 }
 
+// Subscribe to session lifecycle events so clients still watching a lost
+// session receive a structured `session.lost` notification (e.g. host TCP
+// dropped, idle timeout). Clients can then call `reattach` against a new
+// session or surface a "session expired" UI without string-matching errors.
+let lifecycleSubscribed = false;
+function ensureLifecycleSubscribed(): void {
+  if (lifecycleSubscribed) return;
+  lifecycleSubscribed = true;
+  sessionLifecycle.on('session.lost', (sessionId: string, status: ConnectionStatus) => {
+    const message = JSON.stringify({ type: 'session.lost', sessionId, status });
+    const targets = sessionClients.get(sessionId);
+    if (targets) {
+      for (const client of targets) {
+        if (client.ws.readyState === WebSocket.OPEN) client.ws.send(message);
+      }
+    }
+  });
+  sessionLifecycle.on('session.resumed', (sessionId: string) => {
+    const message = JSON.stringify({ type: 'session.resumed', sessionId });
+    const targets = sessionClients.get(sessionId);
+    if (targets) {
+      for (const client of targets) {
+        if (client.ws.readyState === WebSocket.OPEN) client.ws.send(message);
+      }
+    }
+  });
+}
+
 export function setupWebSocket(server: HttpServer): WebSocketServer {
+  ensureLifecycleSubscribed();
   const wss = new WebSocketServer({ server, path: '/ws' });
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
@@ -85,7 +116,7 @@ export function setupWebSocket(server: HttpServer): WebSocketServer {
 async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promise<void> {
   switch (msg.type) {
     case 'connect': {
-      const { host = 'pub400.com', port = 23, protocol = 'tn5250', username, password, terminalType } = msg;
+      const { host = 'pub400.com', port = 23, protocol = 'tn5250', username, password, terminalType, codePage } = msg;
 
       // Destroy previous session if this client had one
       const oldSessionId = client.sessionId;
@@ -122,6 +153,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
           password,
           sessionId,
           terminalType,
+          codePage,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -193,6 +225,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
         if (screen) wsSend(ws, { type: 'screen', data: screen });
         wsSend(ws, { type: 'status', data: { connected: true, status: 'connected' } });
         wsSend(ws, { type: 'connected', sessionId });
+        sessionLifecycle.emit('session.resumed', sessionId);
       } else {
         // Also try the session manager (REST sessions)
         const session = sessionId ? getSession(sessionId) : undefined;
@@ -208,10 +241,44 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
           wsSend(ws, { type: 'screen', data: session.getScreenData() });
           wsSend(ws, { type: 'status', data: session.status });
           wsSend(ws, { type: 'connected', sessionId: session.id });
+          sessionLifecycle.emit('session.resumed', session.id);
         } else {
           wsSend(ws, { type: 'error', message: 'Session not found or disconnected' });
         }
       }
+      break;
+    }
+
+    case 'readMdt': {
+      const controller = client.controller;
+      if (!controller) { wsSend(ws, { type: 'error', message: 'Not connected' }); return; }
+      const modifiedOnly = msg.modifiedOnly !== false;
+      controller.handleReadMdt(modifiedOnly);
+      break;
+    }
+
+    case 'markAuthenticated': {
+      // Look up the session via the session store (the controller path
+      // doesn't hold a Session reference, so we resolve by id here).
+      if (!client.sessionId) { wsSend(ws, { type: 'error', message: 'No active session' }); return; }
+      const username = typeof msg.username === 'string' ? msg.username : '';
+      if (!username) { wsSend(ws, { type: 'error', message: 'username is required' }); return; }
+      const session = getSession(client.sessionId);
+      if (!session) { wsSend(ws, { type: 'error', message: 'Session not found' }); return; }
+      session.markAuthenticated(username);
+      wsSend(ws, { type: 'status', data: session.status });
+      break;
+    }
+
+    case 'waitForFields': {
+      if (!client.sessionId) { wsSend(ws, { type: 'error', message: 'No active session' }); return; }
+      const session = getSession(client.sessionId);
+      if (!session) { wsSend(ws, { type: 'error', message: 'Session not found' }); return; }
+      const minFields = typeof msg.minFields === 'number' ? msg.minFields : 0;
+      const timeoutMs = typeof msg.timeoutMs === 'number' ? msg.timeoutMs : 5000;
+      const screen = await session.waitForScreenWithFields(minFields, timeoutMs);
+      const inputCount = (screen.fields || []).filter((f) => f.is_input).length;
+      wsSend(ws, { type: 'waitForFields', data: { matched: inputCount >= minFields, inputFieldCount: inputCount, screen } });
       break;
     }
 

@@ -9,8 +9,7 @@ import { execFile } from 'node:child_process';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const uiPath = join(__dirname, '..', 'ui');
 
-const isMock = process.argv.includes('--mock');
-const proxy = await createProxy({ port: 3001, mock: isMock });
+const proxy = await createProxy({ port: 3001 });
 
 // Serve the terminal UI
 proxy.app.use(express.static(uiPath));
@@ -28,9 +27,6 @@ if (proxy.port !== 3001) {
   console.log(`Port 3001 was in use, using port ${proxy.port} instead`);
 }
 console.log(`Green Screen Terminal running at http://localhost:${proxy.port}`);
-if (isMock) {
-  console.log('Running in MOCK mode');
-}
 
 // Open browser — prefer Chrome app mode for a native terminal-like window
 function openBrowser(target) {

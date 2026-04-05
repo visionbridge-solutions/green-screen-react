@@ -12,18 +12,13 @@ npm install green-screen-proxy
 
 ```bash
 npx green-screen-proxy              # Start on port 3001
-npx green-screen-proxy --mock       # Mock mode (no real host needed)
 npx green-screen-proxy --port 8080  # Custom port
 npx green-screen-terminal           # Proxy + web terminal UI (separate package)
 ```
 
-### Mock mode
+### Connecting to a host
 
-With `--mock`, the proxy serves mock terminal screens — useful for trying out the component without a real host connection.
-
-### Connecting to a real host
-
-Without `--mock`, the proxy opens real TCP connections. The sign-in form in the React component collects host, port, protocol, and credentials — the proxy handles the rest.
+The proxy opens real TCP connections. The sign-in form in the React component collects host, port, protocol, and credentials — the proxy handles the rest.
 
 ## Cloudflare Worker Deployment
 
@@ -68,7 +63,6 @@ await proxy.close();
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `port` | `number` | `3001` | Port to listen on |
-| `mock` | `boolean` | `false` | Use mock screens |
 
 ### Returns
 

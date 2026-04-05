@@ -1,4 +1,16 @@
 // EBCDIC CCSID 37 (US/Canada) ↔ UTF-8 conversion tables
+//
+// For Japanese IBM i hosts, see ./ebcdic-jp.ts which provides CCSID 290
+// (Katakana) and DBCS Kanji decoding infrastructure.
+
+import { EBCDIC_CP290_TO_UNICODE } from './ebcdic-jp.js';
+
+/**
+ * Supported EBCDIC single-byte character sets.
+ * - 'cp37'  — CCSID 37  (US/Canada, Brazil, Australia, NZ)
+ * - 'cp290' — CCSID 290 (Japan Katakana) — pair with DBCS for CCSID 930
+ */
+export type EbcdicCodePage = 'cp37' | 'cp290';
 
 // EBCDIC byte → Unicode code point (CCSID 37)
 const EBCDIC_TO_UNICODE: number[] = [
@@ -52,16 +64,33 @@ const EBCDIC_TO_UNICODE: number[] = [
   0x0038, 0x0039, 0x00B3, 0x00DB, 0x00DC, 0x00D9, 0x00DA, 0x009F,
 ];
 
-// Build reverse lookup: Unicode code point → EBCDIC byte
+// Build reverse lookup: Unicode code point → EBCDIC byte (CP37)
 const UNICODE_TO_EBCDIC = new Map<number, number>();
 for (let i = 0; i < 256; i++) {
   UNICODE_TO_EBCDIC.set(EBCDIC_TO_UNICODE[i], i);
 }
 
-/** Convert an EBCDIC byte to a UTF-8 character */
-export function ebcdicToChar(byte: number): string {
-  const cp = EBCDIC_TO_UNICODE[byte & 0xFF];
-  return String.fromCharCode(cp);
+// Reverse lookup for CP290 — built lazily on first use.
+let UNICODE_TO_CP290: Map<number, number> | null = null;
+function getUnicodeToCp290(): Map<number, number> {
+  if (!UNICODE_TO_CP290) {
+    UNICODE_TO_CP290 = new Map();
+    for (let i = 0; i < 256; i++) {
+      const cp = EBCDIC_CP290_TO_UNICODE[i];
+      if (cp > 0) UNICODE_TO_CP290.set(cp, i);
+    }
+  }
+  return UNICODE_TO_CP290;
+}
+
+/**
+ * Convert an EBCDIC byte to a UTF-8 character using the specified code page.
+ * Defaults to CCSID 37 for backward compatibility.
+ */
+export function ebcdicToChar(byte: number, codePage: EbcdicCodePage = 'cp37'): string {
+  const table = codePage === 'cp290' ? EBCDIC_CP290_TO_UNICODE : EBCDIC_TO_UNICODE;
+  const cp = table[byte & 0xFF];
+  return cp > 0 ? String.fromCharCode(cp) : ' ';
 }
 
 /**
@@ -90,10 +119,11 @@ export function ebcdicSymbolChar(byte: number): string {
   return SYMBOL_MAP[byte] ?? ebcdicToChar(byte);
 }
 
-/** Convert a UTF-8 character to an EBCDIC byte */
-export function charToEbcdic(char: string): number {
+/** Convert a UTF-8 character to an EBCDIC byte (specified code page). */
+export function charToEbcdic(char: string, codePage: EbcdicCodePage = 'cp37'): number {
   const cp = char.charCodeAt(0);
-  const eb = UNICODE_TO_EBCDIC.get(cp);
+  const table = codePage === 'cp290' ? getUnicodeToCp290() : UNICODE_TO_EBCDIC;
+  const eb = table.get(cp);
   return eb !== undefined ? eb : 0x40; // default to EBCDIC space
 }
 

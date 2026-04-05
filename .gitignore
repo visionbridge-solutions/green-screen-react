@@ -13,3 +13,6 @@ reference/
 debug/
 DEBUG_NOTES.md
 BUG_LOG.md
+*.code-workspace
+__pycache__/
+*.pyc

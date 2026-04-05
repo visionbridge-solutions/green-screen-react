@@ -1,4 +1,4 @@
-import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult, ConnectConfig } from './types';
+import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult, ConnectConfig, FieldValue } from './types';
 
 export interface WebSocketAdapterOptions {
   /** URL of the green-screen proxy or worker. Auto-detected from env vars, defaults to http://localhost:3001 */
@@ -26,9 +26,12 @@ export class WebSocketAdapter implements TerminalAdapter {
   private status: ConnectionStatus = { connected: false, status: 'disconnected' };
   private pendingScreenResolver: ((value: ScreenData | null) => void) | null = null;
   private pendingConnectResolver: ((result: SendResult) => void) | null = null;
+  private pendingMdtResolver: ((fields: FieldValue[]) => void) | null = null;
   private connectingPromise: Promise<void> | null = null;
   private screenListeners: Set<(screen: ScreenData) => void> = new Set();
   private statusListeners: Set<(status: ConnectionStatus) => void> = new Set();
+  private sessionLostListeners: Set<(sessionId: string, status: ConnectionStatus) => void> = new Set();
+  private sessionResumedListeners: Set<(sessionId: string) => void> = new Set();
   private _sessionId: string | null = null;
 
   constructor(options: WebSocketAdapterOptions = {}) {
@@ -75,6 +78,24 @@ export class WebSocketAdapter implements TerminalAdapter {
     return () => this.statusListeners.delete(listener);
   }
 
+  /**
+   * Subscribe to session-lost notifications. Fires when the proxy detects
+   * that the server-side session has terminated (host TCP drop, idle
+   * timeout, explicit destroy). Integrators use this to prompt a reconnect
+   * or swap to a "session expired" UI without relying on error-string
+   * matching.
+   */
+  onSessionLost(listener: (sessionId: string, status: ConnectionStatus) => void): () => void {
+    this.sessionLostListeners.add(listener);
+    return () => this.sessionLostListeners.delete(listener);
+  }
+
+  /** Subscribe to session-resumed notifications (fires after a successful `reattach`). */
+  onSessionResumed(listener: (sessionId: string) => void): () => void {
+    this.sessionResumedListeners.add(listener);
+    return () => this.sessionResumedListeners.delete(listener);
+  }
+
   async getScreen(): Promise<ScreenData | null> {
     return this.screen;
   }
@@ -93,6 +114,27 @@ export class WebSocketAdapter implements TerminalAdapter {
 
   async setCursor(row: number, col: number): Promise<SendResult> {
     return this.sendAndWaitForScreen({ type: 'setCursor', row, col });
+  }
+
+  async readMdt(modifiedOnly: boolean = true): Promise<FieldValue[]> {
+    await this.ensureWebSocket();
+    return new Promise((resolve) => {
+      // Only one in-flight MDT read at a time — flush any prior resolver
+      if (this.pendingMdtResolver) {
+        const old = this.pendingMdtResolver;
+        this.pendingMdtResolver = null;
+        old([]);
+      }
+      const timeout = setTimeout(() => {
+        this.pendingMdtResolver = null;
+        resolve([]);
+      }, 5000);
+      this.pendingMdtResolver = (fields) => {
+        clearTimeout(timeout);
+        resolve(fields);
+      };
+      this.wsSend({ type: 'readMdt', modifiedOnly });
+    });
   }
 
   async connect(config?: ConnectConfig): Promise<SendResult> {
@@ -226,6 +268,25 @@ export class WebSocketAdapter implements TerminalAdapter {
             screen_signature: this.screen?.screen_signature ?? '',
           } as any);
         }
+        break;
+      }
+
+      case 'mdt': {
+        if (this.pendingMdtResolver) {
+          const resolver = this.pendingMdtResolver;
+          this.pendingMdtResolver = null;
+          resolver(msg.data?.fields ?? []);
+        }
+        break;
+      }
+
+      case 'session.lost': {
+        for (const listener of this.sessionLostListeners) listener(msg.sessionId, msg.status);
+        break;
+      }
+
+      case 'session.resumed': {
+        for (const listener of this.sessionResumedListeners) listener(msg.sessionId);
         break;
       }
 
