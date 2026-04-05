@@ -54,8 +54,3 @@ jobs:
         run: npm publish -w packages/standalone --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  deploy-worker:
-    needs: publish
-    uses: ./.github/workflows/deploy-worker.yml
-    secrets: inherit
