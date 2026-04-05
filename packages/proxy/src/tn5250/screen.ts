@@ -716,16 +716,19 @@ export class ScreenBuffer {
       lines.push(row);
     }
 
-    // Clean up 5250 indicator artifacts in the rendered text:
-    // - â/ê appearing as lone chars before "Bottom"/"More"/"Top" → replace with arrows
-    // - & appearing as isolated chars (field attribute separators) → replace with space
-    // - ( + ê appearing at end of indicator lines → replace with space
+    // Clean up 5250 indicator artifacts in the rendered text. The cleanup
+    // is intentionally scoped to non-newline whitespace (`[ ]+` instead of
+    // `\s+`) so patterns cannot straddle row boundaries — any replacement
+    // that spanned a newline would erase the row boundary and visually
+    // shift downstream content (e.g. row 24 copyright getting pushed
+    // right). The final row-block replacement is length-preserving for the
+    // same reason — the match and the replacement are both 15 chars.
     let content = lines.join('\n');
-    content = content.replace(/â(\s+(Bottom|More))/g, '↓$1');
-    content = content.replace(/â(\s+(Top))/g, '↑$1');
-    content = content.replace(/(\s)ê(\s)/g, '$1 $2');
-    content = content.replace(/(\s)&(\s{2,})/g, '$1 $2');
-    content = content.replace(/\(\s{2,}\+\s+ê/g, '               ');
+    content = content.replace(/â([ ]+(Bottom|More))/g, '↓$1');
+    content = content.replace(/â([ ]+(Top))/g, '↑$1');
+    content = content.replace(/( )ê( )/g, '$1 $2');
+    content = content.replace(/( )&( {2,})/g, '$1 $2');
+    content = content.replace(/\( {2,}\+ +ê/g, (match) => ' '.repeat(match.length));
 
     // Map fields to frontend format
     const fields: Field[] = this.fields.map(f => {

@@ -168,11 +168,19 @@ export class TN5250Handler extends ProtocolHandler {
     }
 
     // Tab/Backtab: move cursor to next/previous input field.
-    // Filter out UIM framework artifact fields that are technically non-bypass
-    // but not functional for user input (e.g. the selection field at (1,2) on
-    // the main menu produces "Type option number or command" error when used).
-    // Keep fields with native underscore/non-display (real interactive fields).
-    // Fall back to all input fields if none match the filter.
+    //
+    // Keep only fields with a native interactive attribute byte — either
+    // underscored (regular text input) or non-display (password input).
+    // This matches `isVisibleInput()` in screen.ts and excludes UIM framework
+    // artifact fields that are technically non-bypass but carry no visible
+    // interactive attribute (e.g. the selection field at (1,2) on the main
+    // menu produces "Type option number or command" error when navigated
+    // into). Falls back to the last input field if nothing matches.
+    //
+    // IMPORTANT: password fields on IBM i sign-on screens are non-display
+    // input fields by design (attribute byte lower bits = 0x07, so chars
+    // don't echo). Any filter that broadly excludes non-display fields
+    // will skip them on Tab and make sign-on impossible.
     //
     // Tab order: if ANY field has a non-zero `resequence` FCW (0x80xx), order
     // fields by resequence ascending (resequence=0 → spatial), matching the
@@ -197,9 +205,12 @@ export class TN5250Handler extends ProtocolHandler {
       };
       allInputs.sort((a, b) => orderOf(a) - orderOf(b));
 
-      // Exclude non-display fields (like UIM artifacts with rawAttr 0x27) —
-      // they appear as invisible input areas that produce errors when used.
-      const functional = allInputs.filter(f => !this.screen.hasNativeNonDisplay(f));
+      // Keep fields that have a native underscore OR native non-display raw
+      // attribute byte — both are legitimate interactive targets. Drops
+      // UIM artifacts that have neither attribute set.
+      const functional = allInputs.filter(f =>
+        this.screen.hasNativeUnderscore(f) || this.screen.hasNativeNonDisplay(f)
+      );
       const inputFields = functional.length > 0 ? functional
         : [allInputs[allInputs.length - 1]];
 
