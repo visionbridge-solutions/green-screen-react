@@ -757,8 +757,13 @@ export function GreenScreenTerminal({
       if (entryAttr?.underscore) fieldStyle.textDecoration = 'underline';
       if (entryAttr?.highIntensity) fieldStyle.fontWeight = 'bold';
 
+      // Non-display (password) fields: render as blank space, not asterisks.
+      // Real 5250 terminals (ACS, Mocha, native) never echo password
+      // characters — the underscore/field attribute shows the input zone,
+      // typed chars stay invisible. Asterisks are an HTML <input
+      // type=password> convention that doesn't belong here.
       const isPassword = (field as any).is_non_display;
-      const displayText = isPassword ? '*'.repeat(fc.length) : fc;
+      const displayText = isPassword ? ' '.repeat(fc.length) : fc;
 
       if (field.is_input) {
         const fieldWidth = Math.min(field.length, cols - fs);
