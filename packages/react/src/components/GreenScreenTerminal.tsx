@@ -525,17 +525,19 @@ export function GreenScreenTerminal({
       PageUp: 'PAGEUP', PageDown: 'PAGEDOWN', Home: 'HOME', End: 'END', Insert: 'INSERT',
     };
 
-    // F-keys
-    if (e.key.startsWith('F') && e.key.length <= 3) {
+    // F-keys. Match the *full* key name against the F1..F24 regex — if we
+    // only tested startsWith('F'), a bare 'F' character would be swallowed
+    // by preventDefault() without ever being sent as text, because the
+    // inner regex would reject it and the handler would fall through with
+    // nothing to dispatch. Making the regex the outer guard lets real
+    // letter keys ('F', 'f', 'F1xyz', etc.) fall through to the text path.
+    if (/^F([1-9]|1[0-9]|2[0-4])$/.test(e.key)) {
       e.preventDefault();
-      const fKey = e.key.toUpperCase();
-      if (/^F([1-9]|1[0-9]|2[0-4])$/.test(fKey)) {
-        // Self-check any declared MOD10/MOD11 fields before submitting
-        if (!runSelfCheck()) return;
-        const kr = await sendKey(fKey);
-        if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
-        return;
-      }
+      // Self-check any declared MOD10/MOD11 fields before submitting
+      if (!runSelfCheck()) return;
+      const kr = await sendKey(e.key);
+      if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
+      return;
     }
 
     // Action/navigation keys — self-check on submit-type keys (Enter, PageUp/Down)
