@@ -15,17 +15,47 @@ jobs:
         with:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
-      - run: npm ci
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify all package versions match release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          EXPECTED="${RELEASE_TAG#v}"
+          FAILED=0
+          for PKG in packages/types packages/react packages/proxy packages/standalone; do
+            VERSION=$(node -p "require('./$PKG/package.json').version")
+            if [ "$VERSION" != "$EXPECTED" ]; then
+              echo "::error::$PKG version ($VERSION) does not match release tag ($EXPECTED)"
+              FAILED=1
+            fi
+          done
+          exit $FAILED
+
       - run: npm run test -w packages/react
       - run: npm run build -w packages/react
       - run: npm run build -w packages/proxy
       - run: npm run build:ui -w packages/standalone
-      - run: npm publish -w packages/react --access public || true
+
+      - name: Publish green-screen-react
+        run: npm publish -w packages/react --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: npm publish -w packages/proxy --access public || true
+
+      - name: Publish green-screen-proxy
+        run: npm publish -w packages/proxy --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: npm publish -w packages/standalone --access public || true
+
+      - name: Publish green-screen-terminal (standalone)
+        run: npm publish -w packages/standalone --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  deploy-worker:
+    needs: publish
+    uses: ./.github/workflows/deploy-worker.yml
+    secrets: inherit
