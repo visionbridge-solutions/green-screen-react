@@ -79,6 +79,21 @@ export class SessionController {
     return this.handler;
   }
 
+  /**
+   * Adopt an already-connected ProtocolHandler owned by another holder
+   * (e.g. a REST-created Session). Wires this controller up to dispatch
+   * key/text/setCursor commands against the existing handler without
+   * re-binding connection-level event listeners — the owning Session
+   * remains responsible for the handler lifecycle.
+   *
+   * Used by the WebSocket reattach path so WS clients can drive a session
+   * that was originally created via REST.
+   */
+  adoptHandler(handler: ProtocolHandler): void {
+    this.handler = handler;
+    this.connected = true;
+  }
+
   handleText(text: string): void {
     if (!this.handler || !this.connected) {
       this.send({ type: 'error', message: 'Not connected' });

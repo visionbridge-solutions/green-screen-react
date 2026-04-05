@@ -238,6 +238,22 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
           }
           unassignedClients.delete(client);
           indexClient(client);
+          // Adopt the REST session's handler into a SessionController so
+          // subsequent WS key/text/setCursor commands from this client have
+          // a controller to dispatch through. Without this, the `case 'key'`
+          // branch would see `client.controller == null` and reply with
+          // "Not connected", silently dropping every keystroke from
+          // interactive clients that reattach to REST-created sessions.
+          const adoptedController = new SessionController((m) => {
+            wsSend(ws, m);
+            // Mirror the `connect` path: broadcast screen updates to other
+            // clients watching the same session so dashboards stay in sync.
+            if (client.sessionId && ('type' in m) && (m as any).type === 'screen') {
+              broadcastToSession(client.sessionId, JSON.stringify(m), ws);
+            }
+          });
+          adoptedController.adoptHandler(session.handler);
+          client.controller = adoptedController;
           wsSend(ws, { type: 'screen', data: session.getScreenData() });
           wsSend(ws, { type: 'status', data: session.status });
           wsSend(ws, { type: 'connected', sessionId: session.id });
