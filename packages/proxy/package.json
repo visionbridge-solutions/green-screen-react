@@ -1,6 +1,6 @@
 {
   "name": "green-screen-proxy",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "WebSocket/REST proxy server for green-screen-react — connects browsers to TN5250, TN3270, VT220, and HP 6530 hosts over TCP",
   "type": "module",
   "bin": {
