@@ -261,6 +261,41 @@
   gap: 12px;
 }
 
+/* "X CLOCK" busy overlay — shown when the host has locked the keyboard
+ * and blanked the screen mid-transaction but hasn't delivered the
+ * replacement content yet. Uses a lighter dim than gs-overlay so the
+ * sticky last-known screen underneath remains readable. */
+.gs-busy-overlay {
+  position: absolute;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9;
+  pointer-events: none;
+  color: var(--gs-yellow, #FFFF00);
+  font-family: var(--gs-font);
+  gap: 8px;
+  animation: gs-fade-in 180ms ease-out;
+}
+
+.gs-busy-clock {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  font-variant-numeric: tabular-nums;
+}
+
+.gs-busy-hint {
+  font-size: 11px;
+  opacity: 0.75;
+  color: var(--gs-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .gs-error-banner {
   position: absolute;
   top: 16px;

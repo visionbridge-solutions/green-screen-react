@@ -12,6 +12,31 @@ import { decodeAttrByte, decodeExtColor, decodeExtHighlight, cssVarForColor, mer
 import { validateMod10, validateMod11, filterFieldInput } from '../utils/validation';
 
 /**
+ * True if the screen content is effectively empty — all spaces, NULs, or
+ * whitespace. Used to detect the "host blanked the screen but hasn't sent
+ * replacement content yet" transit state.
+ */
+function isBlankContent(content: string | undefined): boolean {
+  if (!content) return true;
+  for (let i = 0; i < content.length; i++) {
+    const ch = content.charCodeAt(i);
+    // Skip whitespace (space, tab, newline, CR), NUL, and non-breaking space
+    if (ch !== 0x20 && ch !== 0x09 && ch !== 0x0a && ch !== 0x0d && ch !== 0x00 && ch !== 0xa0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Format milliseconds as M:SS for the X CLOCK busy indicator. */
+function formatBusyClock(ms: number): string {
+  const sec = Math.floor(ms / 1000);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+/**
  * Map a 5250 AID byte (e.g. from a pointer-AID FCW) back to the key-name
  * token that `sendKey` understands. Covers Enter, F1-F24, Page Up/Down,
  * Clear, Help, and Print. Returns null for unknown/unsupported AIDs.
@@ -187,7 +212,59 @@ export function GreenScreenTerminal({
   const { sendText: _sendText, sendKey: _sendKey } = useTerminalInput(adapter);
   const { connect, reconnect, loading: reconnecting, error: connectError } = useTerminalConnection(adapter);
 
-  const rawScreenData = externalScreenData ?? polledScreenData;
+  const incomingScreenData = externalScreenData ?? polledScreenData;
+
+  // --- Sticky last-contentful screen ----------------------------------
+  // Some IBM i operations send a CLEAR_UNIT record and then take multiple
+  // seconds to send the replacement WRITE_TO_DISPLAY. In between, the
+  // proxy emits a fully blank locked screen, which would render as a black
+  // flash that makes the terminal feel broken. Stash the last non-blank
+  // snapshot and substitute it back in whenever we're in that transit
+  // state — this keeps the old screen visible (with the X II lock badge)
+  // until the host actually finishes responding.
+  const lastContentfulRef = useRef<ScreenData | null>(null);
+  useEffect(() => {
+    if (incomingScreenData && !isBlankContent(incomingScreenData.content)) {
+      lastContentfulRef.current = incomingScreenData;
+    }
+  }, [incomingScreenData]);
+
+  // True waiting state on the wire: host blanked the buffer AND the
+  // keyboard is still locked. Errors (WRITE_ERROR_CODE) paint text on the
+  // message line, so this never matches an error screen.
+  const isBlankLocked = !!(
+    incomingScreenData &&
+    incomingScreenData.keyboard_locked &&
+    isBlankContent(incomingScreenData.content)
+  );
+
+  const rawScreenData = useMemo(() => {
+    if (isBlankLocked && lastContentfulRef.current) {
+      return { ...lastContentfulRef.current, keyboard_locked: true };
+    }
+    return incomingScreenData;
+  }, [incomingScreenData, isBlankLocked]);
+
+  // --- Busy "X CLOCK" overlay -----------------------------------------
+  // Shows after 600ms of a blank+locked state to reassure the user that
+  // the host is just slow, not broken. The deferral prevents flashing on
+  // fast operations where the host clears and rewrites within one frame.
+  // Only triggers on true waiting state (isBlankLocked) so error screens
+  // — which paint error text and therefore are never blank — don't
+  // latch it on indefinitely.
+  const BUSY_OVERLAY_DELAY_MS = 600;
+  const [lockElapsedMs, setLockElapsedMs] = useState(0);
+  useEffect(() => {
+    if (!isBlankLocked) {
+      setLockElapsedMs(0);
+      return;
+    }
+    const start = Date.now();
+    setLockElapsedMs(0);
+    const id = setInterval(() => setLockElapsedMs(Date.now() - start), 250);
+    return () => clearInterval(id);
+  }, [isBlankLocked]);
+  const showBusyOverlay = isBlankLocked && lockElapsedMs >= BUSY_OVERLAY_DELAY_MS;
 
   const connStatus = externalStatus ?? (rawScreenData ? { connected: true, status: 'authenticated' as const } : { connected: false, status: 'disconnected' as const });
 
@@ -857,9 +934,12 @@ export function GreenScreenTerminal({
     const ROW_HEIGHT = 21;
     const cursor = getCursorPos();
     const hasCursor = screenData.cursor_row !== undefined && screenData.cursor_col !== undefined;
-    // Only show cursor when it's inside a visible input field (not non-display/password)
+    // Show cursor whenever it's inside an input field. Real 5250 terminals
+    // (ACS, Mocha) show the cursor in password (NON_DISPLAY) fields too —
+    // that's the only feedback that a keypress was registered, since the
+    // typed characters stay invisible.
     const cursorInInputField = hasCursor && fields.some(f =>
-      f.is_input && !(f as any).is_non_display &&
+      f.is_input &&
       f.row === cursor.row &&
       cursor.col >= f.col && cursor.col < f.col + f.length
     );
@@ -1092,6 +1172,15 @@ export function GreenScreenTerminal({
               {connStatus.error && !isAutoReconnecting && !reconnecting && (
                 <span style={{ fontSize: '0.75em', opacity: 0.7, maxWidth: '80%', textAlign: 'center', wordBreak: 'break-word' }}>{connStatus.error}</span>
               )}
+            </div>
+          )}
+          {showBusyOverlay && connStatus?.connected && (
+            <div className="gs-busy-overlay" role="status" aria-live="polite">
+              <RefreshIcon size={22} className="gs-spin" />
+              <span className="gs-busy-clock">
+                X CLOCK&nbsp;&nbsp;{formatBusyClock(lockElapsedMs)}
+              </span>
+              <span className="gs-busy-hint">Waiting for host…</span>
             </div>
           )}
           <input
