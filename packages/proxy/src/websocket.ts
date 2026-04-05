@@ -5,6 +5,7 @@ import {
   getSession,
   getDefaultSession,
   destroySession,
+  gracefullyDestroySession,
 } from './session.js';
 import { sessionLifecycle, getSessionStore } from './session-store.js';
 import { SessionController } from './controller.js';
@@ -22,6 +23,34 @@ const sessionClients: Map<string, Set<WsClient>> = new Map();
 const unassignedClients: Set<WsClient> = new Set();
 /** Controllers whose WebSocket disconnected but TCP is still alive (for reattach) */
 const orphanedControllers: Map<string, SessionController> = new Map();
+/** Auto-reap timers for orphaned controllers. A page reload typically
+ *  reattaches within a few seconds; anything longer is almost certainly
+ *  a closed tab / abandoned session, and keeping the TCP socket alive
+ *  counts against the host's per-user session quota (IBM i LMTDEVSSN →
+ *  CPF1220). Short TTL bounds the leak. */
+const orphanReapTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+const ORPHAN_TTL_MS = 20_000;
+
+function scheduleOrphanReap(sessionId: string): void {
+  const prev = orphanReapTimers.get(sessionId);
+  if (prev) clearTimeout(prev);
+  const timer = setTimeout(() => {
+    orphanReapTimers.delete(sessionId);
+    const ctrl = orphanedControllers.get(sessionId);
+    if (!ctrl) return;
+    orphanedControllers.delete(sessionId);
+    console.log(`[orphan-reap] TTL expired for session ${sessionId.slice(0, 8)} — destroying`);
+    // Best-effort graceful tear-down: SIGNOFF + TCP close. The owning
+    // WebSocket is already gone, so no ack needs to flow back.
+    ctrl.handleGracefulDisconnect().catch(() => { /* ignore */ });
+  }, ORPHAN_TTL_MS);
+  orphanReapTimers.set(sessionId, timer);
+}
+
+function cancelOrphanReap(sessionId: string): void {
+  const t = orphanReapTimers.get(sessionId);
+  if (t) { clearTimeout(t); orphanReapTimers.delete(sessionId); }
+}
 
 function indexClient(client: WsClient): void {
   if (client.sessionId) {
@@ -41,6 +70,7 @@ function removeClient(client: WsClient): void {
     // If this client has a live controller, orphan it for potential reattach
     if (client.controller && client.controller.connected) {
       orphanedControllers.set(client.sessionId, client.controller);
+      scheduleOrphanReap(client.sessionId);
     }
     const set = sessionClients.get(client.sessionId);
     if (set) {
@@ -123,7 +153,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
       if (oldSessionId) {
         destroySession(oldSessionId);
         const orphan = orphanedControllers.get(oldSessionId);
-        if (orphan) { orphan.handleDisconnect(); orphanedControllers.delete(oldSessionId); }
+        if (orphan) { orphan.handleDisconnect(); orphanedControllers.delete(oldSessionId); cancelOrphanReap(oldSessionId); }
         if (client.controller) { client.controller.handleDisconnect(); }
         const set = sessionClients.get(oldSessionId);
         if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(oldSessionId); }
@@ -194,7 +224,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
         const orphan = orphanedControllers.get(sessionId);
         if (orphan && orphan.connected) {
           existingController = orphan;
-          orphanedControllers.delete(sessionId);
+          orphanedControllers.delete(sessionId); cancelOrphanReap(sessionId);
         }
         // Also check active clients
         if (!existingController) {
@@ -218,6 +248,11 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
         if (oldSessionId && oldSessionId !== sessionId) {
           const set = sessionClients.get(oldSessionId);
           if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(oldSessionId); }
+          // Destroy the stale session this client was previously bound to
+          // — otherwise it would linger until idle timeout and count
+          // against host session quotas (CPF1220).
+          destroySession(oldSessionId);
+          orphanedControllers.delete(oldSessionId); cancelOrphanReap(oldSessionId);
         }
         unassignedClients.delete(client);
         indexClient(client);
@@ -232,9 +267,12 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
         if (session && session.status.connected) {
           const oldSessionId = client.sessionId;
           client.sessionId = session.id;
-          if (oldSessionId) {
+          if (oldSessionId && oldSessionId !== session.id) {
             const set = sessionClients.get(oldSessionId);
             if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(oldSessionId); }
+            // Same leak fix as the orphaned-controller path above.
+            destroySession(oldSessionId);
+            orphanedControllers.delete(oldSessionId); cancelOrphanReap(oldSessionId);
           }
           unassignedClients.delete(client);
           indexClient(client);
@@ -299,17 +337,35 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
     }
 
     case 'disconnect': {
-      if (client.controller) {
-        client.controller.handleDisconnect();
-        client.controller = null;
-      }
-      if (client.sessionId) {
-        destroySession(client.sessionId);
-        const set = sessionClients.get(client.sessionId);
-        if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(client.sessionId); }
+      const sessionId = client.sessionId;
+      const controller = client.controller;
+      // Clear client-side tracking immediately so no new screen events
+      // get broadcast to this client while SIGNOFF is in flight.
+      client.controller = null;
+      if (sessionId) {
+        const set = sessionClients.get(sessionId);
+        if (set) { set.delete(client); if (set.size === 0) sessionClients.delete(sessionId); }
+        // Drop any orphaned controller for this session so it can't be
+        // resurrected by a later reattach against an about-to-die session.
+        orphanedControllers.delete(sessionId); cancelOrphanReap(sessionId);
         client.sessionId = null;
         unassignedClients.add(client);
       }
+      // Graceful teardown covers both WS-created sessions (tracked by
+      // SessionController only) and REST-adopted sessions (in the session
+      // store). We run both paths — each is a no-op for the other's
+      // session type.
+      try {
+        if (controller) await controller.handleGracefulDisconnect();
+        if (sessionId) await gracefullyDestroySession(sessionId);
+      } catch (err) {
+        console.warn(`[ws] graceful disconnect failed for ${sessionId?.slice(0, 8)}:`, err);
+      }
+      // Ack so the client can close its WebSocket without racing the
+      // server-side teardown. Clients that wait for this message guarantee
+      // the SIGNOFF has been sent (or best-effort attempted) before TCP
+      // closes.
+      wsSend(ws, { type: 'disconnected' });
       break;
     }
   }
@@ -345,6 +401,39 @@ export function broadcastScreenToSession(sessionId: string, screenData: object):
 }
 
 /**
+ * Destroy a WS-tracked session by id. Used by the REST beacon endpoint so
+ * that `navigator.sendBeacon` on page unload can reliably tear down
+ * WS-created sessions — those are NOT in the REST session store, so
+ * destroySession() alone is a no-op for them.
+ *
+ * Covers orphaned controllers (from prior page reloads) and live
+ * controllers still bound to an open WebSocket. Does NOT touch adopted
+ * REST sessions — the caller should also invoke destroySession() for
+ * those.
+ */
+export async function destroyWsSession(sessionId: string): Promise<boolean> {
+  let found = false;
+  const orphan = orphanedControllers.get(sessionId);
+  if (orphan) {
+    found = true;
+    orphanedControllers.delete(sessionId); cancelOrphanReap(sessionId);
+    try { await orphan.handleGracefulDisconnect(); } catch { /* ignore */ }
+  }
+  const targets = sessionClients.get(sessionId);
+  if (targets) {
+    for (const client of targets) {
+      const ctrl = client.controller;
+      if (!ctrl) continue;
+      found = true;
+      client.controller = null;
+      try { await ctrl.handleGracefulDisconnect(); } catch { /* ignore */ }
+    }
+    sessionClients.delete(sessionId);
+  }
+  return found;
+}
+
+/**
  * Disconnect every SessionController held by this module so their TCP
  * sockets send a clean FIN to the upstream host before the process exits.
  *
@@ -365,7 +454,7 @@ export function broadcastScreenToSession(sessionId: string, screenData: object):
 export function shutdownAllWsControllers(): void {
   for (const [sessionId, orphan] of orphanedControllers) {
     try { orphan.handleDisconnect(); } catch { /* ignore */ }
-    orphanedControllers.delete(sessionId);
+    orphanedControllers.delete(sessionId); cancelOrphanReap(sessionId);
   }
   for (const client of clients) {
     const ctrl = client.controller;

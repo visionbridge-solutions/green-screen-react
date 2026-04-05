@@ -70,6 +70,18 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
         return
       }
 
+      // Reattach failed — the saved session may still be alive on the
+      // proxy as an orphaned controller (different browser session, or
+      // the reattach path didn't find it for some reason). Fire a beacon
+      // to destroy it before we spin up a new session. Without this the
+      // old orphan lingers until its TTL expires, counting against the
+      // host's LMTDEVSSN quota (CPF1220).
+      try {
+        const url = `${DEFAULT_WORKER_URL || 'http://localhost:3001'}/disconnect-beacon`
+        const blob = new Blob([JSON.stringify({ sessionId: saved.sessionId })], { type: 'application/json' })
+        navigator.sendBeacon(url, blob)
+      } catch { /* ignore */ }
+
       // Session gone — full connect with auto-sign-in
       wsAdapter.dispose()
       await doConnect(saved.config)
@@ -90,15 +102,40 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
     }
   }
 
-  const handleDisconnect = () => {
+  const handleDisconnect = async () => {
+    // Await the adapter's disconnect so the UI only transitions to
+    // "disconnected" after the server has acked the SIGNOFF round-trip.
+    // Otherwise we'd race the server teardown and leak a half-open 5250
+    // session on the host (IBM i + LMTDEVSSN=*YES → CPF1220 on next login).
     if (adapter && 'disconnect' in adapter) {
-      (adapter as WebSocketAdapter).disconnect()
+      try { await (adapter as WebSocketAdapter).disconnect() } catch { /* ignore */ }
     }
     setAdapter(null)
     setConnected(false)
     setConnectedHost('')
     clearSession()
   }
+
+  // Page unload fallback: if the user closes the tab or navigates away
+  // without clicking Disconnect, fire a beacon to tear down the session
+  // server-side. `navigator.sendBeacon` is the only reliable way to send
+  // a request during page unload — fetch/WS writes get silently dropped.
+  useEffect(() => {
+    if (!adapter) return
+    const sessionId = (adapter as WebSocketAdapter).sessionId
+    if (!sessionId) return
+
+    const onPageHide = () => {
+      try {
+        const url = `${DEFAULT_WORKER_URL || 'http://localhost:3001'}/disconnect-beacon`
+        const blob = new Blob([JSON.stringify({ sessionId })], { type: 'application/json' })
+        navigator.sendBeacon(url, blob)
+      } catch { /* ignore */ }
+    }
+
+    window.addEventListener('pagehide', onPageHide)
+    return () => window.removeEventListener('pagehide', onPageHide)
+  }, [adapter])
 
   if (restoring) {
     return (
@@ -170,7 +207,9 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
           The connection is proxied through the local proxy server or a Cloudflare Worker.
         </p>
         <div className="connect-note">
-          Your credentials are sent directly to the target host and are not stored.
+          Credentials are sent directly to the target host. Your password is never stored;
+          other connection details (host, port, protocol, username) are saved in this
+          browser&rsquo;s local storage for convenience.
         </div>
       </div>
 

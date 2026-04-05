@@ -6,9 +6,10 @@ import {
   getDefaultSession,
   getAllSessions,
   destroySession,
+  gracefullyDestroySession,
 } from './session.js';
 import { TN5250Handler } from './protocols/index.js';
-import { broadcastScreenToSession } from './websocket.js';
+import { broadcastScreenToSession, destroyWsSession } from './websocket.js';
 const router = Router();
 
 /** Resolve session from header, query param, or default. Resets idle timer on access. */
@@ -56,13 +57,20 @@ router.post('/connect', async (req: Request, res: Response) => {
 
     // Auto-sign-in if credentials provided and handler supports it
     if (username && password && session.handler instanceof TN5250Handler) {
-      const screen = await session.handler.performAutoSignIn(username, password);
-      if (screen) {
-        session.markAuthenticated(username);
+      const result = await session.handler.performAutoSignIn(username, password);
+      if (result) {
+        if (result.authenticated) {
+          session.markAuthenticated(username);
+        }
+        // On failed sign-in (host still showing the sign-on screen, e.g.
+        // wrong password or CPF1220 device-session-limit), DO NOT mark
+        // as authenticated. The caller still receives the screen so the
+        // error message is visible to the user, but gracefulDestroy will
+        // not attempt a futile SIGNOFF on the sign-on screen.
         return res.json({
           success: true,
           sessionId: session.id,
-          ...screen,
+          ...result.screen,
         });
       }
     }
@@ -84,8 +92,9 @@ router.post('/connect', async (req: Request, res: Response) => {
   }
 });
 
-// POST /disconnect
-router.post('/disconnect', (req: Request, res: Response) => {
+// POST /disconnect — graceful teardown: SIGNOFF + TCP close for
+// authenticated sessions, plain destroy otherwise.
+router.post('/disconnect', async (req: Request, res: Response) => {
   const requestedId = req.headers['x-session-id'] as string || '(none)';
   const session = resolveSession(req);
   if (!session) {
@@ -94,8 +103,34 @@ router.post('/disconnect', (req: Request, res: Response) => {
   }
 
   console.log(`[disconnect] Destroying session ${session.id.slice(0, 8)} (requested=${requestedId.slice(0, 8)})`);
-  destroySession(session.id);
+  await gracefullyDestroySession(session.id);
   res.json({ success: true });
+});
+
+// POST /disconnect-beacon — unload-friendly teardown endpoint for
+// `navigator.sendBeacon`. Accepts a sessionId in the JSON body (beacon
+// requests can't set custom headers reliably) and tears down the session
+// whether it was created via REST or WebSocket. Fire-and-forget from the
+// client's perspective; the response is primarily for manual testing.
+router.post('/disconnect-beacon', async (req: Request, res: Response) => {
+  const sessionId: string | undefined =
+    (req.body && typeof req.body.sessionId === 'string' ? req.body.sessionId : undefined)
+    || (req.query.sessionId as string | undefined);
+  if (!sessionId) {
+    return res.status(400).json({ success: false, error: 'sessionId is required' });
+  }
+  console.log(`[disconnect-beacon] Tearing down session ${sessionId.slice(0, 8)}`);
+  try {
+    // Run both teardown paths — each is a no-op if the session isn't in
+    // that registry. WS-created sessions are NOT in the REST store.
+    await Promise.allSettled([
+      gracefullyDestroySession(sessionId),
+      destroyWsSession(sessionId),
+    ]);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Beacon teardown failed' });
+  }
 });
 
 // POST /reconnect

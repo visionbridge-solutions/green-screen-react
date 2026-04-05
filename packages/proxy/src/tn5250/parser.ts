@@ -127,22 +127,41 @@ export class TN5250Parser {
 
   /**
    * Handle records with non-standard framing (e.g. opcode 0x04 from
-   * pub400.com). These records contain valid commands (CLEAR_UNIT, WTD)
-   * but with extra sub-record marker bytes (0x04) between the GDS header
-   * and the actual commands.  We scan for the first known command byte,
-   * skipping 0x04 markers, and hand off to parseCommands.
+   * pub400.com). These records contain valid commands (CLEAR_UNIT, WTD,
+   * READ_*, etc.) but with extra sub-record marker bytes (0x04) between
+   * the GDS header and the actual commands.  We scan for the first known
+   * command byte, skipping 0x04 markers, and hand off to parseCommands.
+   *
+   * CRITICAL: the recognition list MUST include every command the host
+   * may send alone in its own record. Missing READ_* here would cause a
+   * bare Read record to be silently dropped, leaving the keyboard locked
+   * indefinitely (stuck "X SYSTEM" / "X II" on the client) because the
+   * Read handler is the only path that clears `keyboardLocked`.
    */
   private parseCommandsFromOffset(data: Buffer, start: number): boolean {
     for (let i = start; i < data.length; i++) {
       // Skip sub-record markers (0x04)
       if (data[i] === 0x04) continue;
       // Known command bytes — hand off to normal parsing
-      if (data[i] === CMD.WRITE_TO_DISPLAY ||
-          data[i] === CMD.CLEAR_UNIT ||
-          data[i] === CMD.CLEAR_UNIT_ALT ||
-          data[i] === CMD.WRITE_STRUCTURED_FIELD ||
-          data[i] === CMD.WRITE_ERROR_CODE ||
-          data[i] === CMD.WRITE_ERROR_CODE_WIN) {
+      const b = data[i];
+      if (
+        b === CMD.WRITE_TO_DISPLAY ||
+        b === CMD.CLEAR_UNIT ||
+        b === CMD.CLEAR_UNIT_ALT ||
+        b === CMD.CLEAR_FORMAT_TABLE ||
+        b === CMD.WRITE_STRUCTURED_FIELD ||
+        b === CMD.WRITE_ERROR_CODE ||
+        b === CMD.WRITE_ERROR_CODE_WIN ||
+        b === CMD.READ_INPUT_FIELDS ||
+        b === CMD.READ_MDT_FIELDS ||
+        b === CMD.READ_MDT_FIELDS_ALT ||
+        b === CMD.READ_SCREEN_IMMEDIATE ||
+        b === CMD.READ_IMMEDIATE ||
+        b === CMD.READ_IMMEDIATE_ALT ||
+        b === CMD.SAVE_SCREEN ||
+        b === CMD.RESTORE_SCREEN ||
+        b === CMD.ROLL
+      ) {
         return this.parseCommands(data, i);
       }
     }
@@ -463,10 +482,19 @@ export class TN5250Parser {
     while (pos < data.length) {
       const byte = data[pos];
 
-      // Within a WTD, all bytes are orders or EBCDIC data.
-      // Command bytes like CLEAR_UNIT (0x40 = EBCDIC space) and WTD (0x11 = SBA)
-      // overlap with valid order/data values, so we cannot break on them.
-      // parseOrders consumes data until the end of the buffer.
+      // Within a WTD, most bytes are orders or EBCDIC data. One exception:
+      // 0x04 (ESC, also the 5250 sub-record marker) terminates the order
+      // stream and hands control back to the command loop so it can
+      // dispatch the next command in the same record (e.g. a trailing
+      // READ_MDT_FIELDS = 0x52 after a WTD). Per lib5250 session.c:964-967
+      // — on ESC, the order loop un-gets the byte and returns. Without
+      // this, the trailing `04 52 00 00` of every WTD reply is mis-parsed:
+      // 0x04 as an EBCDIC control char written to the buffer, then 0x52
+      // (the real READ_MDT_FIELDS command) decoded via cp37 → U+00EA (ê)
+      // and painted into the screen wherever the cursor happened to land.
+      if (byte === 0x04) {
+        return pos; // hand back to parseCommands to handle the next cmd
+      }
 
       switch (byte) {
         case ORDER.SBA: {
@@ -841,6 +869,7 @@ export class TN5250Parser {
       attribute: fieldDisplayAttr,
       rawAttrByte: attrByte,
       modified: false,
+      synthetic: true, // Bare SBA+attribute, not an explicit SF order
     };
 
     this.clearStaleFieldsOnce();
@@ -1379,6 +1408,72 @@ export class TN5250Parser {
       if (current.length <= 0) current.length = 1;
     }
 
+    // Validate synthetic input fields (from bare SBA+attribute) against
+    // same-row termination. A real 5250 input field is bounded by a closing
+    // attribute byte on the SAME row — in the sorted field list that closing
+    // attribute shows up as the next field at the same row. If the next field
+    // is on a different row, this synthetic field is an unbounded visual
+    // decoration (WRKSPLF separators, underlined headers, fake input boxes on
+    // menus) and must be demoted to protected so it is not rendered or tabbed
+    // into as an input. Real inputs on sign-on, WRKSPLF opt column, menu
+    // command lines, etc. are always bounded and pass this check.
+    // Validate synthetic input fields (from bare SBA+attribute) against two
+    // signals that together distinguish real interactive inputs from visual
+    // decoration runs (coloured title text, separator lines, etc.):
+    //
+    //   (a) same-row termination: a real bare-SBA input field is closed by a
+    //       subsequent attribute byte on the SAME row — in the sorted field
+    //       list that shows up as the next field sharing the same row.
+    //
+    //   (b) empty content: a real input field is awaiting user input, so
+    //       its buffer cells are all spaces. Colour runs on title rows
+    //       contain the actual visible text (letters, punctuation), so any
+    //       non-space cell disqualifies the field as interactive.
+    //
+    // NON_DISPLAY (attribute type 7) needs screen-context handling. Real
+    // password fields appear only on the sign-on screen; on every other
+    // screen IBM i may emit UIM "artifact" NON_DISPLAY fields (e.g. a
+    // wide span on row 1 of the main menu) that are NOT interactive and
+    // must never become tab targets or render as input boxes. We detect
+    // sign-on screens by the "Sign On" title text — if present, keep all
+    // NON_DISPLAY fields as input; otherwise demote them.
+    let onSignOnScreen = false;
+    {
+      const cols = this.screen.cols;
+      for (let r = 0; r < Math.min(3, this.screen.rows); r++) {
+        const line = this.screen.buffer.slice(r * cols, r * cols + cols).join('');
+        if (line.includes('Sign On')) { onSignOnScreen = true; break; }
+      }
+    }
+    const sortedFields = this.screen.fields; // already sorted by position above
+    for (let i = 0; i < sortedFields.length; i++) {
+      const f = sortedFields[i];
+      if (!f.synthetic) continue;
+      if ((f.ffw1 & 0x20) !== 0) continue; // already protected
+      if ((f.rawAttrByte & 0x07) === 0x07) {
+        // NON_DISPLAY: keep on sign-on screens, demote everywhere else.
+        if (!onSignOnScreen) f.ffw1 |= 0x20;
+        continue;
+      }
+
+      // (a) Same-row termination check
+      const next = sortedFields[i + 1];
+      const sameRowTerminated = !!next && next.row === f.row;
+
+      // (b) Empty-content check
+      let empty = true;
+      const start = this.screen.offset(f.row, f.col);
+      const end = Math.min(start + f.length, this.screen.size);
+      for (let k = start; k < end; k++) {
+        const ch = this.screen.buffer[k];
+        if (ch && ch !== ' ' && ch !== '') { empty = false; break; }
+      }
+
+      if (!sameRowTerminated || !empty) {
+        f.ffw1 |= 0x20; // demote to protected
+      }
+    }
+
     // Cursor homing per lib5250 display.c:614-635 (set_cursor_home):
     //   1. If cursor is inside a field (input or protected) — trust it.
     //   2. If cursor is outside all fields, nudge to the first functional
@@ -1404,11 +1499,33 @@ export class TN5250Parser {
       }
     }
 
-    // Deduplicate fields at the same position (keep the last one)
+    // Deduplicate fields at the same position. When an SF (non-synthetic)
+    // field and a synthetic bare-SBA field coincide at the same row+col,
+    // the SF order is authoritative — it carries real FFW and field
+    // length from the host, whereas the synthetic entry is just an
+    // attribute-byte artifact with a guessed length. Dropping the SF in
+    // favor of the synthetic would hide real input fields (e.g. the
+    // 2-char WRKSPLF Opt column is an SF field at (11,1) that the host
+    // also colors with an overlapping synthetic underscored list field).
     const seen = new Map<string, number>();
     for (let i = 0; i < fields.length; i++) {
       const key = `${fields[i].row},${fields[i].col}`;
-      seen.set(key, i);
+      const prevIdx = seen.get(key);
+      if (prevIdx === undefined) {
+        seen.set(key, i);
+        continue;
+      }
+      const prev = fields[prevIdx];
+      const cur = fields[i];
+      // Prefer non-synthetic (SF order) over synthetic (bare-SBA).
+      if (prev.synthetic && !cur.synthetic) {
+        seen.set(key, i);
+      } else if (!prev.synthetic && cur.synthetic) {
+        // keep prev
+      } else {
+        // Both same kind — keep the later one (legacy behaviour).
+        seen.set(key, i);
+      }
     }
     if (seen.size < fields.length) {
       const keep = new Set(seen.values());

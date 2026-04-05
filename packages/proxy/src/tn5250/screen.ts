@@ -50,6 +50,10 @@ export interface FieldDef {
   attribute: number;   // Display attribute (may include SA context)
   rawAttrByte: number; // Raw 0x20–0x3F attribute byte from data stream (0 if none)
   modified: boolean;
+  /** Field synthesized from a bare SBA+attribute byte (no explicit SF order).
+   *  Input-vs-protected inference is heuristic — validated in
+   *  calculateFieldLengths against same-row termination. */
+  synthetic?: boolean;
   /** Part of a continued (multi-line wrapping) field group. Per lib5250 field.h:66-70. */
   continuous?: boolean;
   /** First subfield of a continued field group (FCW 0x8601). */

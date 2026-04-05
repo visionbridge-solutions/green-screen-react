@@ -41,7 +41,7 @@ from .types import (
 )
 from .ws import WsClient, WsEvent
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 __all__ = [
     # Clients

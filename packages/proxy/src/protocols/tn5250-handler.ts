@@ -74,6 +74,78 @@ export class TN5250Handler extends ProtocolHandler {
     this.connection.disconnect();
   }
 
+  /**
+   * Best-effort graceful sign-off. Types `SIGNOFF` on the screen's widest
+   * input field (which is almost always the command line on IBM i menus)
+   * and sends Enter, then waits briefly for the host to tear down the
+   * interactive job. On a bare sign-on screen there is no command line to
+   * type into — callers should only invoke this for authenticated sessions.
+   * Returns true if a SIGNOFF command was sent, false if nothing was done.
+   *
+   * This avoids CPF1220 "device session limit reached" errors caused by
+   * leaving the TN5250 TCP socket to rot: IBM i reaps the device job
+   * almost immediately once it sees the host-side SIGNOFF, whereas a bare
+   * TCP FIN leaves the job hanging until QDEVRCYACN picks it up.
+   */
+  async attemptSignOff(timeoutMs: number = 1500): Promise<boolean> {
+    if (!this.connection.isConnected) return false;
+
+    // Skip if we're still on the sign-on screen (a genuine password
+    // NON_DISPLAY field AND the "Sign On" title text). Typing SIGNOFF
+    // into the User field would just burn another failed-login attempt.
+    // A plain NON_DISPLAY check alone would be fooled by UIM artifact
+    // fields on post-sign-on info screens.
+    const hasPasswordField = this.screen.fields.some(
+      (f) => this.screen.isInputField(f) && this.screen.hasNativeNonDisplay(f),
+    );
+    let hasSignOnTitle = false;
+    if (hasPasswordField) {
+      const rowLen = this.screen.cols;
+      for (let r = 0; r < Math.min(3, this.screen.rows); r++) {
+        const start = r * rowLen;
+        const line = this.screen.buffer.slice(start, start + rowLen).join('');
+        if (line.includes('Sign On')) { hasSignOnTitle = true; break; }
+      }
+    }
+    if (hasPasswordField && hasSignOnTitle) return false;
+
+    // Pick the widest non-password input field — on IBM i menus the
+    // command line is consistently the longest input. Avoids typing
+    // SIGNOFF into a small opt column or into a password field. We do
+    // NOT require the field to have the UNDERSCORE attribute: many IBM i
+    // panels render the command line via a colored/extended attribute
+    // instead of the bare 0x24 byte, so hasNativeUnderscore() would miss
+    // it.
+    const inputs = this.screen.fields.filter(
+      (f) => this.screen.isInputField(f) && !this.screen.hasNativeNonDisplay(f),
+    );
+    if (inputs.length === 0) return false;
+    const target = inputs.reduce((a, b) => (b.length > a.length ? b : a));
+    if (target.length < 7) return false; // "SIGNOFF" is 7 chars
+
+    this.screen.cursorRow = target.row;
+    this.screen.cursorCol = target.col;
+    if (!this.encoder.insertText('SIGNOFF')) return false;
+
+    const enterAid = this.encoder.buildAidResponse('Enter');
+    if (!enterAid) return false;
+
+    // Wait for the host's response to the SIGNOFF command. The host will
+    // either send us back to a sign-on screen or close the TCP connection.
+    // Either way, we've done our part once this resolves or times out.
+    const done = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      const onDisc = () => { clearTimeout(timer); resolve(); };
+      const onChange = () => { clearTimeout(timer); resolve(); };
+      this.connection.once('disconnected', onDisc);
+      this.once('screenChange', onChange);
+    });
+
+    this.connection.sendRaw(enterAid);
+    await done;
+    return true;
+  }
+
   getScreenData(): ScreenData {
     return this.screen.toScreenData();
   }
@@ -91,32 +163,33 @@ export class TN5250Handler extends ProtocolHandler {
     // KEY_TO_AID uses mixed case (Enter, PageUp). Handle both.
     const normalizedKey = this.normalizeKeyName(keyName);
 
-    // Arrow keys: local cursor movement within input fields.
-    // Left/Right: move within current field, stop at field boundaries.
-    // Up/Down: move to previous/next input field.
+    // Arrow keys: move cursor one cell freely on the screen, with wrap at
+    // edges. Matches lib5250 dbuffer.c:591-640 (dbuffer_up/down/left/right)
+    // exactly — arrow keys do NOT care about fields. Typing outside a
+    // non-bypass field is separately inhibited by the encoder.
+    //
+    // This is essential for list screens like WRKSPLF: the host defines a
+    // single Opt input field at the first visible row, and the user arrows
+    // down through the column to the row they want to act on. The cursor
+    // position at Enter-time is what the host uses to know which row.
     if (normalizedKey === 'ArrowLeft' || normalizedKey === 'ArrowRight' ||
         normalizedKey === 'ArrowUp' || normalizedKey === 'ArrowDown') {
-      const field = this.screen.getFieldAtCursor();
-      if (!field || !this.screen.isInputField(field)) return true; // no-op outside input
-
+      const rows = this.screen.rows;
+      const cols = this.screen.cols;
       if (normalizedKey === 'ArrowLeft') {
-        if (this.screen.cursorCol > field.col) {
-          this.screen.cursorCol--;
+        if (--this.screen.cursorCol < 0) {
+          this.screen.cursorCol = cols - 1;
+          if (--this.screen.cursorRow < 0) this.screen.cursorRow = rows - 1;
         }
       } else if (normalizedKey === 'ArrowRight') {
-        // Stop at end of data (last non-space char + 1), not end of field
-        const fieldStart = this.screen.offset(field.row, field.col);
-        let lastData = field.col;
-        for (let i = 0; i < field.length; i++) {
-          if (this.screen.buffer[fieldStart + i] !== ' ') lastData = field.col + i + 1;
+        if (++this.screen.cursorCol >= cols) {
+          this.screen.cursorCol = 0;
+          if (++this.screen.cursorRow >= rows) this.screen.cursorRow = 0;
         }
-        const rightLimit = Math.min(lastData, field.col + field.length - 1);
-        if (this.screen.cursorCol < rightLimit) {
-          this.screen.cursorCol++;
-        }
+      } else if (normalizedKey === 'ArrowUp') {
+        if (--this.screen.cursorRow < 0) this.screen.cursorRow = rows - 1;
       } else {
-        // Up/Down: move to prev/next input field (reuse Tab/Backtab logic)
-        return this.sendKey(normalizedKey === 'ArrowUp' ? 'Backtab' : 'Tab');
+        if (++this.screen.cursorRow >= rows) this.screen.cursorRow = 0;
       }
       return true;
     }
@@ -167,62 +240,38 @@ export class TN5250Handler extends ProtocolHandler {
       return true;
     }
 
-    // Tab/Backtab: move cursor to next/previous input field.
+    // Tab/Backtab: walk the non-bypass field list in spatial order
+    // (per lib5250 display.c:2089 — set_cursor_next_logical_field / prev).
+    // Resequence FCW 0x80xx overrides spatial order: fields with non-zero
+    // resequence come first in resequence order, non-resequenced fields
+    // follow in spatial order.
     //
-    // Keep only fields with a native interactive attribute byte — either
-    // underscored (regular text input) or non-display (password input).
-    // This matches `isVisibleInput()` in screen.ts and excludes UIM framework
-    // artifact fields that are technically non-bypass but carry no visible
-    // interactive attribute (e.g. the selection field at (1,2) on the main
-    // menu produces "Type option number or command" error when navigated
-    // into). Falls back to the last input field if nothing matches.
-    //
-    // IMPORTANT: password fields on IBM i sign-on screens are non-display
-    // input fields by design (attribute byte lower bits = 0x07, so chars
-    // don't echo). Any filter that broadly excludes non-display fields
-    // will skip them on Tab and make sign-on impossible.
-    //
-    // Tab order: if ANY field has a non-zero `resequence` FCW (0x80xx), order
-    // fields by resequence ascending (resequence=0 → spatial), matching the
-    // IBM 5250 Functions Reference cursor progression rules. Otherwise fall
-    // back to pure spatial order. Per lib5250 session.c:1577-1579 (which
-    // stores the FCW but leaves sequencing as a FIXME).
+    // NOTE: lib5250 does NOT filter fields by display attribute — every
+    // non-bypass field is a valid tab target. Our parser's demotion pass
+    // already removes UIM artifact fields (wide NON_DISPLAY on non-sign-on
+    // screens) and decoration fields, so the `isInputField` check alone
+    // is sufficient here.
     if (normalizedKey === 'Tab' || normalizedKey === 'Backtab') {
-      const allInputs = this.screen.fields.filter(f => this.screen.isInputField(f));
-      if (allInputs.length === 0) return false;
+      const inputFields = this.screen.fields.filter(f => this.screen.isInputField(f));
+      if (inputFields.length === 0) return false;
 
-      // Determine ordering: resequence-aware if any field declares it.
-      const hasResequence = allInputs.some(f => f.resequence && f.resequence > 0);
-      const orderOf = (f: typeof allInputs[number]): number => {
+      const hasResequence = inputFields.some(f => f.resequence && f.resequence > 0);
+      const orderOf = (f: FieldDef): number => {
         if (hasResequence) {
-          // Resequenced fields come first in FCW order; non-resequenced
-          // fields sort after them in spatial order. Spatial offset is
-          // added as a tiebreaker within the same resequence value.
           const base = f.resequence && f.resequence > 0 ? f.resequence : 10000;
           return base * 1_000_000 + this.screen.offset(f.row, f.col);
         }
         return this.screen.offset(f.row, f.col);
       };
-      allInputs.sort((a, b) => orderOf(a) - orderOf(b));
+      inputFields.sort((a, b) => orderOf(a) - orderOf(b));
 
-      // Keep fields that have a native underscore OR native non-display raw
-      // attribute byte — both are legitimate interactive targets. Drops
-      // UIM artifacts that have neither attribute set.
-      const functional = allInputs.filter(f =>
-        this.screen.hasNativeUnderscore(f) || this.screen.hasNativeNonDisplay(f)
-      );
-      const inputFields = functional.length > 0 ? functional
-        : [allInputs[allInputs.length - 1]];
-
-      // Find current field's index in the ordered list so we walk the
-      // resequenced chain even if the cursor isn't at an exact field start.
       const cursorPos = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
       const curIdx = inputFields.findIndex(f => {
         const start = this.screen.offset(f.row, f.col);
         return cursorPos >= start && cursorPos < start + f.length;
       });
 
-      let target: typeof inputFields[number];
+      let target: FieldDef;
       if (normalizedKey === 'Tab') {
         target = curIdx >= 0 && curIdx + 1 < inputFields.length
           ? inputFields[curIdx + 1]
@@ -424,15 +473,63 @@ export class TN5250Handler extends ProtocolHandler {
   /**
    * Full auto-sign-in flow: wait for sign-in fields, fill credentials,
    * submit, wait for confirmation screen, and restore field values.
-   * Returns the final screen data, or null if sign-in fields weren't found.
+   * Returns { screen, authenticated } — `authenticated` is true only if
+   * the host accepted the credentials (no longer on the sign-on screen).
+   * Returns null if the sign-on fields weren't found at all.
    */
-  async performAutoSignIn(username: string, password: string): Promise<ScreenData | null> {
+  async performAutoSignIn(
+    username: string,
+    password: string,
+  ): Promise<{ screen: ScreenData; authenticated: boolean } | null> {
     await this.waitForScreenWithFields(2, 5000);
     const ok = this.autoSignIn(username, password);
     if (!ok) return null;
     await this.waitForScreen(10000);
     this.restoreFields();
-    return this.getScreenData();
+    let screen = this.getScreenData();
+
+    // Success check: the sign-on screen always has both the "Sign On"
+    // title row AND a NON_DISPLAY password input field. If either is
+    // missing, we've moved past it. A plain NON_DISPLAY field check alone
+    // would mis-flag UIM artifact fields (e.g. the 1-row NON_DISPLAY span
+    // at (1,2) on many post-sign-on screens).
+    const isSignOnScreen = (s: ScreenData) =>
+      (s.fields || []).some((f) => f.is_input && f.is_non_display)
+      && (s.content || '').includes('Sign On');
+
+    if (isSignOnScreen(screen)) {
+      return { screen, authenticated: false };
+    }
+
+    // Auto-dismiss post-sign-on confirmation screens ("Sign-on
+    // Information" / "Display Messages" / "Output queue waiting" / etc.)
+    // until we reach a screen that exposes a usable command line — an
+    // underscored input field wide enough for typical commands. This
+    // guarantees that a subsequent gracefulDestroy() can type SIGNOFF and
+    // actually terminate the interactive job, instead of leaving the
+    // device hanging until QDEVRCYACN reaps it (which on LMTDEVSSN=*YES
+    // user profiles counts against the quota → CPF1220 on next login).
+    const hasCommandLine = (s: ScreenData) =>
+      (s.fields || []).some(
+        (f) => f.is_input && !f.is_non_display && (f.length || 0) >= 20,
+      );
+    for (let attempt = 0; attempt < 4 && !hasCommandLine(screen); attempt++) {
+      const enterAid = this.encoder.buildAidResponse('Enter');
+      if (!enterAid) break;
+      this.connection.sendRaw(enterAid);
+      await this.waitForScreen(5000);
+      const next = this.getScreenData();
+      // Bail out if the screen didn't change — we're stuck (likely an
+      // error message waiting for Reset, or a prompt we don't know how to
+      // answer). Don't press Enter into an unknown state.
+      if ((next.content || '') === (screen.content || '')) break;
+      screen = next;
+      if (isSignOnScreen(screen)) {
+        return { screen, authenticated: false };
+      }
+    }
+
+    return { screen, authenticated: true };
   }
 
   /** Wait for the next screenChange event (or timeout with current screen). */
@@ -471,49 +568,21 @@ export class TN5250Handler extends ProtocolHandler {
   }
 
   /**
-   * Set cursor position (for click-to-position). Validates the target is
-   * inside an input field; if not, finds the nearest input field.
-   * Returns true if the cursor was repositioned.
+   * Set cursor position (for click-to-position). Moves the cursor freely
+   * to the requested cell, matching lib5250 dbuffer.c:485-497 behaviour —
+   * no field snapping. Typing at a non-field cell is separately inhibited
+   * by the encoder. Returns true always (the click landed somewhere).
+   *
+   * This is required for list screens like WRKSPLF: the user must be able
+   * to click on any row's Opt column, even though only one SF input field
+   * covers the entire list area.
    */
   setCursor(row: number, col: number): boolean {
-    // Clamp to screen bounds
     row = Math.max(0, Math.min(row, this.screen.rows - 1));
     col = Math.max(0, Math.min(col, this.screen.cols - 1));
-
-    // Check if target is directly in an input field
-    const field = this.screen.getFieldAt(row, col);
-    if (field && this.screen.isInputField(field)) {
-      this.screen.cursorRow = row;
-      this.screen.cursorCol = col;
-      return true;
-    }
-
-    // Find nearest input field (prefer same row, then closest overall)
-    const inputFields = this.screen.fields.filter(f => this.screen.isInputField(f) && this.screen.hasNativeUnderscore(f));
-    if (inputFields.length === 0) return false;
-
-    const targetPos = this.screen.offset(row, col);
-    let bestField: FieldDef | null = null;
-    let bestDist = Infinity;
-
-    for (const f of inputFields) {
-      const fStart = this.screen.offset(f.row, f.col);
-      const fEnd = fStart + f.length - 1;
-      // Distance: 0 if inside, else distance to nearest edge
-      const dist = targetPos < fStart ? fStart - targetPos
-        : targetPos > fEnd ? targetPos - fEnd : 0;
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestField = f;
-      }
-    }
-
-    if (bestField) {
-      this.screen.cursorRow = bestField.row;
-      this.screen.cursorCol = bestField.col;
-      return true;
-    }
-    return false;
+    this.screen.cursorRow = row;
+    this.screen.cursorCol = col;
+    return true;
   }
 
   sendRaw(data: Buffer): void {
@@ -526,6 +595,7 @@ export class TN5250Handler extends ProtocolHandler {
   }
 
   private onRecord(record: Buffer): void {
+    const klBefore = this.screen.keyboardLocked;
     const modified = this.parser.parseRecord(record);
 
     // Send query reply if host sent a 5250 Query WSF
@@ -545,7 +615,17 @@ export class TN5250Handler extends ProtocolHandler {
         this.screen.synthesizeWindow();
       }
 
+      if (process.env.GS_DIAG_KL === '1') {
+        const cmdBytes = Array.from(record.slice(0, Math.min(12, record.length)))
+          .map((b) => b.toString(16).padStart(2, '0')).join(' ');
+        console.log(
+          `[KL] kl: ${klBefore} -> ${this.screen.keyboardLocked}  recLen=${record.length}  head=${cmdBytes}`,
+        );
+      }
+
       this.emit('screenChange', this.screen.toScreenData());
+    } else if (process.env.GS_DIAG_KL === '1') {
+      console.log(`[KL] record NOT modified  recLen=${record.length}  kl=${this.screen.keyboardLocked}`);
     }
   }
 }

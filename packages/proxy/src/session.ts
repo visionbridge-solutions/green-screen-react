@@ -43,6 +43,11 @@ export class Session extends EventEmitter {
       this._status = { connected: false, status: 'error', protocol: this.protocol, host: this._host, error: err.message };
       this.emit('statusChange', this._status);
       sessionLifecycle.emit('session.lost', this.id, this._status);
+      // Close the upstream TCP socket on unrecoverable protocol errors.
+      // Without this, a parser exception would leak the half-open 5250
+      // session on the host until the 5-min idle timeout — and on IBM i
+      // with LMTDEVSSN=*YES that counts against the user's session quota.
+      try { this.handler.disconnect(); } catch { /* ignore */ }
     });
   }
 
@@ -182,6 +187,29 @@ export class Session extends EventEmitter {
     this.handler.destroy();
     this.removeAllListeners();
   }
+
+  /**
+   * Graceful teardown for user-initiated disconnects. When the session is
+   * authenticated and the protocol supports SIGNOFF (TN5250), type SIGNOFF
+   * into the command line and wait briefly for the host to end the
+   * interactive job before dropping the TCP socket. Falls back to a plain
+   * destroy() for non-authenticated sessions and other protocols. Callers
+   * MUST still call destroySession() after awaiting this method — the
+   * store entry is not removed here.
+   */
+  async gracefulDestroy(timeoutMs: number = 1500): Promise<void> {
+    this.stopIdleTimer();
+    const isAuth = this._status.status === 'authenticated';
+    if (isAuth && typeof (this.handler as any).attemptSignOff === 'function') {
+      try {
+        await (this.handler as any).attemptSignOff(timeoutMs);
+      } catch {
+        // best-effort — fall through to hard disconnect
+      }
+    }
+    this.handler.destroy();
+    this.removeAllListeners();
+  }
 }
 
 // Session manager — delegates to the active SessionStore (default
@@ -203,6 +231,22 @@ export function destroySession(id: string): void {
   const session = store.get(id);
   if (session) {
     session.destroy();
+    store.delete(id);
+  }
+}
+
+/**
+ * User-initiated graceful disconnect — tries to sign off at the host
+ * before closing the TCP socket, then removes the store entry. Used by
+ * the REST /disconnect endpoint and the WebSocket 'disconnect' message.
+ */
+export async function gracefullyDestroySession(id: string, timeoutMs: number = 1500): Promise<void> {
+  const store = getSessionStore();
+  const session = store.get(id);
+  if (!session) return;
+  try {
+    await session.gracefulDestroy(timeoutMs);
+  } finally {
     store.delete(id);
   }
 }

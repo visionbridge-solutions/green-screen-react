@@ -27,6 +27,7 @@ export class WebSocketAdapter implements TerminalAdapter {
   private pendingScreenResolver: ((value: ScreenData | null) => void) | null = null;
   private pendingConnectResolver: ((result: SendResult) => void) | null = null;
   private pendingMdtResolver: ((fields: FieldValue[]) => void) | null = null;
+  private disconnectAckResolver: (() => void) | null = null;
   private connectingPromise: Promise<void> | null = null;
   private screenListeners: Set<(screen: ScreenData) => void> = new Set();
   private statusListeners: Set<(status: ConnectionStatus) => void> = new Set();
@@ -191,7 +192,22 @@ export class WebSocketAdapter implements TerminalAdapter {
   }
 
   async disconnect(): Promise<SendResult> {
+    // Wait for the server to ack the disconnect before closing the socket.
+    // The server's handler sends SIGNOFF to the host and then replies with
+    // { type: 'disconnected' } — closing the WS earlier would race against
+    // the server teardown and orphan the session on the proxy (and on the
+    // host, for IBM i with LMTDEVSSN=*YES this triggers CPF1220 on the
+    // next login).
+    const acked = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 3000); // hard cap
+      this.disconnectAckResolver = () => { clearTimeout(timer); resolve(); };
+    });
+
     this.wsSend({ type: 'disconnect' });
+    try { await acked; } finally {
+      this.disconnectAckResolver = null;
+    }
+
     this.status = { connected: false, status: 'disconnected' };
     this._sessionId = null;
     if (this.ws) {
@@ -301,6 +317,16 @@ export class WebSocketAdapter implements TerminalAdapter {
           const resolver = this.pendingConnectResolver;
           this.pendingConnectResolver = null;
           resolver({ success: true });
+        }
+        break;
+
+      case 'disconnected':
+        // Server ack for our disconnect request — SIGNOFF has been sent
+        // (or attempted) and the session has been destroyed server-side.
+        if (this.disconnectAckResolver) {
+          const resolver = this.disconnectAckResolver;
+          this.disconnectAckResolver = null;
+          resolver();
         }
         break;
 

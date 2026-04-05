@@ -66,9 +66,15 @@ export class SessionController {
 
     // Auto-sign-in if credentials provided and handler supports it
     if (username && password && this.handler instanceof TN5250Handler) {
-      const screen = await this.handler.performAutoSignIn(username, password);
-      if (screen) {
-        this.send({ type: 'screen', data: screen });
+      const result = await this.handler.performAutoSignIn(username, password);
+      if (result) {
+        this.send({ type: 'screen', data: result.screen });
+        if (result.authenticated) {
+          // Flip status so subsequent graceful-disconnect attempts will
+          // try a SIGNOFF. Failed sign-in (still on sign-on screen with
+          // CPF error) leaves status as 'connected'.
+          this.send({ type: 'status', data: { connected: true, status: 'authenticated', protocol, host, username } });
+        }
       }
     } else {
       const screen = await this.waitForScreen(5000);
@@ -162,6 +168,23 @@ export class SessionController {
     }
     this.connected = false;
     this.send({ type: 'status', data: { connected: false, status: 'disconnected' } });
+  }
+
+  /**
+   * User-initiated graceful disconnect. If the protocol supports it
+   * (TN5250), types SIGNOFF on the command line and waits briefly for the
+   * host to end the interactive job before dropping the TCP socket. Avoids
+   * CPF1220 "device session limit" on IBM i with LMTDEVSSN=*YES.
+   */
+  async handleGracefulDisconnect(timeoutMs: number = 1500): Promise<void> {
+    if (this.handler && typeof (this.handler as any).attemptSignOff === 'function') {
+      try {
+        await (this.handler as any).attemptSignOff(timeoutMs);
+      } catch {
+        // best-effort
+      }
+    }
+    this.handleDisconnect();
   }
 
   getScreenData(): ScreenData | null {

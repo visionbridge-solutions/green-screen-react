@@ -1,6 +1,42 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { TerminalProtocol, ConnectConfig } from '../adapters/types';
 import { TerminalIcon, AlertTriangleIcon, RefreshIcon } from './Icons';
+
+/**
+ * Persist non-secret sign-in fields (host, port, protocol, terminal type,
+ * username) to localStorage so returning users don't retype them. The
+ * password is intentionally excluded and must be re-entered each session.
+ */
+const STORAGE_KEY = 'green-screen:inline-signin';
+
+interface StoredSignIn {
+  host?: string;
+  port?: string;
+  protocol?: TerminalProtocol;
+  terminalType?: string;
+  username?: string;
+}
+
+function loadStored(): StoredSignIn {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStored(value: StoredSignIn): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // localStorage unavailable (private mode, quota) — silently ignore
+  }
+}
 
 const PROTOCOL_OPTIONS: { value: TerminalProtocol; label: string }[] = [
   { value: 'tn5250', label: 'TN5250 (IBM i)' },
@@ -31,12 +67,24 @@ export interface InlineSignInProps {
 }
 
 export function InlineSignIn({ defaultProtocol, loading: externalLoading, error, onConnect }: InlineSignInProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('');
-  const [selectedProtocol, setSelectedProtocol] = useState<TerminalProtocol>(defaultProtocol);
-  const [terminalType, setTerminalType] = useState('');
-  const [username, setUsername] = useState('');
+  const stored = loadStored();
+  const [host, setHost] = useState(stored.host ?? '');
+  const [port, setPort] = useState(stored.port ?? '');
+  const [selectedProtocol, setSelectedProtocol] = useState<TerminalProtocol>(stored.protocol ?? defaultProtocol);
+  const [terminalType, setTerminalType] = useState(stored.terminalType ?? '');
+  const [username, setUsername] = useState(stored.username ?? '');
   const [password, setPassword] = useState('');
+
+  // Persist non-secret fields on change. Password is never written.
+  useEffect(() => {
+    saveStored({
+      host,
+      port,
+      protocol: selectedProtocol,
+      terminalType,
+      username,
+    });
+  }, [host, port, selectedProtocol, terminalType, username]);
 
   const termTypeOptions = TERMINAL_TYPE_OPTIONS[selectedProtocol];
   const [submitted, setSubmitted] = useState(false);
