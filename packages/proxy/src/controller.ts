@@ -30,6 +30,8 @@ export class SessionController {
     password?: string;
     sessionId: string;
     terminalType?: string;
+    /** EBCDIC code page override (e.g. 'cp290' for Japanese Katakana). */
+    codePage?: 'cp37' | 'cp290';
   }): Promise<ProtocolHandler> {
     if (this.handler) {
       this.handler.destroy();
@@ -37,7 +39,7 @@ export class SessionController {
       this.connected = false;
     }
 
-    const { host, port = 23, protocol = 'tn5250', username, password, sessionId, terminalType } = opts;
+    const { host, port = 23, protocol = 'tn5250', username, password, sessionId, terminalType, codePage } = opts;
 
     this.handler = createProtocolHandler(protocol);
     this.send({ type: 'status', data: { connected: false, status: 'connecting', protocol, host } });
@@ -55,7 +57,10 @@ export class SessionController {
       this.send({ type: 'status', data: { connected: false, status: 'error', protocol, host, error: err.message } });
     });
 
-    await this.handler.connect(host, port, terminalType ? { terminalType } : undefined);
+    const connectOpts = (terminalType || codePage)
+      ? { ...(terminalType ? { terminalType } : {}), ...(codePage ? { codePage } : {}) }
+      : undefined;
+    await this.handler.connect(host, port, connectOpts);
     this.connected = true;
     this.send({ type: 'status', data: { connected: true, status: 'connected', protocol, host } });
 
@@ -146,6 +151,15 @@ export class SessionController {
 
   getScreenData(): ScreenData | null {
     return this.handler?.getScreenData() ?? null;
+  }
+
+  handleReadMdt(modifiedOnly: boolean): void {
+    if (!this.handler || !this.connected) {
+      this.send({ type: 'error', message: 'Not connected' });
+      return;
+    }
+    const fields = this.handler.readFieldValues(modifiedOnly);
+    this.send({ type: 'mdt', data: { modifiedOnly, fields } });
   }
 
   private waitForScreen(timeoutMs: number): Promise<ScreenData> {

@@ -2,7 +2,8 @@ import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { ProtocolHandler, createProtocolHandler } from './protocols/index.js';
 import type { ProtocolType, ProtocolOptions, ScreenData } from './protocols/index.js';
-import type { ConnectionStatus } from 'green-screen-types';
+import type { ConnectionStatus, FieldValue } from 'green-screen-types';
+import { getSessionStore, sessionLifecycle } from './session-store.js';
 
 export class Session extends EventEmitter {
   readonly id: string;
@@ -36,10 +37,12 @@ export class Session extends EventEmitter {
       this._status = { connected: false, status: 'disconnected', protocol: this.protocol, host: this._host };
       this.stopIdleTimer();
       this.emit('statusChange', this._status);
+      sessionLifecycle.emit('session.lost', this.id, this._status);
     });
     this.handler.on('error', (err: Error) => {
       this._status = { connected: false, status: 'error', protocol: this.protocol, host: this._host, error: err.message };
       this.emit('statusChange', this._status);
+      sessionLifecycle.emit('session.lost', this.id, this._status);
     });
   }
 
@@ -123,6 +126,19 @@ export class Session extends EventEmitter {
     return this.handler.getScreenData();
   }
 
+  /** Read input field values from the current screen.
+   *  @param modifiedOnly — when true (default), only fields with MDT bit set. */
+  readFieldValues(modifiedOnly: boolean = true): FieldValue[] {
+    this.touch();
+    return this.handler.readFieldValues(modifiedOnly);
+  }
+
+  /** Wait until the next screen has at least `minFields` input fields (or timeout). */
+  waitForScreenWithFields(minFields: number, timeoutMs: number): Promise<ScreenData> {
+    this.touch();
+    return this.handler.waitForScreenWithFields(minFields, timeoutMs);
+  }
+
   /** Wait for the next screenChange event, or return current screen after timeout */
   waitForScreen(timeoutMs: number): Promise<ScreenData> {
     return new Promise((resolve) => {
@@ -168,34 +184,37 @@ export class Session extends EventEmitter {
   }
 }
 
-// Session manager
-const sessions = new Map<string, Session>();
+// Session manager — delegates to the active SessionStore (default
+// in-memory). Integrators can swap the store via setSessionStore() before
+// any routes/websockets are mounted.
 
 export function createSession(protocol: ProtocolType = 'tn5250'): Session {
   const session = new Session(protocol);
-  sessions.set(session.id, session);
+  getSessionStore().set(session.id, session);
   return session;
 }
 
 export function getSession(id: string): Session | undefined {
-  return sessions.get(id);
+  return getSessionStore().get(id);
 }
 
 export function destroySession(id: string): void {
-  const session = sessions.get(id);
+  const store = getSessionStore();
+  const session = store.get(id);
   if (session) {
     session.destroy();
-    sessions.delete(id);
+    store.delete(id);
   }
 }
 
 export function getDefaultSession(): Session | undefined {
-  if (sessions.size === 1) {
-    return sessions.values().next().value as Session;
+  const store = getSessionStore();
+  if (store.size() === 1) {
+    return store.values().next().value as Session;
   }
   return undefined;
 }
 
-export function getAllSessions(): Map<string, Session> {
-  return sessions;
+export function getAllSessions(): Session[] {
+  return Array.from(getSessionStore().values());
 }

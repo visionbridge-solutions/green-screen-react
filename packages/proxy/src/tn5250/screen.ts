@@ -1,9 +1,30 @@
 import { createHash } from 'crypto';
 import { SCREEN } from './constants.js';
+import type { EbcdicCodePage } from './ebcdic.js';
+import type { ScreenData, Field, CellExtAttr } from 'green-screen-types';
+
+/**
+ * Per-cell extended attribute set from WEA (Write Extended Attribute, 0x12)
+ * orders. Each component is optional and applies on top of the base field
+ * attribute when rendering. 0 means "inherit from field attribute".
+ *
+ * Per 5250 Functions Reference, WEA types:
+ *   0x01 — extended color (0x00..0x07: green/blue/red/pink/turquoise/yellow/white)
+ *   0x02 — extended highlight (underscore/reverse/blink/column-sep)
+ *   0x03 — character set (CGCS id)
+ *   0x04 — transparency / field outlining
+ */
+export interface ExtAttr {
+  color: number;      // extended color byte (0 = inherit)
+  highlight: number;  // extended highlight byte (0 = inherit)
+  charSet: number;    // character set id (0 = default)
+}
 
 interface SavedScreenState {
   buffer: string[];
   attrBuffer: number[];
+  extAttrBuffer: (ExtAttr | null)[];
+  dbcsCont: boolean[];
   fields: FieldDef[];
   cursorRow: number;
   cursorCol: number;
@@ -29,6 +50,53 @@ export interface FieldDef {
   attribute: number;   // Display attribute (may include SA context)
   rawAttrByte: number; // Raw 0x20–0x3F attribute byte from data stream (0 if none)
   modified: boolean;
+  /** Part of a continued (multi-line wrapping) field group. Per lib5250 field.h:66-70. */
+  continuous?: boolean;
+  /** First subfield of a continued field group (FCW 0x8601). */
+  continuedFirst?: boolean;
+  /** Middle subfield of a continued field group (FCW 0x8603). */
+  continuedMiddle?: boolean;
+  /** Last subfield of a continued field group (FCW 0x8602). */
+  continuedLast?: boolean;
+  /** Word-wrap enabled (FCW 0x8680). */
+  wordwrap?: boolean;
+
+  // --- FCW metadata (per lib5250 session.c:1577-1661) ---
+
+  /** Resequence number (FCW 0x80xx) — non-zero means tab order follows this index. */
+  resequence?: number;
+  /** Cursor progression id (FCW 0x88xx) — alternate cursor progression target. */
+  progressionId?: number;
+  /** Highlight-on-entry attribute (FCW 0x89xx) — attribute byte applied when
+   *  the cursor enters this field; reverts on exit. */
+  highlightEntryAttr?: number;
+  /** Transparency mode (FCW 0x84xx) — send bytes without EBCDIC translation. */
+  transparency?: number;
+  /** Pointer AID (FCW 0x8Axx) — AID byte sent on mouse click inside this field. */
+  pointerAid?: number;
+  /** Forward-edge trigger (FCW 0x8501) — auto-enter when cursor crosses right edge. */
+  forwardEdge?: boolean;
+  /** Self-check MOD10 validation required (FCW 0xB1A0). */
+  selfCheckMod10?: boolean;
+  /** Self-check MOD11 validation required (FCW 0xB140). */
+  selfCheckMod11?: boolean;
+
+  // --- Ideographic / DBCS FCWs (per lib5250 session.c:1597-1611) ---
+
+  /** Ideographic-only input (FCW 0x8200) — DBCS characters only. */
+  ideographicOnly?: boolean;
+  /** Ideographic data type (FCW 0x8220) — DBCS data field. */
+  ideographicData?: boolean;
+  /** Ideographic either (FCW 0x8240) — DBCS or SBCS. */
+  ideographicEither?: boolean;
+  /** Ideographic open (FCW 0x8280 / 0x82C0) — DBCS with shift-in/out markers. */
+  ideographicOpen?: boolean;
+
+  // --- Peripheral input (not user-visible but preserved for completeness) ---
+  magstripe?: boolean;
+  lightpen?: boolean;
+  magandlight?: boolean;
+  lightandattn?: boolean;
 }
 
 export interface SelectionChoice {
@@ -45,6 +113,19 @@ export interface SelectionFieldDef {
   choices: SelectionChoice[];
 }
 
+/**
+ * Scrollbar defined by a WDSF Define Scrollbar (0x53) structured field.
+ * Per lib5250 scrollbar.h / session.c:3362-3451.
+ */
+export interface ScrollbarDef {
+  row: number;        // 1-based screen row (per lib5250 convention)
+  col: number;        // 1-based screen col
+  direction: 0 | 1;   // 0 = vertical, 1 = horizontal
+  rowscols: number;   // total rows/columns scrollable
+  sliderpos: number;  // current slider position
+  size: number;       // scrollbar size
+}
+
 export class ScreenBuffer {
   rows: number;
   cols: number;
@@ -52,6 +133,19 @@ export class ScreenBuffer {
   buffer: string[];
   /** Attribute buffer (display attribute per cell) */
   attrBuffer: number[];
+  /**
+   * Extended attribute buffer (per-cell, nullable). Populated from WEA
+   * orders — sparse/null when no extended attributes are set for a cell.
+   */
+  extAttrBuffer: (ExtAttr | null)[];
+  /**
+   * DBCS continuation marker: cells that hold the second half of a
+   * double-byte Kanji character. The first cell holds the rendered glyph;
+   * the second cell is rendered as empty but reserved for layout.
+   */
+  dbcsCont: boolean[];
+  /** EBCDIC single-byte code page used to decode/encode character data. */
+  codePage: EbcdicCodePage = 'cp37';
   fields: FieldDef[] = [];
   cursorRow: number = 0;
   cursorCol: number = 0;
@@ -71,6 +165,29 @@ export class ScreenBuffer {
   windowList: WindowDef[] = [];
   /** Selection fields parsed from WDSF DEFINE_SELECTION_FIELD */
   selectionFields: SelectionFieldDef[] = [];
+  /** Scrollbars parsed from WDSF DEFINE_SCROLL_BAR */
+  scrollbarList: ScrollbarDef[] = [];
+  /**
+   * Start-of-Header data bytes from the last SOH order (per lib5250
+   * dbuffer.h:66-67). Byte 3 (1-based) specifies the error message row.
+   * Kept here so encoder/display can query the configured message line.
+   */
+  headerData: number[] = [];
+  /**
+   * Saved contents of the message line row, captured before
+   * WRITE_ERROR_CODE painted an error message onto it. Restored on Reset
+   * (when the INHIBIT indicator clears) per lib5250 display.c:1861-1876.
+   */
+  savedMsgLine: string[] | null = null;
+  /** Row (0-based) where savedMsgLine was captured from. */
+  savedMsgLineRow: number = -1;
+  /**
+   * Current Read command opcode — set when the host sends a Read command
+   * (READ_INPUT_FIELDS, READ_MDT_FIELDS, READ_MDT_FIELDS_ALT, READ_IMMEDIATE,
+   * READ_IMMEDIATE_ALT). Cleared to 0 when the client replies with an AID key.
+   * Per lib5250 session.c:2353, session.c:381-433.
+   */
+  readOpcode: number = 0;
 
   constructor(rows = SCREEN.ROWS_24, cols = SCREEN.COLS_80) {
     this.rows = rows;
@@ -78,6 +195,8 @@ export class ScreenBuffer {
     const size = rows * cols;
     this.buffer = new Array(size).fill(' ');
     this.attrBuffer = new Array(size).fill(0x20); // normal
+    this.extAttrBuffer = new Array(size).fill(null);
+    this.dbcsCont = new Array(size).fill(false);
   }
 
   get size(): number {
@@ -91,6 +210,8 @@ export class ScreenBuffer {
     const size = rows * cols;
     this.buffer = new Array(size).fill(' ');
     this.attrBuffer = new Array(size).fill(0x20);
+    this.extAttrBuffer = new Array(size).fill(null);
+    this.dbcsCont = new Array(size).fill(false);
     this.fields = [];
     this.cursorRow = 0;
     this.cursorCol = 0;
@@ -145,10 +266,19 @@ export class ScreenBuffer {
     }
   }
 
+  /** Set (or clear) the extended attribute set at a linear address. */
+  setExtAttrAt(addr: number, ext: ExtAttr | null): void {
+    if (addr >= 0 && addr < this.size) {
+      this.extAttrBuffer[addr] = ext;
+    }
+  }
+
   /** Clear the entire screen */
   clear(): void {
     this.buffer.fill(' ');
     this.attrBuffer.fill(0x20);
+    this.extAttrBuffer.fill(null);
+    this.dbcsCont.fill(false);
     this.fields = [];
     this.selectionFields = [];
     this.cursorRow = 0;
@@ -182,6 +312,27 @@ export class ScreenBuffer {
     const start = this.offset(field.row, field.col);
     for (let i = 0; i < field.length; i++) {
       this.buffer[start + i] = i < value.length ? value[i] : ' ';
+    }
+    this.setFieldMdt(field);
+  }
+
+  /**
+   * Mark a field's MDT bit. For continued subfields, propagates to the
+   * "first" subfield of the group per lib5250 field.c:458-481.
+   * Call this instead of `field.modified = true` directly.
+   */
+  setFieldMdt(field: FieldDef): void {
+    if (field.continuous && !field.continuedFirst) {
+      // Walk backward through the fields list to find the "first" subfield
+      const idx = this.fields.indexOf(field);
+      for (let i = idx - 1; i >= 0; i--) {
+        const prev = this.fields[i];
+        if (!prev.continuous) break;
+        if (prev.continuedFirst) {
+          prev.modified = true;
+          return;
+        }
+      }
     }
     field.modified = true;
   }
@@ -221,6 +372,41 @@ export class ScreenBuffer {
   /** Whether a field is non-display (password) */
   isNonDisplay(field: FieldDef): boolean {
     return field.attribute === 0x27;
+  }
+
+  /**
+   * Determine which row to use as the operator error/message line.
+   * Per lib5250 dbuffer.c:934-944: byte 3 of the SOH header (1-based) if
+   * set, otherwise the last row.
+   */
+  msgLineRow(): number {
+    if (this.headerData.length >= 4) {
+      const l = this.headerData[3] - 1;
+      if (l >= 0 && l <= this.rows - 1) return l;
+    }
+    return this.rows - 1;
+  }
+
+  /** Save the current contents of the message line row for later restore. */
+  saveMsgLine(): void {
+    const row = this.msgLineRow();
+    const start = this.offset(row, 0);
+    this.savedMsgLine = this.buffer.slice(start, start + this.cols);
+    this.savedMsgLineRow = row;
+  }
+
+  /**
+   * Restore the previously saved message line (called on Reset when the
+   * keyboard unlocks after an error).
+   */
+  restoreMsgLine(): void {
+    if (!this.savedMsgLine || this.savedMsgLineRow < 0) return;
+    const start = this.offset(this.savedMsgLineRow, 0);
+    for (let i = 0; i < this.cols && i < this.savedMsgLine.length; i++) {
+      this.buffer[start + i] = this.savedMsgLine[i];
+    }
+    this.savedMsgLine = null;
+    this.savedMsgLineRow = -1;
   }
 
   /** Whether a field has the underscore display attribute */
@@ -279,6 +465,8 @@ export class ScreenBuffer {
     this.screenStack.push({
       buffer: [...this.buffer],
       attrBuffer: [...this.attrBuffer],
+      extAttrBuffer: this.extAttrBuffer.map(e => (e ? { ...e } : null)),
+      dbcsCont: [...this.dbcsCont],
       fields: this.fields.map(f => ({ ...f })),
       cursorRow: this.cursorRow,
       cursorCol: this.cursorCol,
@@ -291,6 +479,8 @@ export class ScreenBuffer {
     if (!state) return false;
     this.buffer = state.buffer;
     this.attrBuffer = state.attrBuffer;
+    this.extAttrBuffer = state.extAttrBuffer;
+    this.dbcsCont = state.dbcsCont;
     this.fields = state.fields;
     this.cursorRow = state.cursorRow;
     this.cursorCol = state.cursorCol;
@@ -471,36 +661,41 @@ export class ScreenBuffer {
     }
   }
 
+  /**
+   * Read the current value of input fields on the screen buffer. Used by
+   * the proxy's /read-mdt primitive to give clients a cheap post-write
+   * verification path: instead of diffing the whole screen, the client asks
+   * "what's in the fields I just wrote to?"
+   *
+   * @param modifiedOnly — when true, only fields whose MDT bit is currently
+   *   set are returned. When false, every input field (including unmodified)
+   *   is returned. Protected fields are always excluded.
+   */
+  readFieldValues(modifiedOnly: boolean = true): import('green-screen-types').FieldValue[] {
+    const out: import('green-screen-types').FieldValue[] = [];
+    for (const f of this.fields) {
+      if (!this.isInputField(f)) continue;
+      if (modifiedOnly && !f.modified) continue;
+      let value = '';
+      for (let i = 0; i < f.length; i++) {
+        const c = f.col + i;
+        const r = f.row + Math.floor(c / this.cols);
+        const cc = c % this.cols;
+        value += this.getChar(r, cc);
+      }
+      out.push({
+        row: f.row,
+        col: f.col,
+        length: f.length,
+        value,
+        modified: !!f.modified,
+      });
+    }
+    return out;
+  }
+
   /** Convert screen buffer to the ScreenData format expected by the frontend */
-  toScreenData(): {
-    content: string;
-    cursor_row: number;
-    cursor_col: number;
-    rows: number;
-    cols: number;
-    fields: Array<{
-      row: number;
-      col: number;
-      length: number;
-      is_input: boolean;
-      is_protected: boolean;
-      is_highlighted?: boolean;
-      is_reverse?: boolean;
-      is_underscored?: boolean;
-      is_mandatory?: boolean;
-      color?: 'green' | 'white' | 'red' | 'turquoise' | 'yellow' | 'pink' | 'blue';
-    }>;
-    screen_signature: string;
-    timestamp: string;
-    keyboard_locked?: boolean;
-    message_waiting?: boolean;
-    alarm?: boolean;
-    insert_mode?: boolean;
-    windows?: Array<{ row: number; col: number; height: number; width: number; title?: string; footer?: string }>;
-    selection_fields?: Array<{ row: number; col: number; num_rows: number; num_cols: number; choices: Array<{ text: string; row: number; col: number }> }>;
-    screen_stack_depth?: number;
-    is_popup?: boolean;
-  } {
+  toScreenData(): ScreenData {
     // Build content as newline-separated rows, sanitising control characters
     // and replacing 5250 indicator characters that the host sends without
     // an SA charset switch (common on pub400 and other non-GUI hosts).
@@ -521,34 +716,86 @@ export class ScreenBuffer {
       lines.push(row);
     }
 
-    // Clean up 5250 indicator artifacts in the rendered text:
-    // - â/ê appearing as lone chars before "Bottom"/"More"/"Top" → replace with arrows
-    // - & appearing as isolated chars (field attribute separators) → replace with space
-    // - ( + ê appearing at end of indicator lines → replace with space
+    // Clean up 5250 indicator artifacts in the rendered text. The cleanup
+    // is intentionally scoped to non-newline whitespace (`[ ]+` instead of
+    // `\s+`) so patterns cannot straddle row boundaries — any replacement
+    // that spanned a newline would erase the row boundary and visually
+    // shift downstream content (e.g. row 24 copyright getting pushed
+    // right). The final row-block replacement is length-preserving for the
+    // same reason — the match and the replacement are both 15 chars.
     let content = lines.join('\n');
-    content = content.replace(/â(\s+(Bottom|More))/g, '↓$1');
-    content = content.replace(/â(\s+(Top))/g, '↑$1');
-    content = content.replace(/(\s)ê(\s)/g, '$1 $2');
-    content = content.replace(/(\s)&(\s{2,})/g, '$1 $2');
-    content = content.replace(/\(\s{2,}\+\s+ê/g, '               ');
+    content = content.replace(/â([ ]+(Bottom|More))/g, '↓$1');
+    content = content.replace(/â([ ]+(Top))/g, '↑$1');
+    content = content.replace(/( )ê( )/g, '$1 $2');
+    content = content.replace(/( )&( {2,})/g, '$1 $2');
+    content = content.replace(/\( {2,}\+ +ê/g, (match) => ' '.repeat(match.length));
 
     // Map fields to frontend format
-    const fields = this.fields.map(f => {
+    const fields: Field[] = this.fields.map(f => {
       const color = f.rawAttrByte ? ScreenBuffer.attrColor(f.rawAttrByte) : 'green';
+      // DBCS: any ideographic FCW marks the field as DBCS-accepting.
+      const isDbcs = !!(f.ideographicOnly || f.ideographicData || f.ideographicOpen);
+      // Decode the shift-type (FFW1 lower 3 bits, per lib5250 field.h)
+      const shiftMap: Record<number, Field['shift_type']> = {
+        0x00: 'alpha',
+        0x01: 'alpha_only',
+        0x02: 'numeric_shift',
+        0x03: 'numeric_only',
+        0x04: 'katakana',
+        0x05: 'digits_only',
+        0x06: 'io',
+        0x07: 'signed_num',
+      };
+      const shift_type = this.isInputField(f) ? shiftMap[f.ffw1 & 0x07] : undefined;
+      const monocase = (f.ffw2 & 0x20) !== 0;
+      const isInput = this.isInputField(f);
       return {
         row: f.row,
         col: f.col,
         length: f.length,
-        is_input: this.isInputField(f),
-        is_protected: !this.isInputField(f),
+        is_input: isInput,
+        is_protected: !isInput,
         is_highlighted: this.isHighlighted(f) || undefined,
         is_reverse: this.isReverse(f) || undefined,
         is_underscored: this.isUnderscored(f) || undefined,
         is_non_display: this.isNonDisplay(f) || undefined,
-        is_mandatory: this.isMandatory(f) || undefined,
         color,
+        highlight_entry_attr: f.highlightEntryAttr,
+        resequence: f.resequence,
+        progression_id: f.progressionId,
+        pointer_aid: f.pointerAid,
+        is_dbcs: isDbcs || undefined,
+        is_dbcs_either: f.ideographicEither || undefined,
+        self_check_mod10: f.selfCheckMod10,
+        self_check_mod11: f.selfCheckMod11,
+        shift_type,
+        monocase: monocase || undefined,
+        // MDT bit — only meaningful for input fields; leave undefined on
+        // protected fields to keep the wire payload minimal.
+        modified: isInput && f.modified ? true : undefined,
       };
     });
+
+    // Build sparse extended-attribute map (only cells with non-null entries)
+    let ext_attrs: Record<number, CellExtAttr> | undefined;
+    for (let i = 0; i < this.extAttrBuffer.length; i++) {
+      const e = this.extAttrBuffer[i];
+      if (!e) continue;
+      if (!e.color && !e.highlight && !e.charSet) continue;
+      if (!ext_attrs) ext_attrs = {};
+      const cell: CellExtAttr = {};
+      if (e.color) cell.color = e.color;
+      if (e.highlight) cell.highlight = e.highlight;
+      if (e.charSet) cell.char_set = e.charSet;
+      ext_attrs[i] = cell;
+    }
+
+    // DBCS continuation cells: offsets of the second half of each kanji.
+    const dbcsContList: number[] = [];
+    for (let i = 0; i < this.dbcsCont.length; i++) {
+      if (this.dbcsCont[i]) dbcsContList.push(i);
+    }
+    const dbcs_cont = dbcsContList.length > 0 ? dbcsContList : undefined;
 
     // Generate screen signature
     const hash = createHash('md5').update(content).digest('hex').substring(0, 12);
@@ -598,6 +845,9 @@ export class ScreenBuffer {
       selection_fields,
       screen_stack_depth,
       is_popup,
+      ext_attrs,
+      dbcs_cont,
+      code_page: this.codePage,
     };
   }
 }

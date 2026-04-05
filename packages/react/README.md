@@ -4,6 +4,8 @@ Multi-protocol legacy terminal React component. Connects to **TN5250** (IBM i / 
 
 [**Live Preview**](https://visionbridge-solutions.github.io/green-screen-react/)
 
+> **v1.2.0**: per-field MDT state, `readMdt()` for cheap post-write verification, pluggable session store with `session.lost`/`session.resumed` lifecycle events, lower-level sign-on primitives. See the feature section below. Python integrators can use the new [`green-screen-client`](https://pypi.org/project/green-screen-client/) PyPI package.
+
 ## Install
 
 ```bash
@@ -83,11 +85,63 @@ class MyAdapter implements TerminalAdapter {
   async getStatus() { /* ... */ }
   async sendText(text: string) { /* ... */ }
   async sendKey(key: string) { /* ... */ }
+  async setCursor?(row: number, col: number) { /* ... */ }
+  async readMdt?(modifiedOnly?: boolean) { /* ... */ }  // v1.2.0
   async connect(config?) { /* ... */ }
   async disconnect() { /* ... */ }
   async reconnect() { /* ... */ }
 }
 ```
+
+## v1.2.0 features
+
+### Post-write verification with `readMdt()`
+
+Instead of diffing the entire screen after a batch of writes, ask the proxy which fields actually captured input:
+
+```tsx
+import { WebSocketAdapter } from 'green-screen-react';
+
+const adapter = new WebSocketAdapter({ workerUrl: 'http://localhost:3001' });
+
+// ... after typing into several fields ...
+const modified = await adapter.readMdt();       // only fields with MDT bit set
+const all = await adapter.readMdt(false);       // all input fields
+
+for (const f of modified) {
+  console.log(`row ${f.row} col ${f.col}: "${f.value}"`);
+}
+```
+
+`readMdt` is optional on the `TerminalAdapter` contract — protocols without a per-field modified concept (VT, HP6530) return `[]`.
+
+### Session lifecycle events
+
+`WebSocketAdapter` now exposes hooks for session-level transitions. Use them to prompt reconnect UX or surface a clean "session expired" state without string-matching errors:
+
+```tsx
+const adapter = new WebSocketAdapter({ workerUrl: 'http://localhost:3001' });
+
+adapter.onSessionLost((sessionId, status) => {
+  console.log('lost:', sessionId, status.error);
+  // show "Session expired, click to reconnect" UI
+});
+
+adapter.onSessionResumed((sessionId) => {
+  console.log('reattached:', sessionId);
+});
+```
+
+On page reload, reattach to a session that survived the refresh:
+
+```tsx
+const sessionId = localStorage.getItem('tn5250-session-id');
+if (sessionId) {
+  await adapter.reattach(sessionId);
+}
+```
+
+The proxy keeps the TCP connection alive across WebSocket drops within its idle timeout — `reattach` reconnects the WS and replays the current screen.
 
 ## Props
 
@@ -106,6 +160,9 @@ class MyAdapter implements TerminalAdapter {
 | `bootLoader` | `ReactNode \| false` | default | Custom boot loader |
 | `onSignIn` | `(config) => void` | - | Sign-in callback |
 | `onScreenChange` | `(screen) => void` | - | Screen change callback |
+| `bootLoaderReady` | `boolean` | - | Explicit boot-loader dismissal (overrides default "dismiss on first screen"). |
+| `headerRight` | `ReactNode` | - | Custom content in the header's right slot. |
+| `statusActions` | `ReactNode` | - | Custom buttons rendered after connection status groups (e.g. disconnect button). |
 | `className` | `string` | - | CSS class |
 | `style` | `CSSProperties` | - | Inline styles |
 

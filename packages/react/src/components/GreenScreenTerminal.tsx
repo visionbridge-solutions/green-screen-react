@@ -6,8 +6,29 @@ import { useTerminalScreen, useTerminalInput, useTerminalConnection } from '../h
 import { useTypingAnimation } from '../hooks/useTypingAnimation';
 import { getProtocolProfile } from '../protocols/registry';
 import { TerminalBootLoader as DefaultBootLoader } from './TerminalBootLoader';
-import { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, KeyIcon, MinimizeIcon, HelpIcon } from './Icons';
+import { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, KeyIcon, MinimizeIcon, KeyboardIcon } from './Icons';
 import { InlineSignIn } from './InlineSignIn';
+import { decodeAttrByte, decodeExtColor, decodeExtHighlight, cssVarForColor, mergeExtAttr, extColorIsReverse } from '../utils/attribute';
+import { validateMod10, validateMod11, filterFieldInput } from '../utils/validation';
+
+/**
+ * Map a 5250 AID byte (e.g. from a pointer-AID FCW) back to the key-name
+ * token that `sendKey` understands. Covers Enter, F1-F24, Page Up/Down,
+ * Clear, Help, and Print. Returns null for unknown/unsupported AIDs.
+ */
+function aidByteToKeyName(aid: number): string | null {
+  if (aid === 0xF1) return 'ENTER';
+  if (aid === 0xF3) return 'HELP';
+  if (aid === 0xF4) return 'PAGEUP';
+  if (aid === 0xF5) return 'PAGEDOWN';
+  if (aid === 0xF6) return 'PRINT';
+  if (aid === 0xBD) return 'CLEAR';
+  // F1..F12 → 0x31..0x3C
+  if (aid >= 0x31 && aid <= 0x3C) return `F${aid - 0x30}`;
+  // F13..F24 → 0xB1..0xBC
+  if (aid >= 0xB1 && aid <= 0xBC) return `F${aid - 0xB0 + 12}`;
+  return null;
+}
 
 /* ── No-op adapter (placeholder before connection) ───────────────── */
 
@@ -65,8 +86,6 @@ export interface GreenScreenTerminalProps {
   defaultProtocol?: TerminalProtocol;
   /** Callback when sign-in form is submitted */
   onSignIn?: (config: ConnectConfig) => void;
-  /** Show "press Enter to continue" hint after auto sign-in (for external adapter flows) */
-  autoSignedIn?: boolean;
   /** Disable auto-focus on the terminal after connecting (default false) */
   autoFocusDisabled?: boolean;
 
@@ -88,6 +107,8 @@ export interface GreenScreenTerminalProps {
   onScreenChange?: (screen: ScreenData) => void;
   /** Callback for minimize action (embedded mode) */
   onMinimize?: () => void;
+  /** Show the keyboard-shortcuts button in the header (default true) */
+  showShortcutsButton?: boolean;
 
   /** Additional CSS class name */
   className?: string;
@@ -127,7 +148,6 @@ export function GreenScreenTerminal({
   inlineSignIn = true,
   defaultProtocol: signInDefaultProtocol,
   onSignIn,
-  autoSignedIn,
   autoFocusDisabled = false,
   bootLoader,
   bootLoaderReady,
@@ -137,6 +157,7 @@ export function GreenScreenTerminal({
   onNotification,
   onScreenChange,
   onMinimize,
+  showShortcutsButton = true,
   className,
   style,
 }: GreenScreenTerminalProps) {
@@ -213,13 +234,7 @@ export function GreenScreenTerminal({
   // --- UI State ---
   const [inputText, setInputText] = useState('');
   const [isFocused, setIsFocused] = useState(false);
-  const [showSignInHint, setShowSignInHint] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const prevAutoSignedIn = useRef(false);
-  useEffect(() => {
-    if (autoSignedIn && !prevAutoSignedIn.current) setShowSignInHint(true);
-    prevAutoSignedIn.current = !!autoSignedIn;
-  }, [autoSignedIn]);
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [syncedCursor, setSyncedCursor] = useState<{ row: number; col: number } | null>(null);
@@ -230,7 +245,6 @@ export function GreenScreenTerminal({
     if (prevRawContentRef.current && newContent && newContent !== prevRawContentRef.current) {
       setSyncedCursor(null);
       setInputText('');
-      if (showSignInHint) setShowSignInHint(false);
     }
     prevRawContentRef.current = newContent;
   }, [rawScreenData?.content]);
@@ -292,11 +306,9 @@ export function GreenScreenTerminal({
         const newAdapter = new RestAdapter({ baseUrl: `http://${config.host}${port}` });
         setInternalAdapter(newAdapter);
         await newAdapter.connect(config);
-        if (config.username && config.password) setShowSignInHint(true);
         return;
       }
       await connect(config);
-      if (config.username && config.password) setShowSignInHint(true);
     } catch (err) {
       setSignInError(err instanceof Error ? err.message : String(err));
       setConnecting(false);
@@ -411,6 +423,24 @@ export function GreenScreenTerminal({
     if (clickedRow < 0 || clickedRow >= (screenData.rows || 24) ||
         clickedCol < 0 || clickedCol >= (screenData.cols || 80)) return;
 
+    // Pointer AID (FCW 0x8Axx): if the clicked field declares a pointer AID,
+    // send it as a key press and skip the normal cursor-move. Per IBM 5250
+    // Functions Reference this is the defined "mouse click on field" behavior.
+    const clickedField = screenData.fields.find(f =>
+      f.row === clickedRow && clickedCol >= f.col && clickedCol < f.col + f.length,
+    );
+    const ptrAid = clickedField && (clickedField as any).pointer_aid as number | undefined;
+    if (ptrAid) {
+      // Map AID byte back to a key name. Common cases: 0xF1 ENTER, 0x31-0x3C F1-F12.
+      const keyName = aidByteToKeyName(ptrAid);
+      if (keyName) {
+        // First move the cursor into the field so the host sees the click location
+        setSyncedCursor({ row: clickedRow, col: clickedCol });
+        adapter.setCursor?.(clickedRow, clickedCol).then(() => sendKey(keyName));
+        return;
+      }
+    }
+
     // Send cursor position to proxy (async, fire-and-forget for responsiveness)
     setSyncedCursor({ row: clickedRow, col: clickedCol });
     adapter.setCursor?.(clickedRow, clickedCol).then(r => {
@@ -418,7 +448,7 @@ export function GreenScreenTerminal({
         setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
       }
     });
-  }, [readOnly, screenData, adapter]);
+  }, [readOnly, screenData, adapter, sendKey]);
 
   // --- Field helpers ---
   const getCurrentField = useCallback(() => {
@@ -430,6 +460,39 @@ export function GreenScreenTerminal({
     }
     return null;
   }, [screenData, syncedCursor]);
+
+  /**
+   * Extract the text content of a field from the current screen display.
+   * Reads from `content` using row/col so it reflects both server-committed
+   * data and optimistic edits rendered on the current frame.
+   */
+  const readFieldValue = useCallback((field: Field): string => {
+    if (!screenData?.content) return '';
+    const lines = screenData.content.split('\n');
+    const line = lines[field.row] || '';
+    return line.substring(field.col, field.col + field.length).replace(/\s+$/, '');
+  }, [screenData?.content]);
+
+  /** Client-side self-check validation for fields declaring MOD10/MOD11 FCWs. */
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const runSelfCheck = useCallback((): boolean => {
+    const fields = screenData?.fields || [];
+    for (const f of fields) {
+      if (!f.is_input) continue;
+      const val = readFieldValue(f);
+      if (!val) continue;
+      if ((f as any).self_check_mod10 && !validateMod10(val)) {
+        setValidationError(`Invalid check digit (MOD10) in field at row ${f.row + 1}, col ${f.col + 1}`);
+        return false;
+      }
+      if ((f as any).self_check_mod11 && !validateMod11(val)) {
+        setValidationError(`Invalid check digit (MOD11) in field at row ${f.row + 1}, col ${f.col + 1}`);
+        return false;
+      }
+    }
+    setValidationError(null);
+    return true;
+  }, [screenData?.fields, readFieldValue]);
 
   // --- Keyboard handling ---
   // Characters are sent immediately to the proxy (no client-side buffering).
@@ -462,21 +525,28 @@ export function GreenScreenTerminal({
       PageUp: 'PAGEUP', PageDown: 'PAGEDOWN', Home: 'HOME', End: 'END', Insert: 'INSERT',
     };
 
-    // F-keys
-    if (e.key.startsWith('F') && e.key.length <= 3) {
+    // F-keys. Match the *full* key name against the F1..F24 regex — if we
+    // only tested startsWith('F'), a bare 'F' character would be swallowed
+    // by preventDefault() without ever being sent as text, because the
+    // inner regex would reject it and the handler would fall through with
+    // nothing to dispatch. Making the regex the outer guard lets real
+    // letter keys ('F', 'f', 'F1xyz', etc.) fall through to the text path.
+    if (/^F([1-9]|1[0-9]|2[0-4])$/.test(e.key)) {
       e.preventDefault();
-      const fKey = e.key.toUpperCase();
-      if (/^F([1-9]|1[0-9]|2[0-4])$/.test(fKey)) {
-        const kr = await sendKey(fKey);
-        if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
-        return;
-      }
+      // Self-check any declared MOD10/MOD11 fields before submitting
+      if (!runSelfCheck()) return;
+      const kr = await sendKey(e.key);
+      if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
+      return;
     }
 
-    // Action/navigation keys
+    // Action/navigation keys — self-check on submit-type keys (Enter, PageUp/Down)
     if (keyMap[e.key]) {
       e.preventDefault();
-      const kr = await sendKey(keyMap[e.key]);
+      const k = keyMap[e.key];
+      const isSubmit = k === 'ENTER' || k === 'PAGEUP' || k === 'PAGEDOWN';
+      if (isSubmit && !runSelfCheck()) return;
+      const kr = await sendKey(k);
       if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
     }
   };
@@ -485,20 +555,47 @@ export function GreenScreenTerminal({
     if (readOnly) { e.target.value = ''; return; }
     const newText = e.target.value;
     if (newText.length > inputText.length) {
-      const newChars = newText.substring(inputText.length);
-      // Optimistic: show character immediately at cursor position
-      const curRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
-      const curCol = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
-      const edits: Array<{ row: number; col: number; ch: string }> = [];
-      for (let i = 0; i < newChars.length; i++) {
-        edits.push({ row: curRow, col: curCol + i, ch: newChars[i] });
+      let newChars = newText.substring(inputText.length);
+
+      // 5250 shift-type filtering + monocase auto-uppercase.
+      // If the cursor is inside an input field, apply the field's
+      // character constraints (digits/alpha/numeric/katakana/signed-num)
+      // and uppercase rule before sending to the host. Rejected chars
+      // trigger a short visual bell via setValidationError.
+      const curField = getCurrentField();
+      if (curField && (curField.shift_type || curField.monocase)) {
+        const curColAbs = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
+        const startOffset = Math.max(0, curColAbs - curField.col);
+        const { out, rejected } = filterFieldInput(curField, newChars, startOffset);
+        if (rejected) {
+          const what = curField.shift_type === 'digits_only' || curField.shift_type === 'numeric_only' || curField.shift_type === 'signed_num'
+            ? 'digits only'
+            : curField.shift_type === 'alpha_only'
+              ? 'letters only'
+              : curField.shift_type === 'katakana'
+                ? 'katakana only'
+                : 'character not allowed';
+          setValidationError(`Field accepts ${what}`);
+          setTimeout(() => setValidationError(null), 1500);
+        }
+        newChars = out;
       }
-      setOptimisticEdits(prev => [...prev, ...edits]);
-      setSyncedCursor({ row: curRow, col: curCol + newChars.length });
-      // Send to proxy in background (cursor-only response)
-      sendText(newChars).then(r => {
-        if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
-      });
+
+      if (newChars.length > 0) {
+        // Optimistic: show character immediately at cursor position
+        const curRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
+        const curCol = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
+        const edits: Array<{ row: number; col: number; ch: string }> = [];
+        for (let i = 0; i < newChars.length; i++) {
+          edits.push({ row: curRow, col: curCol + i, ch: newChars[i] });
+        }
+        setOptimisticEdits(prev => [...prev, ...edits]);
+        setSyncedCursor({ row: curRow, col: curCol + newChars.length });
+        // Send to proxy in background (cursor-only response)
+        sendText(newChars).then(r => {
+          if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
+        });
+      }
     }
     setInputText('');
     e.target.value = '';
@@ -532,49 +629,186 @@ export function GreenScreenTerminal({
     return segments.length > 0 ? <>{segments}</> : <>{text}</>;
   }, []);
 
-  const renderRowWithFields = useCallback((line: string, rowIndex: number, fields: Field[]): React.ReactNode => {
+  const renderRowWithFields = useCallback((
+    line: string,
+    rowIndex: number,
+    fields: Field[],
+    cursorRow: number,
+    cursorCol: number,
+  ): React.ReactNode => {
     const inputFields = fields.filter(f => f.row === rowIndex && f.is_input);
     const highlightedFields = fields.filter(f => f.row === rowIndex && f.is_protected && f.is_highlighted);
     const reverseFields = fields.filter(f => f.row === rowIndex && f.is_protected && f.is_reverse);
     const colorFields = fields.filter(f => f.row === rowIndex && f.is_protected && (f as any).color && !f.is_highlighted && !f.is_reverse);
     const allRowFields = [...inputFields, ...highlightedFields, ...reverseFields, ...colorFields];
 
-    if (allRowFields.length === 0) return <span>{line}</span>;
+    const cols = screenData?.cols || profile.defaultCols;
+    const extAttrs = (screenData as any)?.ext_attrs as Record<number, { color?: number; highlight?: number; char_set?: number }> | undefined;
+    const dbcsCont = (screenData as any)?.dbcs_cont as number[] | undefined;
+    const dbcsContSet = dbcsCont && dbcsCont.length > 0 ? new Set(dbcsCont) : null;
+
+    // Has any extended attribute affecting this row?
+    const hasExtOnRow = !!extAttrs && (() => {
+      for (let c = 0; c < cols; c++) {
+        if (extAttrs[rowIndex * cols + c]) return true;
+      }
+      return false;
+    })();
+    const hasDbcsOnRow = !!dbcsContSet && (() => {
+      for (let c = 0; c < cols; c++) {
+        if (dbcsContSet.has(rowIndex * cols + c)) return true;
+      }
+      return false;
+    })();
+
+    if (allRowFields.length === 0 && !hasExtOnRow && !hasDbcsOnRow) return <span>{line}</span>;
 
     const sorted = [...allRowFields].sort((a, b) => a.col - b.col);
     const segs: React.ReactNode[] = [];
     let lastEnd = 0;
-    const cols = screenData?.cols || profile.defaultCols;
+
+    // Render a run of plain text while respecting ext_attrs and DBCS
+    // continuation cells. Splits into per-cell spans only when necessary.
+    const renderPlainRun = (runStart: number, runEnd: number, keyPrefix: string) => {
+      if (runStart >= runEnd) return;
+      if (!hasExtOnRow && !hasDbcsOnRow) {
+        segs.push(<span key={keyPrefix}>{line.substring(runStart, runEnd)}</span>);
+        return;
+      }
+      // Split into runs of cells that share visual state
+      let pos = runStart;
+      while (pos < runEnd) {
+        const addr = rowIndex * cols + pos;
+        const ext = extAttrs?.[addr];
+        const isContCell = dbcsContSet?.has(addr);
+
+        if (isContCell) {
+          // DBCS continuation: the previous cell holds the glyph; this cell
+          // is an empty string in the source but must occupy 1ch to keep
+          // layout. Render as a zero-content full-width spacer.
+          segs.push(
+            <span
+              key={`${keyPrefix}-dc${pos}`}
+              style={{ display: 'inline-block', width: '1ch' }}
+              aria-hidden="true"
+            />,
+          );
+          pos++;
+          continue;
+        }
+
+        if (ext) {
+          const color = ext.color !== undefined ? decodeExtColor(ext.color) : undefined;
+          const colorReverse = ext.color !== undefined && extColorIsReverse(ext.color);
+          const hl = ext.highlight !== undefined ? decodeExtHighlight(ext.highlight) : undefined;
+          const style: React.CSSProperties = {};
+          if (color) style.color = cssVarForColor(color);
+          // Color-byte reverse (0x08..0x0E) swaps fg/bg like highlight reverse
+          if (colorReverse) {
+            style.background = cssVarForColor(color);
+            style.color = '#000';
+          }
+          if (hl?.reverse) { style.background = 'currentColor'; style.color = '#000'; }
+          if (hl?.underscore) style.textDecoration = 'underline';
+          if (hl?.blink) (style as any).animation = 'gs-blink 1s steps(2, start) infinite';
+          segs.push(
+            <span key={`${keyPrefix}-x${pos}`} style={style}>
+              {line[pos]}
+            </span>,
+          );
+          pos++;
+          continue;
+        }
+
+        // Coalesce plain cells until the next ext/cont boundary
+        let runEndPlain = pos + 1;
+        while (runEndPlain < runEnd) {
+          const a = rowIndex * cols + runEndPlain;
+          if (extAttrs?.[a] || dbcsContSet?.has(a)) break;
+          runEndPlain++;
+        }
+        segs.push(
+          <span key={`${keyPrefix}-p${pos}`}>{line.substring(pos, runEndPlain)}</span>,
+        );
+        pos = runEndPlain;
+      }
+    };
 
     sorted.forEach((field, idx) => {
       const fs = field.col;
       const fe = Math.min(field.col + field.length, cols);
-      if (fs > lastEnd) segs.push(<span key={`t${idx}`}>{line.substring(lastEnd, fs)}</span>);
+      if (fs > lastEnd) renderPlainRun(lastEnd, fs, `t${idx}`);
       const fc = line.substring(fs, fe);
 
-      // Resolve color from field's 5250 color attribute
-      const colorVar = (field as any).color
-        ? `var(--gs-${(field as any).color}, var(--gs-green))`
-        : undefined;
+      // Highlight-on-entry: if the cursor is inside this field AND the host
+      // declared a replacement attribute (FCW 0x89), override the base color
+      // and highlight for this render pass.
+      const cursorInField = cursorRow === field.row && cursorCol >= fs && cursorCol < field.col + field.length;
+      const entryAttr = cursorInField && (field as any).highlight_entry_attr !== undefined
+        ? decodeAttrByte((field as any).highlight_entry_attr)
+        : null;
+
+      // Base color from field's 5250 color attribute (or the entry override)
+      const baseColor = entryAttr?.color ?? ((field as any).color as any);
+      const colorVar = baseColor ? cssVarForColor(baseColor) : undefined;
+
+      // Compose inline style, combining base + entry override
+      const fieldStyle: React.CSSProperties = {};
+      if (colorVar) fieldStyle.color = colorVar;
+      if (entryAttr?.reverse) { fieldStyle.background = 'currentColor'; fieldStyle.color = '#000'; }
+      if (entryAttr?.underscore) fieldStyle.textDecoration = 'underline';
+      if (entryAttr?.highIntensity) fieldStyle.fontWeight = 'bold';
+
+      // Non-display (password) fields: render as blank space, not asterisks.
+      // Real 5250 terminals (ACS, Mocha, native) never echo password
+      // characters — the underscore/field attribute shows the input zone,
+      // typed chars stay invisible. Asterisks are an HTML <input
+      // type=password> convention that doesn't belong here.
+      const isPassword = (field as any).is_non_display;
+      const displayText = isPassword ? ' '.repeat(fc.length) : fc;
 
       if (field.is_input) {
         const fieldWidth = Math.min(field.length, cols - fs);
-        const fieldClass = showSignInHint ? 'gs-confirmed-field' : (field.is_underscored ? 'gs-input-field' : undefined);
-        segs.push(<span key={`f${idx}`} className={fieldClass || undefined} style={{ display: 'inline-block', width: `${fieldWidth}ch`, overflow: 'hidden', color: colorVar }}>{fc}</span>);
+        const fieldClass = field.is_underscored ? 'gs-input-field' : undefined;
+        const extra: string[] = [];
+        if ((field as any).is_dbcs) extra.push('gs-dbcs-field');
+        if (cursorInField) extra.push('gs-field-active');
+        const composedClass = [fieldClass, ...extra].filter(Boolean).join(' ') || undefined;
+        segs.push(
+          <span
+            key={`f${idx}`}
+            className={composedClass}
+            style={{
+              display: 'inline-block',
+              width: `${fieldWidth}ch`,
+              overflow: 'hidden',
+              ...fieldStyle,
+            }}
+          >
+            {displayText}
+          </span>,
+        );
       } else if (field.is_reverse) {
-        segs.push(<span key={`v${idx}`} style={{ color: colorVar || 'var(--gs-red, #FF5555)', fontWeight: 'bold' }}>{fc}</span>);
-      } else if (colorVar) {
-        segs.push(<span key={`h${idx}`} style={{ color: colorVar }}>{fc}</span>);
+        segs.push(
+          <span
+            key={`v${idx}`}
+            style={{ color: colorVar || 'var(--gs-red, #FF5555)', fontWeight: 'bold', ...fieldStyle }}
+          >
+            {displayText}
+          </span>,
+        );
+      } else if (colorVar || entryAttr) {
+        segs.push(<span key={`h${idx}`} style={fieldStyle}>{displayText}</span>);
       } else if (field.is_highlighted) {
-        segs.push(<span key={`h${idx}`} style={{ color: 'var(--gs-white, #FFFFFF)' }}>{fc}</span>);
+        segs.push(<span key={`h${idx}`} style={{ color: 'var(--gs-white, #FFFFFF)' }}>{displayText}</span>);
       } else {
-        segs.push(<span key={`h${idx}`}>{fc}</span>);
+        segs.push(<span key={`h${idx}`}>{displayText}</span>);
       }
       lastEnd = fe;
     });
-    if (lastEnd < line.length) segs.push(<span key="te">{line.substring(lastEnd)}</span>);
+    if (lastEnd < line.length) renderPlainRun(lastEnd, line.length, 'te');
     return <>{segs}</>;
-  }, [renderTextWithUnderlines, screenData?.cols, profile.defaultCols, showSignInHint]);
+  }, [renderTextWithUnderlines, screenData, profile.defaultCols]);
 
   // --- Screen rendering ---
   const renderScreen = () => {
@@ -601,7 +835,7 @@ export function GreenScreenTerminal({
             </p>
             {!connStatus?.connected && isUsingDefaultAdapter && (
               <p style={{ fontFamily: 'var(--gs-font)', fontSize: '11px', color: '#606060', marginTop: '8px' }}>
-                Start the proxy: <code style={{ color: '#10b981' }}>npx green-screen-proxy --mock</code>
+                Start the proxy: <code style={{ color: '#10b981' }}>npx green-screen-proxy</code>
               </p>
             )}
           </div>
@@ -648,16 +882,31 @@ export function GreenScreenTerminal({
             <div key={index} className={headerSegments ? '' : profile.colors.getRowColorClass(index, displayLine, termRows)} style={{ height: `${ROW_HEIGHT}px`, lineHeight: `${ROW_HEIGHT}px`, whiteSpace: 'pre', position: 'relative' }}>
               {headerSegments
                 ? headerSegments.map((seg, i) => <span key={i} className={seg.colorClass}>{seg.text}</span>)
-                : renderRowWithFields(displayLine, index, fields)}
-              {cursorInInputField && !showSignInHint && index === cursor.row && (
+                : renderRowWithFields(displayLine, index, fields, cursor.row, cursor.col)}
+              {cursorInInputField && index === cursor.row && (
                 <span className="gs-cursor" style={{ position: 'absolute', left: `${cursor.col}ch`, width: '1ch', height: `${ROW_HEIGHT}px`, top: 0, pointerEvents: 'none' }} />
               )}
             </div>
           );
         })}
-        {showSignInHint && (
-          <div className="gs-signin-hint">
-            Signed in — press Enter to continue
+        {validationError && (
+          <div
+            role="alert"
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              padding: '2px 6px',
+              background: 'var(--gs-red, #FF5555)',
+              color: '#000',
+              fontFamily: 'var(--gs-font)',
+              fontSize: '12px',
+              zIndex: 10,
+            }}
+            onClick={() => setValidationError(null)}
+          >
+            {validationError} — click to dismiss
           </div>
         )}
         {screenData.cursor_row !== undefined && screenData.cursor_col !== undefined && (
@@ -686,6 +935,18 @@ export function GreenScreenTerminal({
     }
   };
 
+  // Send a key from the shortcuts panel. Mirrors the submit-key self-check
+  // behaviour in handleKeyDown so clicked shortcuts behave like keystrokes.
+  const handleShortcutSend = useCallback(async (key: string) => {
+    if (readOnly) return;
+    const isSubmit = key === 'ENTER' || key === 'PAGEUP' || key === 'PAGEDOWN' || /^F([1-9]|1[0-9]|2[0-4])$/.test(key);
+    if (isSubmit && !runSelfCheck()) return;
+    setIsFocused(true);
+    inputRef.current?.focus();
+    const kr = await sendKey(key);
+    if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
+  }, [readOnly, runSelfCheck, sendKey]);
+
   return (
     <div className={`gs-terminal ${isFocused ? 'gs-terminal-focused' : ''} ${className || ''}`} style={style}>
       {showHeader && (
@@ -708,7 +969,7 @@ export function GreenScreenTerminal({
                   : <WifiOffIcon size={12} style={{ color: '#FF6B00' }} />)}
                 {statusActions}
                 {onMinimize && <button onClick={(e) => { e.stopPropagation(); onMinimize(); }} className="gs-btn-icon" title="Minimize terminal"><MinimizeIcon /></button>}
-                <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><HelpIcon size={12} /></button>
+                {showShortcutsButton && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={12} /></button>}
                 {headerRight}
               </div>
             </>
@@ -753,7 +1014,7 @@ export function GreenScreenTerminal({
                   </div>
                 )}
                 {statusActions}
-                <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><HelpIcon size={12} /></button>
+                {showShortcutsButton && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={12} /></button>}
                 {headerRight}
               </div>
             </>
@@ -776,15 +1037,48 @@ export function GreenScreenTerminal({
             <div className="gs-shortcuts-panel">
               <div className="gs-shortcuts-header">
                 <span>Keyboard Shortcuts</span>
-                <button className="gs-btn-icon" onClick={() => setShowShortcuts(false)} style={{ pointerEvents: 'auto' }}>&times;</button>
+                <button className="gs-btn-icon" onClick={() => setShowShortcuts(false)}>&times;</button>
               </div>
+              <div className="gs-shortcuts-section-title">Actions</div>
               <table className="gs-shortcuts-table">
                 <tbody>
-                  <tr><td className="gs-shortcut-key">Ctrl+Enter</td><td>Field Exit</td></tr>
-                  <tr><td className="gs-shortcut-key">Ctrl+R</td><td>Reset</td></tr>
-                  <tr><td className="gs-shortcut-key">Insert</td><td>Insert / Overwrite</td></tr>
-                  <tr><td className="gs-shortcut-key">Page Up</td><td>Roll Down</td></tr>
-                  <tr><td className="gs-shortcut-key">Page Down</td><td>Roll Up</td></tr>
+                  {([
+                    ['Enter',      'Submit',             'ENTER'],
+                    ['Tab',        'Next field',         'TAB'],
+                    ['Backspace',  'Backspace',          'BACKSPACE'],
+                    ['Delete',     'Delete',             'DELETE'],
+                    ['Insert',     'Insert / Overwrite', 'INSERT'],
+                    ['Home',       'Home',               'HOME'],
+                    ['End',        'End',                'END'],
+                    ['Page Up',    'Roll Down',          'PAGEUP'],
+                    ['Page Down',  'Roll Up',            'PAGEDOWN'],
+                    ['Ctrl+Enter', 'Field Exit',         'FIELD_EXIT'],
+                    ['Ctrl+R',     'Reset',              'RESET'],
+                    ['—',          'Help',               'HELP'],
+                    ['—',          'Clear',              'CLEAR'],
+                    ['—',          'Print',              'PRINT'],
+                  ] as const).map(([label, desc, key]) => (
+                    <tr key={key} className="gs-shortcut-row" onClick={(e) => { e.stopPropagation(); handleShortcutSend(key); }}>
+                      <td className="gs-shortcut-key">{label}</td>
+                      <td>{desc}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="gs-shortcuts-section-title">Function keys</div>
+              <div className="gs-shortcuts-fkeys">
+                {Array.from({ length: 24 }, (_, i) => `F${i + 1}`).map(fk => (
+                  <button
+                    key={fk}
+                    className="gs-shortcut-fkey"
+                    onClick={(e) => { e.stopPropagation(); handleShortcutSend(fk); }}
+                    title={`Send ${fk}`}
+                  >{fk}</button>
+                ))}
+              </div>
+              <div className="gs-shortcuts-section-title">Info</div>
+              <table className="gs-shortcuts-table">
+                <tbody>
                   <tr><td className="gs-shortcut-key">Click</td><td>Focus / Position cursor</td></tr>
                   <tr><td className="gs-shortcut-key">Escape</td><td>Exit focus mode</td></tr>
                 </tbody>
@@ -800,9 +1094,35 @@ export function GreenScreenTerminal({
               )}
             </div>
           )}
-          <input ref={inputRef} type="text" value={inputText} onChange={handleInput} onKeyDown={handleKeyDown}
+          <input
+            ref={inputRef}
+            type="text"
+            value={inputText}
+            onChange={handleInput}
+            onKeyDown={handleKeyDown}
             style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', fontSize: '13px', lineHeight: '21px', fontFamily: 'var(--gs-font)', padding: 0, border: 'none', height: '21px' }}
-            autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            // Hint IME / mobile keyboard mode from current field metadata.
+            // DBCS fields on Japanese hosts should open the kana/kanji IME
+            // so the user can compose full-width text directly.
+            lang={(() => {
+              const f = getCurrentField();
+              if (!f) return undefined;
+              if ((f as any).is_dbcs || (f as any).is_dbcs_either) return 'ja';
+              return undefined;
+            })()}
+            inputMode={(() => {
+              const f = getCurrentField();
+              if (!f) return undefined;
+              if ((f as any).is_dbcs) return 'text';
+              // Numeric-only shift types (SHIFT_NUMERIC_ONLY 0x03, DIGITS_ONLY 0x05, SIGNED_NUM 0x07)
+              // are not exposed on Field today — but the browser mode hint is just an optimization.
+              return 'text';
+            })()}
+          />
         </div>
       </div>
     </div>

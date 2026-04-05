@@ -1,8 +1,6 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { GreenScreenTerminal, WebSocketAdapter } from 'green-screen-react'
 import type { TerminalAdapter, ConnectConfig } from 'green-screen-react'
-import { tn5250ScreenTree } from './mockScreens'
-import { MockAdapter } from './MockAdapter'
 
 // Default Worker URL — update this after deploying the Cloudflare Worker
 const DEFAULT_WORKER_URL = import.meta.env.VITE_WORKER_URL || ''
@@ -35,7 +33,6 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
   const [error, setError] = useState<string | null>(null)
   const [connectedHost, setConnectedHost] = useState('')
   const [restoring, setRestoring] = useState(true)
-  const [autoSignedIn, setAutoSignedIn] = useState(false)
 
   const doConnect = async (config: ConnectConfig) => {
     const wsAdapter = new WebSocketAdapter({ workerUrl: DEFAULT_WORKER_URL })
@@ -45,7 +42,6 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
       setAdapter(wsAdapter)
       setConnected(true)
       setConnectedHost(config.host)
-      setAutoSignedIn(!!config.username && !!config.password)
       saveSession(config, wsAdapter.sessionId!)
     } else {
       wsAdapter.dispose()
@@ -122,7 +118,6 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
               protocol="tn5250"
               inlineSignIn={false}
               pollInterval={500}
-              autoSignedIn={autoSignedIn}
             />
           </div>
         </div>
@@ -140,7 +135,6 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
             protocol="tn5250"
             inlineSignIn={false}
             pollInterval={500}
-            autoSignedIn={autoSignedIn}
           />
         </div>
       </div>
@@ -202,7 +196,6 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
 }
 
 export default function App() {
-  const [selected, setSelected] = useState<'connect' | 'mock'>('connect')
   const isStandalone = new URLSearchParams(window.location.search).get('mode') === 'standalone'
 
   useEffect(() => {
@@ -212,9 +205,6 @@ export default function App() {
     }
     return () => { document.body.classList.remove('standalone') }
   }, [isStandalone])
-
-  // Create interactive TN5250 mock adapter with screen tree
-  const mockAdapter = useMemo(() => new MockAdapter(tn5250ScreenTree, 'main'), [])
 
   if (isStandalone) {
     return <ConnectPanel standalone />
@@ -227,39 +217,7 @@ export default function App() {
         <p className="demo-subtitle">Multi-protocol legacy terminal emulator for React</p>
       </header>
 
-      <nav className="protocol-tabs">
-        <button
-          className={`protocol-tab connect-tab ${selected === 'connect' ? 'active' : ''}`}
-          onClick={() => setSelected('connect')}
-        >
-          Connect
-        </button>
-        <button
-          className={`protocol-tab ${selected === 'mock' ? 'active' : ''}`}
-          onClick={() => setSelected('mock')}
-        >
-          TN5250 Mock Preview
-        </button>
-      </nav>
-
-      <div className="demo-hint" style={{ visibility: selected === 'mock' ? 'visible' : 'hidden', height: selected === 'mock' ? undefined : 0, margin: selected === 'mock' ? undefined : 0, overflow: 'hidden' }}>
-          Click the terminal and start typing — this is a live interactive demo
-      </div>
-
-      <div className="terminal-wrapper" style={{ display: selected === 'mock' ? undefined : 'none' }}>
-        <GreenScreenTerminal
-          key="mock"
-          adapter={mockAdapter}
-          protocol="tn5250"
-          connectionStatus={{ connected: true, status: 'authenticated' }}
-          inlineSignIn={false}
-          pollInterval={500}
-          typingAnimation={false}
-        />
-      </div>
-      <div className="terminal-wrapper" style={{ display: selected === 'connect' ? undefined : 'none' }}>
-        <ConnectPanel />
-      </div>
+      <ConnectPanel />
 
       <footer className="demo-footer">
         <code className="install-cmd">npx green-screen-terminal</code>

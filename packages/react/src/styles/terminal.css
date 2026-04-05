@@ -5,6 +5,7 @@
   --gs-white: #FFFFFF;
   --gs-blue: #7B93FF;
   --gs-cyan: #00FFFF;
+  --gs-turquoise: #00FFFF;
   --gs-yellow: #FFFF00;
   --gs-red: #FF5555;
   --gs-pink: #FF55FF;
@@ -13,7 +14,17 @@
   --gs-card-border: #1e293b;
   --gs-header-bg: #090e1a;
   --gs-muted: #94a3b8;
-  --gs-font: 'JetBrains Mono', 'Courier New', monospace;
+  /*
+   * Monospace font stack with CJK fallbacks. Japanese and other CJK glyphs
+   * need a separate font since JetBrains Mono / Courier New don't cover
+   * the full plane. The listed CJK fonts are commonly installed on
+   * macOS/Windows/Linux and render kanji/kana at fixed full-width.
+   */
+  --gs-font: 'JetBrains Mono', 'Courier New',
+    'MS Gothic', 'Osaka-Mono', 'Hiragino Kaku Gothic ProN',
+    'Noto Sans Mono CJK JP', 'Noto Sans CJK JP',
+    'Source Han Code JP', 'DejaVu Sans Mono',
+    monospace;
 }
 
 /* ── Terminal Container ───────────────────────────────────────────── */
@@ -213,10 +224,23 @@
   border-bottom: 1px solid rgba(16, 185, 129, 0.45);
 }
 
-.gs-confirmed-field {
-  display: inline-block;
-  position: relative;
-  color: var(--gs-cyan);
+/* Active input field — accent border when cursor is inside (highlight-on-entry).
+ * Combined with the per-span inline style when the host declares a
+ * highlight_entry_attr FCW. */
+.gs-field-active {
+  box-shadow: inset 0 -2px 0 0 var(--gs-yellow, #FFFF00);
+}
+
+/* DBCS input field marker — faint background tint to signal CJK input mode.
+ * Paired with `lang="ja"` on the hidden input to hint the browser IME. */
+.gs-dbcs-field {
+  background: rgba(123, 147, 255, 0.08);
+}
+
+/* WEA extended highlight blink */
+@keyframes gs-blink {
+  0%,   49% { visibility: visible; }
+  50%, 100% { visibility: hidden; }
 }
 
 /* ── Overlays ─────────────────────────────────────────────────────── */
@@ -255,26 +279,6 @@
   color: #FF6B00;
 }
 
-/* ── Sign-in Hint ────────────────────────────────────────────────── */
-
-.gs-signin-hint {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 6px 12px;
-  background-color: rgba(16, 185, 129, 0.12);
-  border-top: 1px solid rgba(16, 185, 129, 0.3);
-  color: var(--gs-green);
-  font-family: var(--gs-font);
-  font-size: 12px;
-  text-align: center;
-  letter-spacing: 0.05em;
-  z-index: 5;
-  animation: gs-fade-in 400ms ease-out;
-  pointer-events: none;
-}
-
 /* ── Shortcuts Panel ──────────────────────────────────────────────── */
 
 .gs-shortcuts-panel {
@@ -289,9 +293,50 @@
   font-family: var(--gs-font);
   font-size: 11px;
   color: var(--gs-muted);
-  pointer-events: none;
+  pointer-events: auto;
   animation: gs-fade-in 200ms ease-out;
-  max-width: 260px;
+  max-width: 320px;
+}
+
+.gs-shortcuts-section-title {
+  color: var(--gs-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 9px;
+  margin: 8px 0 4px;
+  opacity: 0.7;
+}
+
+.gs-shortcut-row {
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+.gs-shortcut-row:hover {
+  background-color: rgba(16, 185, 129, 0.12);
+}
+
+.gs-shortcuts-fkeys {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 3px;
+}
+
+.gs-shortcut-fkey {
+  background: transparent;
+  border: 1px solid var(--gs-card-border);
+  border-radius: 3px;
+  padding: 3px 0;
+  color: var(--gs-green);
+  font-family: var(--gs-font);
+  font-size: 10px;
+  cursor: pointer;
+  transition: background-color 0.1s, border-color 0.1s;
+}
+
+.gs-shortcut-fkey:hover {
+  background-color: rgba(16, 185, 129, 0.15);
+  border-color: var(--gs-green);
 }
 
 .gs-shortcuts-header {

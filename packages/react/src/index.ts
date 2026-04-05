@@ -24,6 +24,7 @@ export type {
   SendResult,
   ConnectConfig,
   Field,
+  FieldValue,
 } from './adapters/types';
 
 // Hooks
