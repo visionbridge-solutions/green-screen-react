@@ -50,7 +50,7 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
   app.use(cors());
   app.use(express.json());
 
-  const [{ default: routes }, { setupWebSocket }] = await Promise.all([
+  const [{ default: routes }, { setupWebSocket, shutdownAllWsControllers }] = await Promise.all([
     import('./routes.js'),
     import('./websocket.js'),
   ]);
@@ -84,10 +84,30 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
         server,
         app,
         port: resolvedPort,
-        close() {
-          return new Promise<void>((res) => {
+        async close() {
+          // Drain live host connections BEFORE closing the HTTP server so
+          // each TCP socket has a chance to send a clean FIN upstream.
+          // Without this, abrupt process termination leaves host-side
+          // resources dangling (e.g. IBM i virtual telnet device
+          // descriptions stuck in VARY ON PENDING, blocking device-
+          // restricted user profiles from signing on again).
+          try {
+            // 1. REST-created sessions tracked by the session store.
+            const { getSessionStore } = await import('./session-store.js');
+            for (const session of Array.from(getSessionStore().values())) {
+              try { session.destroy(); } catch { /* ignore */ }
+            }
+            // 2. WS-created SessionControllers (live + orphaned).
+            shutdownAllWsControllers();
+          } catch { /* ignore */ }
+
+          await new Promise<void>((res) => {
             server.close(() => res());
-            setTimeout(() => res(), 1000);
+            // Safety timeout — give in-flight HTTP requests up to 5s to
+            // finish before forcing exit. Session TCP FINs are sent
+            // synchronously above, so the host has already started its
+            // cleanup by the time this fires.
+            setTimeout(() => res(), 5000);
           });
         },
       });

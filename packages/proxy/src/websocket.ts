@@ -6,7 +6,7 @@ import {
   getDefaultSession,
   destroySession,
 } from './session.js';
-import { sessionLifecycle } from './session-store.js';
+import { sessionLifecycle, getSessionStore } from './session-store.js';
 import { SessionController } from './controller.js';
 import type { ProtocolType } from './protocols/index.js';
 import type { ConnectionStatus } from 'green-screen-types';
@@ -342,4 +342,44 @@ function broadcastToSession(sessionId: string, message: string, exclude?: WebSoc
 export function broadcastScreenToSession(sessionId: string, screenData: object): void {
   const message = JSON.stringify({ type: 'screen', data: screenData });
   broadcastToSession(sessionId, message);
+}
+
+/**
+ * Disconnect every SessionController held by this module so their TCP
+ * sockets send a clean FIN to the upstream host before the process exits.
+ *
+ * The HTTP `createProxy().close()` path calls this during graceful
+ * shutdown. Without it, TCP connections to legacy hosts are torn down
+ * abruptly on process exit, which on IBM i leaves virtual telnet device
+ * descriptions stuck in `VARY ON PENDING` until a host-side timer
+ * reclaims them — blocking subsequent sign-ons from device-restricted
+ * user profiles.
+ *
+ * Covers both live controllers bound to an active WS client and
+ * orphaned controllers whose WS dropped but whose TCP is still alive
+ * (kept for potential reattach). Adopted controllers (WS reattaches to
+ * a REST-owned Session) are intentionally left alone — the REST
+ * Session owns the handler lifecycle and is drained separately by
+ * iterating the session store.
+ */
+export function shutdownAllWsControllers(): void {
+  for (const [sessionId, orphan] of orphanedControllers) {
+    try { orphan.handleDisconnect(); } catch { /* ignore */ }
+    orphanedControllers.delete(sessionId);
+  }
+  for (const client of clients) {
+    const ctrl = client.controller;
+    if (!ctrl) continue;
+    // Skip adopted controllers — they wrap a REST Session's handler,
+    // which the session store drain will disconnect. Adopted
+    // controllers have `connected=true` but no owned handler lifecycle.
+    // We detect them by checking whether the handler is owned by a
+    // Session in the store (same instance).
+    const ownedByRestSession = client.sessionId
+      ? getSessionStore().get(client.sessionId)?.handler === (ctrl as any).handler
+      : false;
+    if (ownedByRestSession) continue;
+    try { ctrl.handleDisconnect(); } catch { /* ignore */ }
+    client.controller = null;
+  }
 }
