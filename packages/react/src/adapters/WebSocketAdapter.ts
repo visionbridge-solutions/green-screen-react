@@ -272,8 +272,21 @@ export class WebSocketAdapter implements TerminalAdapter {
       }
 
       case 'cursor': {
-        // Lightweight cursor-only response for local operations (arrows, Tab)
-        // Resolve pending promise with just cursor position, no screen update
+        // Lightweight cursor-only response for local operations (Tab,
+        // Backtab, arrows, Home, End). Update the cached screen's
+        // cursor position AND notify screen listeners so the React
+        // component re-renders the cursor in its new location.
+        // Without the listener dispatch, Tab/arrows would update the
+        // proxy's internal cursor but never reach the UI — the green
+        // cursor block would stay stuck at the last full-screen update.
+        if (this.screen) {
+          this.screen = {
+            ...this.screen,
+            cursor_row: msg.data.cursor_row,
+            cursor_col: msg.data.cursor_col,
+          };
+          for (const listener of this.screenListeners) listener(this.screen);
+        }
         if (this.pendingScreenResolver) {
           const resolver = this.pendingScreenResolver;
           this.pendingScreenResolver = null;

@@ -781,8 +781,28 @@ export class TN5250Parser {
         }
 
         default: {
-          // Field attribute bytes (0x20-0x3F) only appear immediately after SBA
-          if (afterSBA && byte >= 0x20 && byte <= 0x3F) {
+          // Field attribute bytes (0x20-0x3F) are 5250 display attributes.
+          // Per lib5250 model (dbuffer_addch + char_map_attribute_p at
+          // render time), every byte in this range terminates the current
+          // display-attribute run and starts a new one — whether it
+          // immediately follows an SBA or appears mid-stream between text.
+          // Each attribute byte itself occupies one cell (rendered as a
+          // blank space) and governs the cells that come after it until
+          // the next attribute byte.
+          //
+          // IBM i list screens (WRKACTJOB, DSPMSG, …) rely on mid-stream
+          // attribute pairs to decorate the scroll indicator: the host
+          // writes SBA(row,col) + 0x2f (NON_DISPLAY) + filler + 0x22
+          // (HIGH_INTENSITY) + " More..." so the leading filler cells are
+          // invisible and the indicator text itself is bright. Without
+          // mid-stream attribute recognition the initial 0x2f span
+          // swallows the whole row (our parser's synthetic field extends
+          // to the next SBA) and "More..." never shows up.
+          //
+          // DBCS mode (after SO / before SI) is different — byte pairs
+          // can legitimately land in 0x20-0x3F, so we still let the DBCS
+          // branch below handle them.
+          if (!dbcsMode && byte >= 0x20 && byte <= 0x3F) {
             pos = this.parseFieldAttribute(data, pos, currentAddr, currentAttr);
             currentAddr++; // attribute byte occupies one screen position
           } else if (byte === SO && !dbcsMode) {
@@ -1476,10 +1496,16 @@ export class TN5250Parser {
 
     // Cursor homing per lib5250 display.c:614-635 (set_cursor_home):
     //   1. If cursor is inside a field (input or protected) — trust it.
-    //   2. If cursor is outside all fields, nudge to the first functional
-    //      input field (with native underscore). This avoids landing on
-    //      UIM NON_DISPLAY artifact fields that aren't interactive.
-    //   3. If no functional fields exist, leave cursor where IC put it.
+    //   2. If cursor is outside all fields, nudge to the first input
+    //      field in spatial order (matches lib5250 dbuffer_first_non_bypass).
+    //   3. If no input fields exist, leave cursor where IC put it.
+    //
+    // NOTE: the "hasNativeUnderscore" restriction that used to guard step 2
+    // against UIM NON_DISPLAY artifacts is now redundant — those artifacts
+    // are demoted to protected earlier in calculateFieldLengths. Requiring
+    // native underscore also skipped legitimate command-line fields whose
+    // raw attribute byte is 0x20 (normal), leaving IBM i main menu users
+    // with a cursor stuck at (0,0) on screen load.
     {
       const cursorAddr = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
       const cursorInField = fields.some(f => {
@@ -1487,15 +1513,14 @@ export class TN5250Parser {
         return cursorAddr >= start && cursorAddr < start + f.length;
       });
       if (!cursorInField) {
-        const functional = fields.find(f =>
-          this.screen.isInputField(f) && this.screen.hasNativeUnderscore(f)
-        );
-        if (functional) {
-          this.screen.cursorRow = functional.row;
-          this.screen.cursorCol = functional.col;
+        const firstInput = fields.find(f => this.screen.isInputField(f));
+        if (firstInput) {
+          this.screen.cursorRow = firstInput.row;
+          this.screen.cursorCol = firstInput.col;
         }
-        // If no functional fields, leave cursor at IC position — the screen
-        // may not have interactive input (e.g. DSPMSG with only F-key actions)
+        // If no input fields exist, leave cursor at IC position — the
+        // screen may not have interactive input (e.g. DSPMSG with only
+        // F-key actions).
       }
     }
 
