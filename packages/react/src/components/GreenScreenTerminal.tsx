@@ -313,6 +313,7 @@ export function GreenScreenTerminal({
   const [isFocused, setIsFocused] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [fkeyPage, setFkeyPage] = useState(0); // 0 = F1-F12, 1 = F13-F24
+  const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [syncedCursor, setSyncedCursor] = useState<{ row: number; col: number } | null>(null);
@@ -456,7 +457,7 @@ export function GreenScreenTerminal({
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (terminalRef.current && !terminalRef.current.contains(event.target as Node)) setIsFocused(false);
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setIsFocused(false);
     };
     if (isFocused) document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -1029,7 +1030,7 @@ export function GreenScreenTerminal({
   }, [readOnly, runSelfCheck, sendKey]);
 
   return (
-    <div className={`gs-terminal ${isFocused ? 'gs-terminal-focused' : ''} ${className || ''}`} style={style}>
+    <div ref={containerRef} className={`gs-terminal ${isFocused ? 'gs-terminal-focused' : ''} ${className || ''}`} style={style}>
       {showHeader && (
         <div className="gs-header">
           {embedded ? (
@@ -1039,6 +1040,7 @@ export function GreenScreenTerminal({
                 <span>TERMINAL</span>
                 {isFocused && <span className="gs-badge-focused">FOCUSED</span>}
                 {screenData?.timestamp && <span className="gs-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
+                {showShortcutsButton && !readOnly && isFocused && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={12} /></button>}
                 <span className="gs-hint">{readOnly ? 'Read-only' : isFocused ? 'ESC to exit focus' : 'Click to control'}</span>
                 {screenData?.keyboard_locked && <span className="gs-badge-lock">X II</span>}
                 {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
@@ -1050,7 +1052,6 @@ export function GreenScreenTerminal({
                   : <WifiOffIcon size={12} style={{ color: '#FF6B00' }} />)}
                 {statusActions}
                 {onMinimize && <button onClick={(e) => { e.stopPropagation(); onMinimize(); }} className="gs-btn-icon" title="Minimize terminal"><MinimizeIcon /></button>}
-                {showShortcutsButton && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={12} /></button>}
                 {headerRight}
               </div>
             </>
@@ -1061,6 +1062,7 @@ export function GreenScreenTerminal({
                 <span>{profile.headerLabel}</span>
                 {isFocused && <span className="gs-badge-focused">FOCUSED</span>}
                 {screenData?.timestamp && <span className="gs-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
+                {showShortcutsButton && !readOnly && isFocused && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={12} /></button>}
                 <span className="gs-hint">{readOnly ? 'Read-only mode' : isFocused ? 'ESC to exit focus' : 'Click terminal to control'}</span>
                 {screenData?.keyboard_locked && <span className="gs-badge-lock">X II</span>}
                 {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
@@ -1088,14 +1090,13 @@ export function GreenScreenTerminal({
                     )}
                   </div>
                 )}
-                {connStatus?.status && (
+                {connStatus?.status && connStatus.status !== 'loading' && (
                   <div className="gs-status-group">
                     <KeyIcon size={12} style={{ color: getStatusColor(connStatus.status) }} />
                     {connStatus.username && <span className="gs-host">{connStatus.username}</span>}
                   </div>
                 )}
                 {statusActions}
-                {showShortcutsButton && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={12} /></button>}
                 {headerRight}
               </div>
             </>
@@ -1165,7 +1166,7 @@ export function GreenScreenTerminal({
               </div>
             </div>
           )}
-          {connStatus && !connStatus.connected && screenData && (
+          {connStatus && !connStatus.connected && connStatus.status !== 'loading' && screenData && (
             <div className="gs-overlay">
               <WifiOffIcon size={28} />
               <span>{isAutoReconnecting || reconnecting ? 'Reconnecting...' : connStatus?.status === 'connecting' ? 'Connecting...' : 'Disconnected'}</span>
