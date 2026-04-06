@@ -312,6 +312,7 @@ export function GreenScreenTerminal({
   const [inputText, setInputText] = useState('');
   const [isFocused, setIsFocused] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [fkeyPage, setFkeyPage] = useState(0); // 0 = F1-F12, 1 = F13-F24
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [syncedCursor, setSyncedCursor] = useState<{ row: number; col: number } | null>(null);
@@ -1119,35 +1120,41 @@ export function GreenScreenTerminal({
                 <span>Keyboard Shortcuts</span>
                 <button className="gs-btn-icon" onClick={() => setShowShortcuts(false)}>&times;</button>
               </div>
-              <div className="gs-shortcuts-section-title">Actions</div>
-              <table className="gs-shortcuts-table">
-                <tbody>
-                  {([
-                    ['Enter',      'Submit',             'ENTER'],
-                    ['Tab',        'Next field',         'TAB'],
-                    ['Backspace',  'Backspace',          'BACKSPACE'],
-                    ['Delete',     'Delete',             'DELETE'],
-                    ['Insert',     'Insert / Overwrite', 'INSERT'],
-                    ['Home',       'Home',               'HOME'],
-                    ['End',        'End',                'END'],
-                    ['Page Up',    'Roll Down',          'PAGEUP'],
-                    ['Page Down',  'Roll Up',            'PAGEDOWN'],
-                    ['Ctrl+Enter', 'Field Exit',         'FIELD_EXIT'],
-                    ['Ctrl+R',     'Reset',              'RESET'],
-                    ['—',          'Help',               'HELP'],
-                    ['—',          'Clear',              'CLEAR'],
-                    ['—',          'Print',              'PRINT'],
-                  ] as const).map(([label, desc, key]) => (
-                    <tr key={key} className="gs-shortcut-row" onClick={(e) => { e.stopPropagation(); handleShortcutSend(key); }}>
-                      <td className="gs-shortcut-key">{label}</td>
-                      <td>{desc}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="gs-shortcuts-section-title">Function keys</div>
+              <div className="gs-shortcuts-actions">
+                {([
+                  ['Enter',      'Submit',       'ENTER'],
+                  ['Tab',        'Next field',   'TAB'],
+                  ['Backspace',  'Backspace',    'BACKSPACE'],
+                  ['Delete',     'Delete',       'DELETE'],
+                  ['Insert',     'Ins / Ovr',    'INSERT'],
+                  ['Home',       'Home',         'HOME'],
+                  ['End',        'End',          'END'],
+                  ['PgUp',       'Roll Down',    'PAGEUP'],
+                  ['PgDn',       'Roll Up',      'PAGEDOWN'],
+                  ['Ctrl+Ent',   'Field Exit',   'FIELD_EXIT'],
+                  ['Ctrl+R',     'Reset',        'RESET'],
+                  ['—',          'Help',         'HELP'],
+                  ['—',          'Clear',        'CLEAR'],
+                  ['—',          'Print',        'PRINT'],
+                ] as const).map(([label, desc, key]) => (
+                  <div key={key} className="gs-shortcut-action" onClick={(e) => { e.stopPropagation(); handleShortcutSend(key); }}>
+                    <span className="gs-shortcut-key">{label}</span>
+                    <span className="gs-shortcut-desc">{desc}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="gs-shortcuts-fkeys-header">
+                <span className="gs-shortcuts-section-title" style={{ margin: 0 }}>
+                  {fkeyPage === 0 ? 'F1 – F12' : 'F13 – F24'}
+                </span>
+                <button
+                  className="gs-btn-icon gs-fkey-nav"
+                  onClick={(e) => { e.stopPropagation(); setFkeyPage(p => p === 0 ? 1 : 0); }}
+                  title={fkeyPage === 0 ? 'Show F13–F24' : 'Show F1–F12'}
+                >{fkeyPage === 0 ? '\u25B6' : '\u25C0'}</button>
+              </div>
               <div className="gs-shortcuts-fkeys">
-                {Array.from({ length: 24 }, (_, i) => `F${i + 1}`).map(fk => (
+                {Array.from({ length: 12 }, (_, i) => `F${i + 1 + fkeyPage * 12}`).map(fk => (
                   <button
                     key={fk}
                     className="gs-shortcut-fkey"
@@ -1156,13 +1163,6 @@ export function GreenScreenTerminal({
                   >{fk}</button>
                 ))}
               </div>
-              <div className="gs-shortcuts-section-title">Info</div>
-              <table className="gs-shortcuts-table">
-                <tbody>
-                  <tr><td className="gs-shortcut-key">Click</td><td>Focus / Position cursor</td></tr>
-                  <tr><td className="gs-shortcut-key">Escape</td><td>Exit focus mode</td></tr>
-                </tbody>
-              </table>
             </div>
           )}
           {connStatus && !connStatus.connected && screenData && (

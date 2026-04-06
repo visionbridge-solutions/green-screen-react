@@ -324,13 +324,24 @@
   background-color: rgba(14, 20, 34, 0.95);
   border: 1px solid var(--gs-card-border);
   border-radius: 4px;
-  padding: 8px 12px;
+  padding: 8px 10px;
   font-family: var(--gs-font);
   font-size: 11px;
   color: var(--gs-muted);
   pointer-events: auto;
   animation: gs-fade-in 200ms ease-out;
-  max-width: 320px;
+  max-height: 90%;
+  overflow-y: auto;
+}
+
+.gs-shortcuts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  color: var(--gs-green);
+  font-size: 11px;
+  letter-spacing: 0.05em;
 }
 
 .gs-shortcuts-section-title {
@@ -342,13 +353,50 @@
   opacity: 0.7;
 }
 
-.gs-shortcut-row {
-  cursor: pointer;
-  transition: background-color 0.1s;
+/* ── Actions: 2-column grid ── */
+
+.gs-shortcuts-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
 }
 
-.gs-shortcut-row:hover {
+.gs-shortcut-action {
+  display: flex;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background-color 0.1s;
+  white-space: nowrap;
+}
+
+.gs-shortcut-action:hover {
   background-color: rgba(16, 185, 129, 0.12);
+}
+
+.gs-shortcut-key {
+  color: var(--gs-green);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.gs-shortcut-desc {
+  opacity: 0.7;
+}
+
+/* ── F-key carousel ── */
+
+.gs-shortcuts-fkeys-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 8px 0 4px;
+}
+
+.gs-fkey-nav {
+  font-size: 10px;
+  padding: 1px 6px;
 }
 
 .gs-shortcuts-fkeys {
@@ -372,32 +420,6 @@
 .gs-shortcut-fkey:hover {
   background-color: rgba(16, 185, 129, 0.15);
   border-color: var(--gs-green);
-}
-
-.gs-shortcuts-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-  color: var(--gs-green);
-  font-size: 11px;
-  letter-spacing: 0.05em;
-}
-
-.gs-shortcuts-table {
-  border-collapse: collapse;
-  width: 100%;
-}
-
-.gs-shortcuts-table td {
-  padding: 2px 0;
-}
-
-.gs-shortcut-key {
-  color: var(--gs-green);
-  padding-right: 12px;
-  white-space: nowrap;
-  font-weight: 500;
 }
 
 /* ── Inline Sign-In ──────────────────────────────────────────────── */
