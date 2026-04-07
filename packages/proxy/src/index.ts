@@ -86,19 +86,23 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
         port: resolvedPort,
         async close() {
           // Drain live host connections BEFORE closing the HTTP server so
-          // each TCP socket has a chance to send a clean FIN upstream.
-          // Without this, abrupt process termination leaves host-side
-          // resources dangling (e.g. IBM i virtual telnet device
+          // each TCP socket has a chance to send a clean SIGNOFF + FIN
+          // upstream. Without this, abrupt process termination leaves
+          // host-side resources dangling (e.g. IBM i virtual telnet device
           // descriptions stuck in VARY ON PENDING, blocking device-
-          // restricted user profiles from signing on again).
+          // restricted user profiles from signing on again — CPF1220).
           try {
-            // 1. REST-created sessions tracked by the session store.
+            // 1. REST-created sessions: graceful destroy (SIGNOFF + TCP
+            //    close) in parallel. Each attemptSignOff has a 1.5s timeout
+            //    so the total drain is ~1.5s regardless of session count.
             const { getSessionStore } = await import('./session-store.js');
-            for (const session of Array.from(getSessionStore().values())) {
-              try { session.destroy(); } catch { /* ignore */ }
-            }
+            const { gracefullyDestroySession } = await import('./session.js');
+            const sessions = Array.from(getSessionStore().values());
+            await Promise.allSettled(
+              sessions.map(s => gracefullyDestroySession(s.id).catch(() => { /* ignore */ }))
+            );
             // 2. WS-created SessionControllers (live + orphaned).
-            shutdownAllWsControllers();
+            await shutdownAllWsControllers();
           } catch { /* ignore */ }
 
           await new Promise<void>((res) => {

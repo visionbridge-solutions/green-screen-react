@@ -451,11 +451,18 @@ export async function destroyWsSession(sessionId: string): Promise<boolean> {
  * Session owns the handler lifecycle and is drained separately by
  * iterating the session store.
  */
-export function shutdownAllWsControllers(): void {
+export async function shutdownAllWsControllers(): Promise<void> {
+  // Gracefully disconnect orphaned controllers (SIGNOFF + TCP close)
+  const orphanDrains: Promise<void>[] = [];
   for (const [sessionId, orphan] of orphanedControllers) {
-    try { orphan.handleDisconnect(); } catch { /* ignore */ }
+    orphanDrains.push(
+      orphan.handleGracefulDisconnect().catch(() => { /* ignore */ })
+    );
     orphanedControllers.delete(sessionId); cancelOrphanReap(sessionId);
   }
+
+  // Gracefully disconnect live WS controllers
+  const liveDrains: Promise<void>[] = [];
   for (const client of clients) {
     const ctrl = client.controller;
     if (!ctrl) continue;
@@ -468,7 +475,11 @@ export function shutdownAllWsControllers(): void {
       ? getSessionStore().get(client.sessionId)?.handler === (ctrl as any).handler
       : false;
     if (ownedByRestSession) continue;
-    try { ctrl.handleDisconnect(); } catch { /* ignore */ }
+    liveDrains.push(
+      ctrl.handleGracefulDisconnect().catch(() => { /* ignore */ })
+    );
     client.controller = null;
   }
+
+  await Promise.allSettled([...orphanDrains, ...liveDrains]);
 }

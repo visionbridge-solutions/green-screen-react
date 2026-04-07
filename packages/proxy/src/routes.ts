@@ -133,6 +133,39 @@ router.post('/disconnect-beacon', async (req: Request, res: Response) => {
   }
 });
 
+// GET /sessions — list all active sessions (used by integrators to detect
+// orphaned sessions on startup and decide whether to sweep them).
+router.get('/sessions', (_req: Request, res: Response) => {
+  const sessions = getAllSessions().map(s => ({
+    id: s.id,
+    status: s.status,
+  }));
+  res.json({ sessions, count: sessions.length });
+});
+
+// POST /disconnect-all — gracefully tear down every active session (SIGNOFF
+// + TCP close). Used by integrators on startup to clean up orphaned sessions
+// from a previous lifecycle and avoid CPF1220 device-session-limit errors.
+router.post('/disconnect-all', async (_req: Request, res: Response) => {
+  const sessions = getAllSessions();
+  const count = sessions.length;
+  if (count === 0) {
+    return res.json({ success: true, destroyed: 0 });
+  }
+
+  console.log(`[disconnect-all] Tearing down ${count} session(s)`);
+  await Promise.allSettled(
+    sessions.map(s =>
+      Promise.allSettled([
+        gracefullyDestroySession(s.id),
+        destroyWsSession(s.id),
+      ])
+    )
+  );
+  console.log(`[disconnect-all] Done — ${count} session(s) destroyed`);
+  res.json({ success: true, destroyed: count });
+});
+
 // POST /reconnect
 router.post('/reconnect', async (req: Request, res: Response) => {
   const session = resolveSession(req);
