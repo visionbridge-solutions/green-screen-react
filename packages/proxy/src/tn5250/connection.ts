@@ -23,7 +23,11 @@ export class TN5250Connection extends EventEmitter {
   private terminalType: string = DEFAULT_TERMINAL_TYPE;
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly KEEP_ALIVE_INTERVAL = 15_000; // 15s — well under PUB400's ~30s idle timeout
-  private static readonly KEEP_ALIVE_NOP = Buffer.from([TELNET.IAC, TELNET.NOP]);
+  // Timing Mark (IAC DO TM) instead of NOP — it's a round-trip: the server
+  // must respond with WILL/WONT TM.  If the IBM i interactive job has ended
+  // (QINACTITV), processing the TM may cause the TELNET server to push the
+  // sign-on screen, enabling early timeout detection.
+  private static readonly KEEP_ALIVE_TM = Buffer.from([TELNET.IAC, TELNET.DO, TELNET.OPT_TIMING_MARK]);
 
   get isConnected(): boolean {
     return this.connected;
@@ -106,7 +110,7 @@ export class TN5250Connection extends EventEmitter {
     this.stopKeepAlive();
     this.keepAliveTimer = setInterval(() => {
       if (this.socket && this.connected) {
-        this.sendRaw(TN5250Connection.KEEP_ALIVE_NOP);
+        this.sendRaw(TN5250Connection.KEEP_ALIVE_TM);
       }
     }, TN5250Connection.KEEP_ALIVE_INTERVAL);
   }
@@ -251,6 +255,9 @@ export class TN5250Connection extends EventEmitter {
         if (option === TELNET.OPT_EOR ||
             option === TELNET.OPT_BINARY) {
           this.sendTelnet(TELNET.DO, option);
+        } else if (option === TELNET.OPT_TIMING_MARK) {
+          // WILL TM is the response to our keep-alive DO TM — the mark is
+          // complete, no further reply needed (RFC 860).
         } else {
           this.sendTelnet(TELNET.DONT, option);
         }
@@ -261,7 +268,11 @@ export class TN5250Connection extends EventEmitter {
         break;
 
       case TELNET.WONT:
-        this.sendTelnet(TELNET.DONT, option);
+        if (option === TELNET.OPT_TIMING_MARK) {
+          // WONT TM — server declined our keep-alive probe, nothing to do.
+        } else {
+          this.sendTelnet(TELNET.DONT, option);
+        }
         break;
     }
   }

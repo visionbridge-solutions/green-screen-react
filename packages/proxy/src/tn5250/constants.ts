@@ -14,6 +14,7 @@ export const TELNET = {
   OPT_BINARY: 0x00,
   OPT_ECHO: 0x01,
   OPT_SGA: 0x03,       // Suppress Go Ahead
+  OPT_TIMING_MARK: 0x06, // Timing Mark (RFC 860) — keep-alive probe
   OPT_TTYPE: 0x18,     // Terminal Type
   OPT_EOR: 0x19,       // End of Record
   OPT_NAWS: 0x1F,      // Negotiate About Window Size
