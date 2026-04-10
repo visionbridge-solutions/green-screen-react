@@ -478,12 +478,19 @@ router.post('/send-key', async (req: Request, res: Response) => {
     return res.json({ success: true, ...screen });
   }
 
-  // Local key: immediate response, no host round-trip
+  // Local key: immediate response, no host round-trip.
+  // Buffer-modifying keys (Backspace, Delete, Insert, Reset, FieldExit) and
+  // cursor-moving keys (Tab, arrows, Home, End) both update the local screen
+  // state, so we must broadcast to any WebSocket clients attached to this
+  // session (e.g. a dashboard using reattach) — otherwise they'd only learn
+  // about the update when the next remote key triggers a host roundtrip,
+  // and the terminal view would appear stuck on the pre-key state.
   const ok = session.sendKey(key);
   if (!ok) {
     return res.json({ success: false, error: `Unknown key: ${key}` });
   }
   const screenData = session.getScreenData();
+  broadcastScreenToSession(session.id, screenData);
   res.json({ success: true, ...screenData });
 });
 
