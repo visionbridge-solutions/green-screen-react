@@ -215,14 +215,15 @@ export function useTypingAnimation(
     if (content === currentTarget) return;
 
     if (isAnimatingRef.current) {
-      if (!isFieldEntry(currentTarget, content)) {
-        contentQueueRef.current = [];
-        showInstant(content);
-      } else {
-        contentQueueRef.current.push(content);
-        if (contentQueueRef.current.length > 3) {
-          contentQueueRef.current = contentQueueRef.current.slice(-2);
-        }
+      // Queue everything — including screen transitions — so the in-progress
+      // typing animation reaches its final state before the next content is
+      // shown. Previously we called showInstant() here, which cancelled the
+      // animation mid-flight and made the typed field look half-filled right
+      // before the screen advanced. processNextRef handles both field entries
+      // (re-animate) and screen transitions (showInstant) after finishAnimation.
+      contentQueueRef.current.push(content);
+      if (contentQueueRef.current.length > 3) {
+        contentQueueRef.current = contentQueueRef.current.slice(-2);
       }
       return;
     }
