@@ -485,20 +485,19 @@ export class TN5250Handler extends ProtocolHandler {
     this.restoreFields();
     let screen = this.getScreenData();
 
-    // Success check: the sign-on screen always has both the "Sign On"
-    // title row AND a NON_DISPLAY password input field. If either is
-    // missing, we've moved past it. A plain NON_DISPLAY field check alone
-    // would mis-flag UIM artifact fields (e.g. the 1-row NON_DISPLAY span
-    // at (1,2) on many post-sign-on screens).
-    // Detect sign-on screen structurally: UNDERSCORE username field +
-    // NON_DISPLAY password field. Works across all IBM i hosts regardless
-    // of screen title text (standard "Sign On", PUB400, custom).
-    // Post-sign-on UIM screens may have a stray NON_DISPLAY artifact but
-    // never paired with an UNDERSCORE input field in the sign-on pattern.
+    // Success check: still on sign-on screen? Requires BOTH a NON_DISPLAY
+    // password input field AND sign-on screen text. A plain NON_DISPLAY
+    // check alone would mis-flag UIM artifact fields (e.g. the 1-row
+    // NON_DISPLAY span at (1,2) on many post-sign-on screens).
+    // Text matching is broadened beyond "Sign On" to cover hosts like
+    // PUB400 ("Your user name:") and other custom sign-on displays.
     const isSignOnScreen = (s: ScreenData) => {
-      const inputs = (s.fields || []).filter(f => f.is_input);
-      return inputs.some(f => f.is_underscored)
-          && inputs.some(f => f.is_non_display);
+      const hasNonDisplay = (s.fields || []).some(f => f.is_input && f.is_non_display);
+      if (!hasNonDisplay) return false;
+      const text = s.content || '';
+      return /Sign On/i.test(text)
+          || /Your user name/i.test(text)
+          || /Password\s*[\(.:]/i.test(text);
     };
 
     if (isSignOnScreen(screen)) {
