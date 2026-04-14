@@ -90,24 +90,21 @@ export class TN5250Handler extends ProtocolHandler {
   async attemptSignOff(timeoutMs: number = 1500): Promise<boolean> {
     if (!this.connection.isConnected) return false;
 
-    // Skip if we're still on the sign-on screen (a genuine password
-    // NON_DISPLAY field AND the "Sign On" title text). Typing SIGNOFF
-    // into the User field would just burn another failed-login attempt.
-    // A plain NON_DISPLAY check alone would be fooled by UIM artifact
-    // fields on post-sign-on info screens.
-    const hasPasswordField = this.screen.fields.some(
-      (f) => this.screen.isInputField(f) && this.screen.hasNativeNonDisplay(f),
-    );
-    let hasSignOnTitle = false;
-    if (hasPasswordField) {
-      const rowLen = this.screen.cols;
-      for (let r = 0; r < Math.min(3, this.screen.rows); r++) {
-        const start = r * rowLen;
-        const line = this.screen.buffer.slice(start, start + rowLen).join('');
-        if (line.includes('Sign On')) { hasSignOnTitle = true; break; }
-      }
-    }
-    if (hasPasswordField && hasSignOnTitle) return false;
+    // Skip if we're on a sign-on screen. Detect structurally via field
+    // attributes rather than screen text — sign-on screens across all IBM i
+    // hosts (standard, PUB400, custom) share the same field layout:
+    //   UNDERSCORE (0x24) input = username
+    //   NON_DISPLAY (0x27) input = password
+    // Post-sign-on UIM screens may have a stray NON_DISPLAY artifact field,
+    // but never paired with an UNDERSCORE input field in the sign-on pattern.
+    const ATTR_UNDERSCORE = 0x24;
+    const ATTR_NON_DISPLAY = 0x27;
+    const sortedInputs = this.screen.fields
+      .filter(f => this.screen.isInputField(f))
+      .sort((a, b) => this.screen.offset(a.row, a.col) - this.screen.offset(b.row, b.col));
+    const hasUserField = sortedInputs.some(f => f.attribute === ATTR_UNDERSCORE);
+    const hasPasswordField = sortedInputs.some(f => f.attribute === ATTR_NON_DISPLAY);
+    if (hasUserField && hasPasswordField) return false;
 
     // Pick the widest non-password input field — on IBM i menus the
     // command line is consistently the longest input. Avoids typing
@@ -493,9 +490,16 @@ export class TN5250Handler extends ProtocolHandler {
     // missing, we've moved past it. A plain NON_DISPLAY field check alone
     // would mis-flag UIM artifact fields (e.g. the 1-row NON_DISPLAY span
     // at (1,2) on many post-sign-on screens).
-    const isSignOnScreen = (s: ScreenData) =>
-      (s.fields || []).some((f) => f.is_input && f.is_non_display)
-      && (s.content || '').includes('Sign On');
+    // Detect sign-on screen structurally: UNDERSCORE username field +
+    // NON_DISPLAY password field. Works across all IBM i hosts regardless
+    // of screen title text (standard "Sign On", PUB400, custom).
+    // Post-sign-on UIM screens may have a stray NON_DISPLAY artifact but
+    // never paired with an UNDERSCORE input field in the sign-on pattern.
+    const isSignOnScreen = (s: ScreenData) => {
+      const inputs = (s.fields || []).filter(f => f.is_input);
+      return inputs.some(f => f.is_underscored)
+          && inputs.some(f => f.is_non_display);
+    };
 
     if (isSignOnScreen(screen)) {
       return { screen, authenticated: false };
