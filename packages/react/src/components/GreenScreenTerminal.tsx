@@ -1010,7 +1010,7 @@ export function GreenScreenTerminal({
   const getStatusColor = (status?: string) => {
     switch (status) {
       case 'authenticated': return 'var(--gs-green, #10b981)';
-      case 'connected': return '#F59E0B';
+      case 'connected': return '#64748b';
       case 'connecting': return '#64748b';
       case 'error': return '#EF4444';
       default: return '#64748b';
