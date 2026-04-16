@@ -336,6 +336,12 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
       break;
     }
 
+    case 'ping':
+      // Liveness keepalive — reply so the client's dead-socket watchdog
+      // resets. No state change on the server.
+      wsSend(ws, { type: 'pong' });
+      break;
+
     case 'disconnect': {
       const sessionId = client.sessionId;
       const controller = client.controller;

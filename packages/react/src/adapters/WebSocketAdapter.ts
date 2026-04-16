@@ -3,6 +3,14 @@ import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult, Connect
 export interface WebSocketAdapterOptions {
   /** URL of the green-screen proxy or worker. Auto-detected from env vars, defaults to http://localhost:3001 */
   workerUrl?: string;
+  /** Send ping frames every N ms to keep the connection live and detect dead sockets. 0 disables. Default: 25000. */
+  pingIntervalMs?: number;
+  /** Close the socket if no message (including pong) received for this long. 0 disables. Default: 2× pingIntervalMs. */
+  deadSocketTimeoutMs?: number;
+  /** Reconnect automatically after an unintentional close. Default: true. */
+  autoReconnect?: boolean;
+  /** Max reconnect attempts (exponential backoff, 1s → 30s cap). Default: 20. */
+  maxReconnectAttempts?: number;
 }
 
 /**
@@ -35,12 +43,27 @@ export class WebSocketAdapter implements TerminalAdapter {
   private sessionResumedListeners: Set<(sessionId: string) => void> = new Set();
   private _sessionId: string | null = null;
 
+  // Liveness + auto-reconnect.
+  private pingIntervalMs: number;
+  private deadSocketTimeoutMs: number;
+  private autoReconnectEnabled: boolean;
+  private maxReconnectAttempts: number;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private deadSocketTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts: number = 0;
+  private intentionalClose: boolean = false;
+
   constructor(options: WebSocketAdapterOptions = {}) {
     this.workerUrl = (
       options.workerUrl
       || WebSocketAdapter.detectEnvUrl()
       || 'http://localhost:3001'
     ).replace(/\/+$/, '');
+    this.pingIntervalMs = options.pingIntervalMs ?? 25000;
+    this.deadSocketTimeoutMs = options.deadSocketTimeoutMs ?? this.pingIntervalMs * 2;
+    this.autoReconnectEnabled = options.autoReconnect ?? true;
+    this.maxReconnectAttempts = options.maxReconnectAttempts ?? 20;
   }
 
   private static detectEnvUrl(): string | undefined {
@@ -210,6 +233,10 @@ export class WebSocketAdapter implements TerminalAdapter {
 
     this.status = { connected: false, status: 'disconnected' };
     this._sessionId = null;
+    this.intentionalClose = true;
+    this.stopPingLoop();
+    this.clearDeadSocketTimer();
+    this.clearReconnectTimer();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -221,8 +248,14 @@ export class WebSocketAdapter implements TerminalAdapter {
     return { success: false, error: 'Use disconnect() then connect() instead' };
   }
 
-  /** Close the WebSocket without sending disconnect (session stays alive on proxy) */
+  /** Close the WebSocket without sending disconnect (session stays alive on proxy).
+   *  Also cancels any pending auto-reconnect — call ensureWebSocket() or
+   *  reattach() later to re-establish the socket. */
   dispose(): void {
+    this.intentionalClose = true;
+    this.stopPingLoop();
+    this.clearDeadSocketTimer();
+    this.clearReconnectTimer();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -233,14 +266,34 @@ export class WebSocketAdapter implements TerminalAdapter {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     if (this.connectingPromise) return this.connectingPromise;
 
+    this.intentionalClose = false;
+    this.clearReconnectTimer();
+
     this.connectingPromise = new Promise<void>((resolve, reject) => {
       const wsUrl = this.workerUrl.replace(/^http/, 'ws') + '/ws';
       this.ws = new WebSocket(wsUrl);
 
-      this.ws.onopen = () => resolve();
+      this.ws.onopen = () => {
+        this.reconnectAttempts = 0;
+        this.startPingLoop();
+        this.armDeadSocketTimer();
+        // After a reconnect with a known session id, always reattach — the
+        // socket may have dropped for reasons that don't change the id
+        // (proxy restart, nginx blip). The integrator can't detect this, so
+        // the adapter re-sends reattach unconditionally. Safe to do on the
+        // first connect too: if _sessionId is still null, skipped.
+        if (this._sessionId) {
+          try {
+            this.wsSend({ type: 'reattach', sessionId: this._sessionId });
+          } catch { /* wsSend is no-op if socket not OPEN */ }
+        }
+        resolve();
+      };
       this.ws.onerror = () => reject(new Error('WebSocket connection failed'));
 
       this.ws.onmessage = (event) => {
+        // Any inbound message = socket is alive; reset the watchdog.
+        this.armDeadSocketTimer();
         try {
           const msg = JSON.parse(event.data);
           this.handleMessage(msg);
@@ -248,14 +301,81 @@ export class WebSocketAdapter implements TerminalAdapter {
       };
 
       this.ws.onclose = () => {
+        this.stopPingLoop();
+        this.clearDeadSocketTimer();
         this.status = { connected: false, status: 'disconnected' };
         for (const listener of this.statusListeners) listener(this.status);
+        this.scheduleReconnect();
       };
     }).finally(() => {
       this.connectingPromise = null;
     });
 
     return this.connectingPromise;
+  }
+
+  // ── Liveness ──────────────────────────────────────────────────
+
+  private startPingLoop(): void {
+    this.stopPingLoop();
+    if (this.pingIntervalMs <= 0) return;
+    this.pingTimer = setInterval(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try { this.ws.send(JSON.stringify({ type: 'ping' })); }
+        catch { /* ignore; dead-socket timer will catch it */ }
+      }
+    }, this.pingIntervalMs);
+  }
+
+  private stopPingLoop(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+  }
+
+  private armDeadSocketTimer(): void {
+    this.clearDeadSocketTimer();
+    if (this.deadSocketTimeoutMs <= 0) return;
+    this.deadSocketTimer = setTimeout(() => {
+      // No message (not even pong) for the whole window — treat the socket
+      // as dead even if the TCP stack still thinks it's open. Closing will
+      // fire onclose → scheduleReconnect.
+      if (this.ws) {
+        try { this.ws.close(4000, 'dead-socket-timeout'); } catch { /* noop */ }
+      }
+    }, this.deadSocketTimeoutMs);
+  }
+
+  private clearDeadSocketTimer(): void {
+    if (this.deadSocketTimer) {
+      clearTimeout(this.deadSocketTimer);
+      this.deadSocketTimer = null;
+    }
+  }
+
+  // ── Auto-reconnect ────────────────────────────────────────────
+
+  private scheduleReconnect(): void {
+    if (!this.autoReconnectEnabled) return;
+    if (this.intentionalClose) return;
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
+    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    this.reconnectAttempts++;
+    this.clearReconnectTimer();
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      // Fire and forget — ensureWebSocket swallows errors via the
+      // connectingPromise reject path; another onclose will schedule again.
+      this.ensureWebSocket().catch(() => { /* scheduled again via onclose */ });
+    }, delay);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
   }
 
   private handleMessage(msg: any): void {
@@ -355,6 +475,10 @@ export class WebSocketAdapter implements TerminalAdapter {
         }
         break;
       }
+
+      case 'pong':
+        // Dead-socket timer already reset via armDeadSocketTimer() in onmessage.
+        break;
     }
   }
 
