@@ -162,10 +162,13 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
       username: connectedConfig?.username,
     }
     if (standalone) {
+      // Standalone mode (?mode=standalone) is what ships as the
+      // `green-screen-terminal` npm package. The theme sticker is a
+      // demo-landing-page flourish only — never render it in standalone
+      // output.
       return (
         <div className="standalone-page">
           <div className="terminal-wrapper">
-            <ThemeSticker />
             <ThemedTerminal
               adapter={adapter}
               protocol="tn5250"
