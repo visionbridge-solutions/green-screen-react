@@ -1,32 +1,15 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import type { TerminalAdapter, ScreenData, ConnectionStatus, Field, TerminalProtocol, ProtocolProfile, ConnectConfig } from '../adapters/types';
 import { RestAdapter } from '../adapters/RestAdapter';
 import { WebSocketAdapter } from '../adapters/WebSocketAdapter';
-import { useTerminalScreen, useTerminalInput, useTerminalConnection } from '../hooks/useTerminal';
-import { useTypingAnimation } from '../hooks/useTypingAnimation';
+import { useAutoReconnect } from '../hooks/useAutoReconnect';
+import { useTerminalState } from '../hooks/useTerminalState';
 import { getProtocolProfile } from '../protocols/registry';
 import { TerminalBootLoader as DefaultBootLoader } from './TerminalBootLoader';
-import { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, KeyIcon, MinimizeIcon, KeyboardIcon } from './Icons';
+import { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, KeyIcon, MinimizeIcon, KeyboardIcon, UnplugIcon } from './Icons';
 import { InlineSignIn } from './InlineSignIn';
 import { decodeAttrByte, decodeExtColor, decodeExtHighlight, cssVarForColor, mergeExtAttr, extColorIsReverse } from '../utils/attribute';
 import { validateMod10, validateMod11, filterFieldInput } from '../utils/validation';
-
-/**
- * True if the screen content is effectively empty — all spaces, NULs, or
- * whitespace. Used to detect the "host blanked the screen but hasn't sent
- * replacement content yet" transit state.
- */
-function isBlankContent(content: string | undefined): boolean {
-  if (!content) return true;
-  for (let i = 0; i < content.length; i++) {
-    const ch = content.charCodeAt(i);
-    // Skip whitespace (space, tab, newline, CR), NUL, and non-breaking space
-    if (ch !== 0x20 && ch !== 0x09 && ch !== 0x0a && ch !== 0x0d && ch !== 0x00 && ch !== 0xa0) {
-      return false;
-    }
-  }
-  return true;
-}
 
 /** Format milliseconds as M:SS for the X CLOCK busy indicator. */
 function formatBusyClock(ms: number): string {
@@ -55,6 +38,32 @@ function aidByteToKeyName(aid: number): string | null {
   return null;
 }
 
+/**
+ * Compute the portion of a field that falls on a given row, handling
+ * wrap-around for multi-row fields (common on IBM i command lines where a
+ * single field spans 2-3 rows). Returns null if the field doesn't touch
+ * this row. Otherwise returns { col, length } for the slice on this row.
+ *
+ * Example: field at (row 19, col 7, length 153) with cols=80:
+ *   row 19 → { col: 7, length: 73 }   (73 chars: col 7..79)
+ *   row 20 → { col: 0, length: 80 }   (next 80 chars: col 0..79)
+ *   row 21 → null (len 73+80=153 exhausted)
+ */
+function fieldSliceForRow(
+  field: { row: number; col: number; length: number },
+  rowIndex: number,
+  cols: number,
+): { col: number; length: number } | null {
+  const rowDelta = rowIndex - field.row;
+  if (rowDelta < 0) return null;
+  const offsetFromStart = rowDelta === 0 ? 0 : (cols - field.col) + (rowDelta - 1) * cols;
+  if (offsetFromStart >= field.length) return null;
+  const sliceCol = rowDelta === 0 ? field.col : 0;
+  const sliceLen = Math.min(cols - sliceCol, field.length - offsetFromStart);
+  if (sliceLen <= 0) return null;
+  return { col: sliceCol, length: sliceLen };
+}
+
 /* ── No-op adapter (placeholder before connection) ───────────────── */
 
 const noopResult = { success: false, error: 'No adapter configured' };
@@ -70,6 +79,16 @@ const noopAdapter: TerminalAdapter = {
 };
 
 /* ── Component Props ──────────────────────────────────────────────── */
+
+/** State passed to the header render prop */
+export interface TerminalHeaderState {
+  connectionStatus: ConnectionStatus | null;
+  keyboardLocked: boolean;
+  insertMode: boolean;
+  isFocused: boolean;
+  reconnect: () => void;
+  reconnecting: boolean;
+}
 
 export interface GreenScreenTerminalProps {
   /** Adapter for communicating with the terminal backend (optional — auto-created from sign-in form or baseUrl) */
@@ -100,11 +119,16 @@ export interface GreenScreenTerminalProps {
   embedded?: boolean;
   /** Show the header bar (default true) */
   showHeader?: boolean;
+  /** Custom header: ReactNode, render prop with terminal state, or false to hide.
+   *  When provided, overrides showHeader/embedded/headerRight/statusActions. */
+  header?: React.ReactNode | ((state: TerminalHeaderState) => React.ReactNode) | false;
   /** Enable typing animation (default false) */
   typingAnimation?: boolean;
   /** Typing animation budget in ms (default 60) */
   typingBudgetMs?: number;
 
+  /** Auto-create a default WebSocketAdapter when no adapter/baseUrl/workerUrl is provided (default true) */
+  autoConnect?: boolean;
   /** Show inline sign-in form when disconnected (default true) */
   inlineSignIn?: boolean;
   /** Default protocol for the sign-in form dropdown (default 'tn5250') */
@@ -130,10 +154,35 @@ export interface GreenScreenTerminalProps {
   onNotification?: (message: string, type: 'info' | 'error') => void;
   /** Callback when screen content changes */
   onScreenChange?: (screen: ScreenData) => void;
+  /** Callback fired after the terminal's built-in disconnect button is clicked
+   *  and the adapter has disconnected. Use to clean up external state
+   *  (session storage, parent component state, etc.). */
+  onDisconnect?: () => void;
   /** Callback for minimize action (embedded mode) */
   onMinimize?: () => void;
   /** Show the keyboard-shortcuts button in the header (default true) */
   showShortcutsButton?: boolean;
+
+  /** Persist focus state to localStorage across page reloads (default true) */
+  persistFocus?: boolean;
+
+  /** When true, the terminal treats itself as always focused:
+   *   (a) clicks outside the terminal don't unfocus it (click-outside
+   *       handler is disabled);
+   *   (b) any document-level keydown that lands on a non-form element
+   *       refocuses the hidden input so keystrokes flow to the terminal.
+   *
+   *  Use this for single-terminal host pages where the user should never
+   *  need to click back into the terminal to keep typing. When there are
+   *  other editable controls on the page (form fields, editors), keep this
+   *  off and let the regular click-to-focus model decide. */
+  alwaysFocused?: boolean;
+
+  /** Built-in visual theme preset. Applied as a `gs-theme-*` class on the
+   *  root `.gs-terminal` element so CSS variables resolve to theme-specific
+   *  values. Integrators can also override individual CSS variables directly
+   *  on a parent element for fully custom palettes. Default: 'modern'. */
+  theme?: 'modern' | 'classic';
 
   /** Additional CSS class name */
   className?: string;
@@ -168,8 +217,10 @@ export function GreenScreenTerminal({
   maxReconnectAttempts: maxAttempts = 5,
   embedded = false,
   showHeader = true,
+  header,
   typingAnimation = false,
   typingBudgetMs = 60,
+  autoConnect = true,
   inlineSignIn = true,
   defaultProtocol: signInDefaultProtocol,
   onSignIn,
@@ -181,15 +232,18 @@ export function GreenScreenTerminal({
   overlay,
   onNotification,
   onScreenChange,
+  onDisconnect,
   onMinimize,
   showShortcutsButton = true,
+  persistFocus = true,
+  alwaysFocused = false,
+  theme = 'modern',
   className,
   style,
 }: GreenScreenTerminalProps) {
   const profile = customProfile ?? getProtocolProfile(protocol);
 
-  // --- Resolve adapter: explicit > baseUrl > workerUrl > internal (from sign-in) > default WebSocket > noop ---
-  const [internalAdapter, setInternalAdapter] = useState<TerminalAdapter | null>(null);
+  // --- Resolve adapter: explicit > baseUrl > workerUrl > default WebSocket > noop ---
   const baseUrlAdapter = useMemo(
     () => baseUrl ? new RestAdapter({ baseUrl }) : null,
     [baseUrl],
@@ -200,97 +254,36 @@ export function GreenScreenTerminal({
   );
   // Default WebSocketAdapter (auto-detects env vars, falls back to localhost:3001) when no adapter is configured
   const defaultWsAdapter = useMemo(
-    () => (!externalAdapter && !baseUrl && !workerUrl) ? new WebSocketAdapter() : null,
-    [externalAdapter, baseUrl, workerUrl],
+    () => (autoConnect && !externalAdapter && !baseUrl && !workerUrl) ? new WebSocketAdapter() : null,
+    [autoConnect, externalAdapter, baseUrl, workerUrl],
   );
-  const adapter = externalAdapter ?? baseUrlAdapter ?? workerUrlAdapter ?? internalAdapter ?? defaultWsAdapter ?? noopAdapter;
+  const adapter = externalAdapter ?? baseUrlAdapter ?? workerUrlAdapter ?? defaultWsAdapter ?? noopAdapter;
   const isUsingDefaultAdapter = adapter === defaultWsAdapter;
 
-  // --- Data sources ---
-  const shouldPoll = pollInterval > 0 && !externalScreenData;
-  const { data: polledScreenData, error: screenError } = useTerminalScreen(adapter, pollInterval, shouldPoll);
-  const { sendText: _sendText, sendKey: _sendKey } = useTerminalInput(adapter);
-  const { connect, reconnect, loading: reconnecting, error: connectError } = useTerminalConnection(adapter);
-
-  const incomingScreenData = externalScreenData ?? polledScreenData;
-
-  // --- Sticky last-contentful screen ----------------------------------
-  // Some IBM i operations send a CLEAR_UNIT record and then take multiple
-  // seconds to send the replacement WRITE_TO_DISPLAY. In between, the
-  // proxy emits a fully blank locked screen, which would render as a black
-  // flash that makes the terminal feel broken. Stash the last non-blank
-  // snapshot and substitute it back in whenever we're in that transit
-  // state — this keeps the old screen visible (with the X II lock badge)
-  // until the host actually finishes responding.
-  const lastContentfulRef = useRef<ScreenData | null>(null);
-  useEffect(() => {
-    if (incomingScreenData && !isBlankContent(incomingScreenData.content)) {
-      lastContentfulRef.current = incomingScreenData;
-    }
-  }, [incomingScreenData]);
-
-  // True waiting state on the wire: host blanked the buffer AND the
-  // keyboard is still locked. Errors (WRITE_ERROR_CODE) paint text on the
-  // message line, so this never matches an error screen.
-  const isBlankLocked = !!(
-    incomingScreenData &&
-    incomingScreenData.keyboard_locked &&
-    isBlankContent(incomingScreenData.content)
-  );
-
-  const rawScreenData = useMemo(() => {
-    if (isBlankLocked && lastContentfulRef.current) {
-      return { ...lastContentfulRef.current, keyboard_locked: true };
-    }
-    return incomingScreenData;
-  }, [incomingScreenData, isBlankLocked]);
-
-  // --- Busy "X CLOCK" overlay -----------------------------------------
-  // Shows after 600ms of a blank+locked state to reassure the user that
-  // the host is just slow, not broken. The deferral prevents flashing on
-  // fast operations where the host clears and rewrites within one frame.
-  // Only triggers on true waiting state (isBlankLocked) so error screens
-  // — which paint error text and therefore are never blank — don't
-  // latch it on indefinitely.
-  const BUSY_OVERLAY_DELAY_MS = 600;
-  const [lockElapsedMs, setLockElapsedMs] = useState(0);
-  useEffect(() => {
-    if (!isBlankLocked) {
-      setLockElapsedMs(0);
-      return;
-    }
-    const start = Date.now();
-    setLockElapsedMs(0);
-    const id = setInterval(() => setLockElapsedMs(Date.now() - start), 250);
-    return () => clearInterval(id);
-  }, [isBlankLocked]);
-  const showBusyOverlay = isBlankLocked && lockElapsedMs >= BUSY_OVERLAY_DELAY_MS;
-
-  const connStatus = externalStatus ?? (rawScreenData ? { connected: true, status: 'authenticated' as const } : { connected: false, status: 'disconnected' as const });
-
-  // Typing animation
-  const { displayedContent, animatedCursorPos } = useTypingAnimation(
-    rawScreenData?.content,
+  // --- Core terminal state (screen data, connection, busy overlay) ---
+  const {
+    screenData,
+    rawScreenData,
+    connectionStatus: connStatus,
+    sendText,
+    sendKey,
+    connect,
+    reconnect,
+    reconnecting,
+    connectError,
+    screenError,
+    showBusyOverlay,
+    busyElapsedMs: lockElapsedMs,
+    animatedCursorPos,
+  } = useTerminalState({
+    adapter,
+    pollInterval,
+    externalScreenData,
+    externalStatus,
     typingAnimation,
     typingBudgetMs,
-  );
-
-  const screenData = useMemo(() => {
-    if (!rawScreenData) return null;
-    return { ...rawScreenData, content: displayedContent };
-  }, [rawScreenData, displayedContent]);
-
-  // Notify parent on screen changes
-  const prevScreenSigRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (screenData && onScreenChange && screenData.screen_signature !== prevScreenSigRef.current) {
-      prevScreenSigRef.current = screenData.screen_signature;
-      onScreenChange(screenData);
-    }
-  }, [screenData, onScreenChange]);
-
-  const sendText = useCallback(async (text: string) => _sendText(text), [_sendText]);
-  const sendKey = useCallback(async (key: string) => _sendKey(key), [_sendKey]);
+    onScreenChange,
+  });
 
   // --- Optimistic edits ---
   // Characters typed by the user are applied optimistically to the displayed
@@ -313,10 +306,21 @@ export function GreenScreenTerminal({
   const [isFocused, setIsFocused] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [fkeyPage, setFkeyPage] = useState(0); // 0 = F1-F12, 1 = F13-F24
+  // Draggable shortcuts panel: position is viewport-relative (position: fixed).
+  // Null until the panel first opens; then seeded from terminal bottom-right.
+  const [shortcutsPos, setShortcutsPos] = useState<{ x: number; y: number } | null>(null);
+  const [isDraggingShortcuts, setIsDraggingShortcuts] = useState(false);
+  const shortcutsDragOffsetRef = useRef<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
+  const shortcutsPanelRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [syncedCursor, setSyncedCursor] = useState<{ row: number; col: number } | null>(null);
+  // Optimistic keyboard lock — set instantly when the user presses a submit
+  // key (Enter/F-key/PageUp/PageDown) so the X II badge appears without
+  // waiting for the proxy's round-trip. Cleared when rawScreenData content
+  // changes (meaning the proxy has responded with a new screen).
+  const [optimisticLock, setOptimisticLock] = useState(false);
   const prevRawContentRef = useRef('');
 
   useEffect(() => {
@@ -324,48 +328,22 @@ export function GreenScreenTerminal({
     if (prevRawContentRef.current && newContent && newContent !== prevRawContentRef.current) {
       setSyncedCursor(null);
       setInputText('');
+      setOptimisticLock(false);
     }
     prevRawContentRef.current = newContent;
   }, [rawScreenData?.content]);
 
   // --- Auto-reconnect ---
-  const [autoReconnectAttempt, setAutoReconnectAttempt] = useState(0);
-  const [isAutoReconnecting, setIsAutoReconnecting] = useState(false);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const wasConnectedRef = useRef(false);
-  const isConnectedRef = useRef(false);
-
-  useEffect(() => { isConnectedRef.current = connStatus?.connected ?? false; }, [connStatus?.connected]);
-
-  useEffect(() => {
-    if (!autoReconnectEnabled) return;
-    const isConnected = connStatus?.connected;
-
-    if (isConnected) {
-      wasConnectedRef.current = true;
-      if (reconnectTimeoutRef.current) { clearTimeout(reconnectTimeoutRef.current); reconnectTimeoutRef.current = null; }
-      setAutoReconnectAttempt(0);
-      setIsAutoReconnecting(false);
-    } else if (wasConnectedRef.current && !isConnected && !isAutoReconnecting && !reconnecting) {
-      if (autoReconnectAttempt < maxAttempts) {
-        setIsAutoReconnecting(true);
-        const delay = Math.pow(2, autoReconnectAttempt) * 1000;
-        reconnectTimeoutRef.current = setTimeout(async () => {
-          if (isConnectedRef.current) { setIsAutoReconnecting(false); return; }
-          onNotification?.(`Auto-reconnect attempt ${autoReconnectAttempt + 1}/${maxAttempts}`, 'info');
-          try {
-            const result = await reconnect();
-            if (!result?.success) setAutoReconnectAttempt(prev => prev + 1);
-          } catch {
-            onNotification?.('Auto-reconnect failed', 'error');
-            setAutoReconnectAttempt(prev => prev + 1);
-          }
-          setIsAutoReconnecting(false);
-        }, delay);
-      }
-    }
-    return () => { if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current); };
-  }, [connStatus?.connected, autoReconnectAttempt, isAutoReconnecting, reconnecting, reconnect, autoReconnectEnabled, maxAttempts, onNotification]);
+  const {
+    attempt: autoReconnectAttempt,
+    isReconnecting: isAutoReconnecting,
+    reset: resetAutoReconnect,
+  } = useAutoReconnect(
+    connStatus?.connected ?? false,
+    reconnecting,
+    reconnect,
+    { enabled: autoReconnectEnabled, maxAttempts: maxAttempts, onNotification },
+  );
 
   // --- Inline sign-in ---
   const [connecting, setConnecting] = useState(false);
@@ -379,14 +357,6 @@ export function GreenScreenTerminal({
     setConnecting(true);
     setSignInError(null);
     try {
-      // Auto-create adapter from sign-in config when no external adapter is provided
-      if (!externalAdapter && !baseUrlAdapter) {
-        const port = config.port ? `:${config.port}` : '';
-        const newAdapter = new RestAdapter({ baseUrl: `http://${config.host}${port}` });
-        setInternalAdapter(newAdapter);
-        await newAdapter.connect(config);
-        return;
-      }
       await connect(config);
     } catch (err) {
       setSignInError(err instanceof Error ? err.message : String(err));
@@ -394,7 +364,7 @@ export function GreenScreenTerminal({
     }
     // Note: connecting is cleared by the screenData effect below, not here —
     // the connect() promise may resolve before the screen is actually ready.
-  }, [connect, onSignIn, externalAdapter, baseUrlAdapter]);
+  }, [connect, onSignIn]);
 
   // Clear connecting state when screen data arrives or connection is confirmed
   useEffect(() => {
@@ -423,9 +393,9 @@ export function GreenScreenTerminal({
   // --- Focus management ---
   const FOCUS_STORAGE_KEY = 'gs-terminal-focused';
 
-  // Restore focus from localStorage on mount (if auto-focus enabled)
+  // Restore focus from localStorage on mount (if auto-focus enabled and persistence enabled)
   useEffect(() => {
-    if (!autoFocusDisabled && !readOnly) {
+    if (!autoFocusDisabled && !readOnly && persistFocus) {
       try {
         if (localStorage.getItem(FOCUS_STORAGE_KEY) === 'true') {
           setIsFocused(true);
@@ -436,9 +406,9 @@ export function GreenScreenTerminal({
 
   // Persist focus state to localStorage
   useEffect(() => {
-    if (autoFocusDisabled) return;
+    if (autoFocusDisabled || !persistFocus) return;
     try { localStorage.setItem(FOCUS_STORAGE_KEY, String(isFocused)); } catch { /* noop */ }
-  }, [isFocused, autoFocusDisabled]);
+  }, [isFocused, autoFocusDisabled, persistFocus]);
 
   // Sync DOM focus with isFocused state
   useEffect(() => {
@@ -456,16 +426,112 @@ export function GreenScreenTerminal({
   }, [screenData?.content, autoFocusDisabled, readOnly]);
 
   useEffect(() => {
+    // Skip click-outside unfocus when alwaysFocused is on — the terminal
+    // stays "focused" regardless of where the user clicks.
+    if (alwaysFocused) return;
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) setIsFocused(false);
     };
     if (isFocused) document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isFocused]);
+  }, [isFocused, alwaysFocused]);
+
+  // alwaysFocused: aggressively steer keyboard focus to the terminal input.
+  // Keeps typing flowing into the terminal even after the user clicks on a
+  // non-form area of the page (e.g. the theme sticker, the demo footer,
+  // or empty space around the terminal). Form controls (input/select/etc)
+  // are whitelisted so the user can still interact with other UI — only
+  // "inert" page clicks get hijacked.
+  useEffect(() => {
+    if (!alwaysFocused || readOnly) return;
+    const isFormTarget = (el: Element | null): boolean => {
+      if (!el) return false;
+      return !!el.closest('input, select, textarea, button, a, [contenteditable="true"]');
+    };
+    const refocusInput = () => {
+      const input = inputRef.current;
+      if (input && document.activeElement !== input) input.focus();
+      setIsFocused(true);
+    };
+    const onMouseDown = (e: MouseEvent) => {
+      if (isFormTarget(e.target as Element)) return;
+      // setTimeout so the click event can still fire its own handlers first.
+      setTimeout(refocusInput, 0);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isFormTarget(e.target as Element)) return;
+      refocusInput();
+    };
+    // Initial focus on mount
+    refocusInput();
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [alwaysFocused, readOnly]);
 
   useEffect(() => {
     if (readOnly && isFocused) { setIsFocused(false); inputRef.current?.blur(); }
   }, [readOnly, isFocused]);
+
+  // --- Shortcuts panel: seed initial position & track drag ---
+  // Seed position from the terminal's bottom-right corner on first open
+  // (matches the prior absolute-positioned layout). Uses useLayoutEffect so
+  // the panel paints in its final spot without a flash at (0,0).
+  useLayoutEffect(() => {
+    if (showShortcuts && !shortcutsPos && shortcutsPanelRef.current && containerRef.current) {
+      const tRect = containerRef.current.getBoundingClientRect();
+      const pRect = shortcutsPanelRef.current.getBoundingClientRect();
+      const margin = 12;
+      const x = Math.max(0, Math.min(tRect.right - pRect.width - margin, window.innerWidth - pRect.width));
+      const y = Math.max(0, Math.min(tRect.bottom - pRect.height - margin, window.innerHeight - pRect.height));
+      setShortcutsPos({ x, y });
+    }
+  }, [showShortcuts, shortcutsPos]);
+
+  // Reset saved position when the panel closes so the next open re-seeds
+  // from the current terminal location (handles layout changes between opens).
+  useEffect(() => {
+    if (!showShortcuts) setShortcutsPos(null);
+  }, [showShortcuts]);
+
+  // Track dragging — attach document-level listeners while a drag is active
+  // so the drag continues even if the cursor leaves the panel.
+  useEffect(() => {
+    if (!isDraggingShortcuts) return;
+    const onMove = (e: MouseEvent) => {
+      const panel = shortcutsPanelRef.current;
+      if (!panel) return;
+      const rect = panel.getBoundingClientRect();
+      const nextX = e.clientX - shortcutsDragOffsetRef.current.dx;
+      const nextY = e.clientY - shortcutsDragOffsetRef.current.dy;
+      // Clamp inside viewport bounds
+      const maxX = window.innerWidth - rect.width;
+      const maxY = window.innerHeight - rect.height;
+      setShortcutsPos({
+        x: Math.max(0, Math.min(nextX, maxX)),
+        y: Math.max(0, Math.min(nextY, maxY)),
+      });
+    };
+    const onUp = () => setIsDraggingShortcuts(false);
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+  }, [isDraggingShortcuts]);
+
+  const startShortcutsDrag = useCallback((e: React.MouseEvent) => {
+    const panel = shortcutsPanelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    shortcutsDragOffsetRef.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+    setIsDraggingShortcuts(true);
+    e.preventDefault();
+  }, []);
 
   const screenContentRef = useRef<HTMLDivElement>(null);
   const charWidthRef = useRef<number>(0);
@@ -489,9 +555,16 @@ export function GreenScreenTerminal({
       contentEl.removeChild(span);
     }
 
+    // .gs-screen-content has padding (12px top, 16px left). Subtract it so
+    // (x, y) is measured from the first character cell, not the padded box
+    // edge. Without this, clicking in the lower half of a visual row maps
+    // to the next row down, and the column lands 1-2 cells to the right.
     const rect = contentEl.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const cs = window.getComputedStyle(contentEl);
+    const padLeft = parseFloat(cs.paddingLeft) || 0;
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    const x = e.clientX - rect.left - padLeft;
+    const y = e.clientY - rect.top - padTop;
     const ROW_HEIGHT = 21;
     const charWidth = charWidthRef.current;
     if (!charWidth) return;
@@ -505,9 +578,10 @@ export function GreenScreenTerminal({
     // Pointer AID (FCW 0x8Axx): if the clicked field declares a pointer AID,
     // send it as a key press and skip the normal cursor-move. Per IBM 5250
     // Functions Reference this is the defined "mouse click on field" behavior.
-    const clickedField = screenData.fields.find(f =>
-      f.row === clickedRow && clickedCol >= f.col && clickedCol < f.col + f.length,
-    );
+    const clickedField = screenData.fields.find(f => {
+      const slice = fieldSliceForRow(f, clickedRow, screenData.cols || profile.defaultCols);
+      return !!slice && clickedCol >= slice.col && clickedCol < slice.col + slice.length;
+    });
     const ptrAid = clickedField && (clickedField as any).pointer_aid as number | undefined;
     if (ptrAid) {
       // Map AID byte back to a key name. Common cases: 0xF1 ENTER, 0x31-0x3C F1-F12.
@@ -520,25 +594,38 @@ export function GreenScreenTerminal({
       }
     }
 
-    // Send cursor position to proxy (async, fire-and-forget for responsiveness)
+    // Set the click position optimistically and fire the proxy request.
+    // Intentionally fire-and-forget — do NOT chain .then() to update
+    // syncedCursor from the response. WebSocketAdapter.sendAndWaitForScreen
+    // has a single pending-resolver slot: when two setCursor calls overlap,
+    // the second one flushes the first's resolver with stale this.screen,
+    // then the first proxy cursor message resolves the second's resolver —
+    // promises get cross-wired with responses. Since the proxy's setCursor
+    // is a trivial clamp (no snapping), trust the optimistic value. The
+    // proxy's cursor message still updates this.screen.cursor_col for the
+    // next render's fallback.
     setSyncedCursor({ row: clickedRow, col: clickedCol });
-    adapter.setCursor?.(clickedRow, clickedCol).then(r => {
-      if (r?.cursor_row !== undefined) {
-        setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });
-      }
-    });
+    adapter.setCursor?.(clickedRow, clickedCol);
   }, [readOnly, screenData, adapter, sendKey]);
 
   // --- Field helpers ---
   const getCurrentField = useCallback(() => {
     const fields = screenData?.fields || [];
+    const cols = screenData?.cols || profile.defaultCols;
     const cursorRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
     const cursorCol = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
+    // Use fieldSliceForRow so multi-row wrapping input fields (e.g. IBM i
+    // command lines) match a cursor sitting on any of their continuation
+    // rows, not just the first row.
     for (const field of fields) {
-      if (field.is_input && field.row === cursorRow && cursorCol >= field.col && cursorCol < field.col + field.length) return field;
+      if (!field.is_input) continue;
+      const slice = fieldSliceForRow(field, cursorRow, cols);
+      if (!slice) continue;
+      // Inclusive trailing bound — see note in cursorInInputField.
+      if (cursorCol >= slice.col && cursorCol <= slice.col + slice.length) return field;
     }
     return null;
-  }, [screenData, syncedCursor]);
+  }, [screenData, syncedCursor, profile.defaultCols]);
 
   /**
    * Extract the text content of a field from the current screen display.
@@ -585,16 +672,16 @@ export function GreenScreenTerminal({
     // Ctrl+R: Reset (clear keyboard lock and error line)
     if (e.ctrlKey && e.key === 'r') {
       e.preventDefault();
-      const kr = await sendKey('RESET');
-      if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
+      setSyncedCursor(null);
+      sendKey('RESET');
       return;
     }
 
     // Ctrl+Enter: Field Exit (right-adjust and advance)
     if (e.ctrlKey && e.key === 'Enter') {
       e.preventDefault();
-      const kr = await sendKey('FIELD_EXIT');
-      if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
+      setSyncedCursor(null);
+      sendKey('FIELD_EXIT');
       return;
     }
 
@@ -614,6 +701,8 @@ export function GreenScreenTerminal({
       e.preventDefault();
       // Self-check any declared MOD10/MOD11 fields before submitting
       if (!runSelfCheck()) return;
+      // Lock keyboard instantly so X II badge appears without waiting for proxy
+      setOptimisticLock(true);
       const kr = await sendKey(e.key);
       if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
       return;
@@ -625,6 +714,52 @@ export function GreenScreenTerminal({
       const k = keyMap[e.key];
       const isSubmit = k === 'ENTER' || k === 'PAGEUP' || k === 'PAGEDOWN';
       if (isSubmit && !runSelfCheck()) return;
+
+      // Arrow keys: optimistically predict the new cursor position locally so
+      // the visual cursor moves immediately, matching typing's responsiveness.
+      // Local prediction mirrors the proxy's simple grid-wrap arithmetic —
+      // col±1 with column/row wrapping. The subsequent proxy 'cursor' push
+      // message updates rawScreenData but is shadowed by syncedCursor here,
+      // which is fine because our prediction matches the proxy's result.
+      if (k === 'UP' || k === 'DOWN' || k === 'LEFT' || k === 'RIGHT') {
+        const termRows = screenData?.rows || profile.defaultRows;
+        const termColsLocal = screenData?.cols || profile.defaultCols;
+        const curRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
+        const curCol = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
+        let newRow = curRow;
+        let newCol = curCol;
+        if (k === 'LEFT') {
+          newCol = curCol - 1;
+          if (newCol < 0) { newCol = termColsLocal - 1; newRow = (curRow - 1 + termRows) % termRows; }
+        } else if (k === 'RIGHT') {
+          newCol = curCol + 1;
+          if (newCol >= termColsLocal) { newCol = 0; newRow = (curRow + 1) % termRows; }
+        } else if (k === 'UP') {
+          newRow = (curRow - 1 + termRows) % termRows;
+        } else {
+          newRow = (curRow + 1) % termRows;
+        }
+        setSyncedCursor({ row: newRow, col: newCol });
+        sendKey(k);
+        return;
+      }
+
+      // Non-arrow cursor movers (TAB, HOME, END, BACKSPACE, DELETE, INSERT):
+      // outcome depends on field layout / host state, so local prediction
+      // isn't trivial. Clear syncedCursor and let the proxy's pushed update
+      // (via adapter.onScreen → rawScreenData) position the cursor.
+      const isOtherMovement = k === 'TAB' || k === 'HOME' || k === 'END'
+        || k === 'BACKSPACE' || k === 'DELETE' || k === 'INSERT';
+      if (isOtherMovement) {
+        setSyncedCursor(null);
+        sendKey(k);
+        return;
+      }
+
+      // AID/submit keys (ENTER, PAGEUP, PAGEDOWN) — await so self-check errors
+      // can abort before the screen transitions.
+      // Lock keyboard instantly so X II badge appears without waiting for proxy.
+      setOptimisticLock(true);
       const kr = await sendKey(k);
       if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
     }
@@ -690,6 +825,143 @@ export function GreenScreenTerminal({
     return { row: cursorRow, col: cursorCol };
   };
 
+  // --- WDSF popup windows + heuristic plain-char popup detection ---
+  // IBM i UIM popups (DSPMSG help, CRTLIB prompter, Exit Interactive SQL,
+  // etc.) arrive in two flavors:
+  //   (a) CREATE_WINDOW structured fields — proxy records metadata in
+  //       screenData.windows. Easy: read the metadata.
+  //   (b) Plain WRITE_TO_DISPLAY with literal `.` / `:` border characters
+  //       painted into the buffer. No metadata. We detect these heuristically
+  //       by scanning for rectangular patterns of `.` on top/bottom rows and
+  //       `:` on left/right columns.
+  // In either case we produce a unified window list, blank the underlying
+  // ASCII border cells in renderRowWithFields, and draw styled .gs-window
+  // overlays (Mocha/ACS-style rounded accent frame with title/footer).
+  const detectedWindows = useMemo(() => {
+    const wdsf = (screenData as any)?.windows as Array<{ row: number; col: number; height: number; width: number; title?: string; footer?: string }> | undefined;
+    if (wdsf && wdsf.length > 0) return wdsf;
+    const content = screenData?.content;
+    const cols = screenData?.cols || profile.defaultCols;
+    const termRows = screenData?.rows || profile.defaultRows;
+    if (!content) return [];
+    const lines = content.split('\n');
+    const rowAt = (r: number) => (lines[r] || '').padEnd(cols, ' ');
+    const DOT = '.';
+    const COL = ':';
+    // Heuristic: a run of 5+ consecutive `.` chars at the same col range on
+    // two distinct rows, with `:` at both edges on every row between them.
+    // MIN_WIDTH 5 rules out dotted separators ("........") used as filler in
+    // label fields like "Option . . . . . . . . 1". MIN_HEIGHT 2 rules out
+    // single-line patterns. We only keep the first rectangle that starts on
+    // each row to avoid pathological nesting.
+    const MIN_WIDTH = 20; // popups are typically wide; avoids matching "Selection . . . . . . ."
+    const found: Array<{ row: number; col: number; height: number; width: number; title?: string; footer?: string }> = [];
+    const claimedTop = new Set<number>();
+    for (let rTop = 0; rTop < termRows - 2; rTop++) {
+      if (claimedTop.has(rTop)) continue;
+      const topLine = rowAt(rTop);
+      // Find runs of dots (length >= MIN_WIDTH)
+      let c = 0;
+      while (c < cols) {
+        if (topLine[c] !== DOT) { c++; continue; }
+        let end = c;
+        while (end < cols && topLine[end] === DOT) end++;
+        const runLen = end - c;
+        if (runLen >= MIN_WIDTH) {
+          const startCol = c;
+          const endCol = end - 1;
+          // Scan downward: need `:` at startCol and endCol on subsequent rows
+          // until we hit a row that doesn't match (bottom edge candidate).
+          let r = rTop + 1;
+          while (r < termRows) {
+            const line = rowAt(r);
+            if (line[startCol] !== COL || line[endCol] !== COL) break;
+            r++;
+          }
+          const lastMidRow = r - 1; // last row with `:` at both edges
+          const heightMid = lastMidRow - rTop; // rows between top edge and break
+          if (heightMid < 2) { c = end; continue; }
+          // Bottom-edge detection. Two shapes observed in IBM i:
+          //   (a) The `:` pattern terminates, and row lastMidRow+1 is a
+          //       horizontal `.` run (no corner chars). Top was pure dots;
+          //       bottom is pure dots.
+          //   (b) The LAST mid row itself is the bottom edge: `:` at
+          //       startCol, dots in between, `:` at endCol. No separate
+          //       bottom row.
+          let bottomRow = -1;
+          let title: string | undefined;
+          let footer: string | undefined;
+          // Try (b) first: is lastMidRow actually `:...:`?
+          {
+            const line = rowAt(lastMidRow);
+            let dots = 0;
+            for (let cc = startCol + 1; cc < endCol; cc++) if (line[cc] === DOT) dots++;
+            const innerLen = Math.max(1, endCol - startCol - 1);
+            if (dots >= innerLen * 0.8) {
+              bottomRow = lastMidRow;
+            }
+          }
+          // Try (a): row below lastMidRow is a `.` row
+          if (bottomRow < 0 && lastMidRow + 1 < termRows) {
+            const line = rowAt(lastMidRow + 1);
+            let dots = 0;
+            for (let cc = startCol; cc <= endCol; cc++) if (line[cc] === DOT) dots++;
+            const span = Math.max(1, endCol - startCol + 1);
+            if (dots >= span * 0.8) {
+              bottomRow = lastMidRow + 1;
+            }
+          }
+          if (bottomRow < 0) { c = end; continue; }
+          // Extract title/footer: any non-dot non-space text on the border
+          // rows. E.g. " Option - Help " embedded in the top row dots.
+          const topInner = topLine.substring(startCol + 1, endCol)
+            .replace(/\./g, ' ').trim();
+          if (topInner.length > 0) title = topInner;
+          const botLine = rowAt(bottomRow);
+          const botInner = botLine.substring(startCol + 1, endCol)
+            .replace(/\./g, ' ').trim();
+          if (botInner.length > 0) footer = botInner;
+          found.push({
+            row: rTop,
+            col: startCol,
+            height: bottomRow - rTop - 1,
+            width: endCol - startCol - 1,
+            title,
+            footer,
+          });
+          claimedTop.add(rTop);
+          claimedTop.add(bottomRow);
+          break;
+        }
+        c = end;
+      }
+    }
+    return found;
+  }, [screenData, profile.defaultCols, profile.defaultRows]);
+
+  const windowBorderAddrs = useMemo(() => {
+    const set = new Set<number>();
+    if (!detectedWindows || detectedWindows.length === 0) return set;
+    const cols = screenData?.cols || profile.defaultCols;
+    for (const w of detectedWindows) {
+      const topRow = w.row;
+      const botRow = w.row + w.height + 1;
+      const leftCol = w.col;
+      const rightCol = w.col + w.width + 1;
+      // Top + bottom edges (inclusive of corners)
+      for (let c = leftCol; c <= rightCol; c++) {
+        set.add(topRow * cols + c);
+        set.add(botRow * cols + c);
+      }
+      // Left + right edges
+      for (let r = topRow + 1; r < botRow; r++) {
+        set.add(r * cols + leftCol);
+        set.add(r * cols + rightCol);
+      }
+    }
+    return set;
+  }, [detectedWindows, screenData?.cols, profile.defaultCols]);
+
   // --- Rendering helpers ---
   const renderTextWithUnderlines = useCallback((text: string, keyPrefix: string): React.ReactNode => {
     const underscoreRegex = /_{2,}/g;
@@ -700,7 +972,7 @@ export function GreenScreenTerminal({
     while ((match = underscoreRegex.exec(text)) !== null) {
       if (match.index > lastIndex) segments.push(<span key={`${keyPrefix}-t-${segmentIndex}`}>{text.substring(lastIndex, match.index)}</span>);
       const count = match[0].length;
-      segments.push(<span key={`${keyPrefix}-u-${segmentIndex}`} style={{ borderBottom: '1px solid var(--gs-green, #10b981)', display: 'inline-block', width: `${count}ch` }}>{' '.repeat(count)}</span>);
+      segments.push(<span key={`${keyPrefix}-u-${segmentIndex}`} style={{ borderBottom: '1px solid var(--gs-green, #a6e3a1)', display: 'inline-block', width: `${count}ch` }}>{' '.repeat(count)}</span>);
       lastIndex = match.index + match[0].length;
       segmentIndex++;
     }
@@ -715,13 +987,35 @@ export function GreenScreenTerminal({
     cursorRow: number,
     cursorCol: number,
   ): React.ReactNode => {
-    const inputFields = fields.filter(f => f.row === rowIndex && f.is_input);
+    const cols = screenData?.cols || profile.defaultCols;
+    // Blank out WDSF window border cells — the host writes literal `.` and
+    // `:` characters into the buffer for the popup border. We render a real
+    // styled frame overlay (see .gs-window below) so the ASCII cells should
+    // appear blank. Title/footer text lives on these rows too but is also
+    // re-rendered via .gs-window-title / -footer overlays, so blank-all is
+    // safe.
+    if (windowBorderAddrs.size > 0) {
+      const chars = line.split('');
+      for (let c = 0; c < chars.length; c++) {
+        if (windowBorderAddrs.has(rowIndex * cols + c)) chars[c] = ' ';
+      }
+      line = chars.join('');
+    }
+    // Multi-row input fields (IBM i command lines often span 2-3 rows) need
+    // their underline rendered on every row they span, not just the starting
+    // row. Build virtual field slices with row/col/length adjusted to the
+    // current row's visible portion of each field.
+    const inputFields: Field[] = [];
+    for (const f of fields) {
+      if (!f.is_input) continue;
+      const slice = fieldSliceForRow(f, rowIndex, cols);
+      if (!slice) continue;
+      inputFields.push({ ...f, row: rowIndex, col: slice.col, length: slice.length });
+    }
     const highlightedFields = fields.filter(f => f.row === rowIndex && f.is_protected && f.is_highlighted);
     const reverseFields = fields.filter(f => f.row === rowIndex && f.is_protected && f.is_reverse);
     const colorFields = fields.filter(f => f.row === rowIndex && f.is_protected && (f as any).color && !f.is_highlighted && !f.is_reverse);
     const allRowFields = [...inputFields, ...highlightedFields, ...reverseFields, ...colorFields];
-
-    const cols = screenData?.cols || profile.defaultCols;
     const extAttrs = (screenData as any)?.ext_attrs as Record<number, { color?: number; highlight?: number; char_set?: number }> | undefined;
     const dbcsCont = (screenData as any)?.dbcs_cont as number[] | undefined;
     const dbcsContSet = dbcsCont && dbcsCont.length > 0 ? new Set(dbcsCont) : null;
@@ -908,13 +1202,13 @@ export function GreenScreenTerminal({
       return (
         <div style={{ width: `${screenData?.cols || profile.defaultCols}ch`, height: `${(screenData?.rows || profile.defaultRows) * 21}px`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
-            <div style={{ color: '#808080', marginBottom: '12px' }}><TerminalIcon size={40} /></div>
-            <p style={{ fontFamily: 'var(--gs-font)', fontSize: '12px', color: connStatus?.status === 'connecting' ? '#f59e0b' : connStatus?.status === 'loading' ? '#94a3b8' : '#808080' }}>
+            <div style={{ color: 'var(--gs-muted, #6c7086)', marginBottom: '12px' }}><TerminalIcon size={40} /></div>
+            <p style={{ fontFamily: 'var(--gs-font)', fontSize: '12px', color: connStatus?.status === 'connecting' ? 'var(--gs-yellow, #f9e2af)' : connStatus?.status === 'loading' ? 'var(--gs-muted, #6c7086)' : 'var(--gs-muted, #6c7086)' }}>
               {connStatus?.connected ? 'Waiting for screen data...' : connStatus?.status === 'connecting' ? 'Connecting...' : connStatus?.status === 'loading' ? 'Loading...' : 'Not connected'}
             </p>
             {!connStatus?.connected && isUsingDefaultAdapter && (
-              <p style={{ fontFamily: 'var(--gs-font)', fontSize: '11px', color: '#606060', marginTop: '8px' }}>
-                Start the proxy: <code style={{ color: '#10b981' }}>npx green-screen-proxy</code>
+              <p style={{ fontFamily: 'var(--gs-font)', fontSize: '11px', color: 'var(--gs-muted, #6c7086)', marginTop: '8px' }}>
+                Start the proxy: <code style={{ color: 'var(--gs-accent, #cba6f7)' }}>npx green-screen-proxy</code>
               </p>
             )}
           </div>
@@ -940,11 +1234,21 @@ export function GreenScreenTerminal({
     // (ACS, Mocha) show the cursor in password (NON_DISPLAY) fields too —
     // that's the only feedback that a keypress was registered, since the
     // typed characters stay invisible.
-    const cursorInInputField = hasCursor && fields.some(f =>
-      f.is_input &&
-      f.row === cursor.row &&
-      cursor.col >= f.col && cursor.col < f.col + f.length
-    );
+    const cursorInInputField = hasCursor && fields.some(f => {
+      if (!f.is_input) return false;
+      // Handle multi-row wrapping input fields (e.g. IBM i command lines).
+      const slice = fieldSliceForRow(f, cursor.row, cols);
+      // Allow cursor at the trailing "end-marker" position (col === slice.col
+      // + slice.length) — after typing into a single-char field (e.g. the
+      // Option input on the Exit Interactive SQL UIM popup), the proxy
+      // advances cursor one past the last editable cell. Mocha and ACS still
+      // render the cursor there. Without this, the cursor vanishes and users
+      // can't tell they're positioned in the field.
+      return !!slice && cursor.col >= slice.col && cursor.col <= slice.col + slice.length;
+    });
+
+    const ROW_H = 21; // matches ROW_HEIGHT above; used for window overlay positioning
+    const screenWindows = detectedWindows;
 
     return (
       <div style={{ fontFamily: 'var(--gs-font)', fontSize: '13px', position: 'relative', width: `${cols}ch` }}>
@@ -966,11 +1270,38 @@ export function GreenScreenTerminal({
                 ? headerSegments.map((seg, i) => <span key={i} className={seg.colorClass}>{seg.text}</span>)
                 : renderRowWithFields(displayLine, index, fields, cursor.row, cursor.col)}
               {cursorInInputField && index === cursor.row && (
-                <span className="gs-cursor" style={{ position: 'absolute', left: `${cursor.col}ch`, width: '1ch', height: `${ROW_HEIGHT}px`, top: 0, pointerEvents: 'none' }} />
+                <span className="gs-cursor" style={{ position: 'absolute', left: `${cursor.col}ch`, width: screenData?.insert_mode ? '1ch' : '2px', height: `${ROW_HEIGHT}px`, top: 0, pointerEvents: 'none' }} />
               )}
             </div>
           );
         })}
+        {/* WDSF popup window frames (styled overlays replacing the ASCII
+         * border cells). Each window is positioned absolutely over its
+         * border cells and sized to cover the full window rectangle. Title
+         * and footer are rendered as small centered labels on the top/bottom
+         * edges. pointer-events: none so clicks pass through to the content
+         * (input fields inside the window remain clickable). */}
+        {screenWindows && screenWindows.map((w, wi) => (
+          <div
+            key={`gs-window-${wi}`}
+            className="gs-window"
+            style={{
+              position: 'absolute',
+              left: `${w.col}ch`,
+              top: `${w.row * ROW_H}px`,
+              width: `${w.width + 2}ch`,
+              height: `${(w.height + 2) * ROW_H}px`,
+              pointerEvents: 'none',
+            }}
+          >
+            {w.title && (
+              <span className="gs-window-title">{w.title}</span>
+            )}
+            {w.footer && (
+              <span className="gs-window-footer">{w.footer}</span>
+            )}
+          </div>
+        ))}
         {validationError && (
           <div
             role="alert"
@@ -992,7 +1323,7 @@ export function GreenScreenTerminal({
           </div>
         )}
         {screenData.cursor_row !== undefined && screenData.cursor_col !== undefined && (
-          <span style={{ position: 'absolute', bottom: 0, right: 0, fontFamily: 'var(--gs-font)', fontSize: '10px', color: 'var(--gs-green, #10b981)', pointerEvents: 'none', opacity: 0.6 }}>
+          <span style={{ position: 'absolute', bottom: 0, right: 0, fontFamily: 'var(--gs-font)', fontSize: '10px', color: 'var(--gs-muted, #6c7086)', pointerEvents: 'none', opacity: 0.6 }}>
             {String(screenData.cursor_row + 1).padStart(2, '0')}/{String(screenData.cursor_col + 1).padStart(3, '0')}
           </span>
         )}
@@ -1001,21 +1332,30 @@ export function GreenScreenTerminal({
   };
 
   const handleReconnect = async () => {
-    setAutoReconnectAttempt(0);
-    setIsAutoReconnecting(false);
-    if (reconnectTimeoutRef.current) { clearTimeout(reconnectTimeoutRef.current); reconnectTimeoutRef.current = null; }
+    resetAutoReconnect();
     await reconnect();
   };
 
   const getStatusColor = (status?: string) => {
     switch (status) {
-      case 'authenticated': return 'var(--gs-green, #10b981)';
-      case 'connected': return '#64748b';
-      case 'connecting': return '#64748b';
-      case 'error': return '#EF4444';
-      default: return '#64748b';
+      case 'authenticated': return 'var(--gs-green, #a6e3a1)';
+      case 'connected': return 'var(--gs-muted, #6c7086)';
+      case 'connecting': return 'var(--gs-muted, #6c7086)';
+      case 'error': return 'var(--gs-red, #f38ba8)';
+      default: return 'var(--gs-muted, #6c7086)';
     }
   };
+
+  // --- Disconnect handler ---
+  const [disconnecting, setDisconnecting] = useState(false);
+  const handleDisconnect = useCallback(async () => {
+    setDisconnecting(true);
+    try {
+      await adapter.disconnect();
+    } catch { /* ignore */ }
+    setDisconnecting(false);
+    onDisconnect?.();
+  }, [adapter, onDisconnect]);
 
   // Send a key from the shortcuts panel. Mirrors the submit-key self-check
   // behaviour in handleKeyDown so clicked shortcuts behave like keystrokes.
@@ -1025,31 +1365,50 @@ export function GreenScreenTerminal({
     if (isSubmit && !runSelfCheck()) return;
     setIsFocused(true);
     inputRef.current?.focus();
+    // Clear optimistic cursor and fire-and-forget for non-submit keys — the
+    // proxy's pushed cursor/screen update flows through adapter.onScreen into
+    // rawScreenData. For submit keys (ENTER/PageUp/PageDown/F-keys) the screen
+    // transition fully clears state anyway.
+    if (!isSubmit) {
+      setSyncedCursor(null);
+      sendKey(key);
+      return;
+    }
+    setOptimisticLock(true);
     const kr = await sendKey(key);
     if (kr.cursor_row !== undefined) setSyncedCursor({ row: kr.cursor_row, col: kr.cursor_col! });
   }, [readOnly, runSelfCheck, sendKey]);
 
   return (
-    <div ref={containerRef} className={`gs-terminal ${isFocused ? 'gs-terminal-focused' : ''} ${className || ''}`} style={style}>
-      {showHeader && (
+    <div ref={containerRef} className={`gs-terminal gs-theme-${theme} ${isFocused ? 'gs-terminal-focused' : ''} ${className || ''}`} style={style}>
+      {/* Header: custom header prop takes precedence over showHeader/embedded */}
+      {header !== undefined ? (
+        header === false ? null :
+        typeof header === 'function' ? header({
+          connectionStatus: connStatus,
+          keyboardLocked: !!screenData?.keyboard_locked || optimisticLock,
+          insertMode: !!screenData?.insert_mode,
+          isFocused,
+          reconnect: handleReconnect,
+          reconnecting: reconnecting || isAutoReconnecting,
+        }) :
+        header
+      ) : showHeader ? (
         <div className="gs-header">
           {embedded ? (
             <>
               <span className="gs-header-left">
-                <TerminalIcon size={14} />
-                <span>TERMINAL</span>
-                {isFocused && <span className="gs-badge-focused">FOCUSED</span>}
-                {screenData?.timestamp && <span className="gs-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
-                {showShortcutsButton && !readOnly && isFocused && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={12} /></button>}
-                <span className="gs-hint">{readOnly ? 'Read-only' : isFocused ? 'ESC to exit focus' : 'Click to control'}</span>
-                {screenData?.keyboard_locked && <span className="gs-badge-lock">X II</span>}
+                {showShortcutsButton && !readOnly && isFocused && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={16} /></button>}
+                {(screenData?.keyboard_locked || optimisticLock) && <span className="gs-badge-lock">X II</span>}
                 {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
               </span>
+              <span className="gs-header-title">Terminal</span>
               <div className="gs-header-right">
-                {connStatus?.status && connStatus.status !== 'loading' && <KeyIcon size={12} style={{ color: getStatusColor(connStatus.status) }} />}
-                {connStatus && connStatus.status !== 'loading' && (connStatus.connected
-                  ? <WifiIcon size={12} style={{ color: 'var(--gs-green, #10b981)' }} />
-                  : <WifiOffIcon size={12} style={{ color: '#FF6B00' }} />)}
+                {connStatus && connStatus.status !== 'loading' && (
+                  connStatus.connected
+                    ? <WifiIcon size={12} className="gs-connection-icon gs-connection-icon-connected" />
+                    : <WifiOffIcon size={12} className="gs-connection-icon gs-connection-icon-disconnected" />
+                )}
                 {statusActions}
                 {onMinimize && <button onClick={(e) => { e.stopPropagation(); onMinimize(); }} className="gs-btn-icon" title="Minimize terminal"><MinimizeIcon /></button>}
                 {headerRight}
@@ -1058,43 +1417,58 @@ export function GreenScreenTerminal({
           ) : (
             <>
               <span className="gs-header-left">
-                <TerminalIcon size={14} />
-                <span>{profile.headerLabel}</span>
-                {isFocused && <span className="gs-badge-focused">FOCUSED</span>}
-                {screenData?.timestamp && <span className="gs-timestamp">{new Date(screenData.timestamp).toLocaleTimeString()}</span>}
-                {showShortcutsButton && !readOnly && isFocused && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={12} /></button>}
-                <span className="gs-hint">{readOnly ? 'Read-only mode' : isFocused ? 'ESC to exit focus' : 'Click terminal to control'}</span>
-                {screenData?.keyboard_locked && <span className="gs-badge-lock">X II</span>}
+                {showShortcutsButton && !readOnly && isFocused && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={16} /></button>}
+                {(screenData?.keyboard_locked || optimisticLock) && <span className="gs-badge-lock">X II</span>}
                 {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
+              </span>
+              <span className="gs-header-title">
+                {profile.headerLabel.replace(' TERMINAL', '')}
               </span>
               <div className="gs-header-right">
                 {connStatus && connStatus.status !== 'loading' && (
-                  <div className="gs-status-group">
-                    {connStatus.connected ? (
-                      <>
-                        <WifiIcon size={12} style={{ color: 'var(--gs-green, #10b981)' }} />
-                        <span className="gs-host">{connStatus.host}</span>
-                      </>
-                    ) : (
-                      <>
-                        <WifiOffIcon size={12} style={{ color: '#FF6B00' }} />
-                        <span className="gs-disconnected-text">
-                          {isAutoReconnecting || reconnecting
-                            ? `RECONNECTING${autoReconnectAttempt > 0 ? ` (${autoReconnectAttempt}/${maxAttempts})` : '...'}`
-                            : autoReconnectAttempt >= maxAttempts ? 'DISCONNECTED (auto-retry exhausted)' : 'DISCONNECTED'}
-                        </span>
-                        <button onClick={handleReconnect} disabled={reconnecting || isAutoReconnecting} className="gs-btn-icon" title="Reconnect">
-                          <RefreshIcon size={12} className={reconnecting || isAutoReconnecting ? 'gs-spin' : ''} />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                )}
-                {connStatus?.status && connStatus.status !== 'loading' && (
-                  <div className="gs-status-group">
-                    <KeyIcon size={12} style={{ color: getStatusColor(connStatus.status) }} />
-                    {connStatus.username && <span className="gs-host">{connStatus.username}</span>}
-                  </div>
+                  connStatus.connected ? (
+                    <div className="gs-status-group">
+                      <WifiIcon size={12} className="gs-connection-icon gs-connection-icon-connected" />
+                      <span className="gs-host">{connStatus.host}</span>
+                      {connStatus.username && (
+                        <>
+                          <KeyIcon size={11} style={{ color: getStatusColor(connStatus.status) }} />
+                          <span className="gs-host">{connStatus.username}</span>
+                        </>
+                      )}
+                      {connStatus.status !== 'authenticated' && (
+                        <RefreshIcon size={12} className="gs-spin" />
+                      )}
+                      <button
+                        onClick={handleDisconnect}
+                        disabled={disconnecting}
+                        className="gs-disconnect-btn"
+                        title="Disconnect terminal session"
+                      >
+                        <UnplugIcon size={12} />
+                        <span>Disconnect</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="gs-status-group">
+                      <WifiOffIcon size={12} className="gs-connection-icon gs-connection-icon-disconnected" />
+                      {connStatus.host && <span className="gs-host">{connStatus.host}</span>}
+                      {connStatus.username && (
+                        <>
+                          <KeyIcon size={11} style={{ color: 'var(--gs-muted)' }} />
+                          <span className="gs-host">{connStatus.username}</span>
+                        </>
+                      )}
+                      <span className="gs-disconnected-text">
+                        {isAutoReconnecting || reconnecting
+                          ? `Reconnecting${autoReconnectAttempt > 0 ? ` (${autoReconnectAttempt}/${maxAttempts})` : '...'}`
+                          : 'Disconnected'}
+                      </span>
+                      <button onClick={handleReconnect} disabled={reconnecting || isAutoReconnecting} className="gs-btn-icon" title="Reconnect">
+                        <RefreshIcon size={12} className={reconnecting || isAutoReconnecting ? 'gs-spin' : ''} />
+                      </button>
+                    </div>
+                  )
                 )}
                 {statusActions}
                 {headerRight}
@@ -1102,11 +1476,11 @@ export function GreenScreenTerminal({
             </>
           )}
         </div>
-      )}
+      ) : null}
 
       <div className="gs-body">
         <div ref={terminalRef} onClick={handleTerminalClick} className={`gs-screen ${embedded ? 'gs-screen-embedded' : ''}`}
-          style={!embedded ? { width: `calc(${screenData?.cols || profile.defaultCols}ch + 24px)`, fontSize: (screenData?.cols ?? profile.defaultCols) > 80 ? '11px' : '13px', fontFamily: 'var(--gs-font)' } : undefined}>
+          style={!embedded ? { width: `calc(${screenData?.cols || profile.defaultCols}ch + 32px)`, fontSize: (screenData?.cols ?? profile.defaultCols) > 80 ? '11px' : '13px', fontFamily: 'var(--gs-font)' } : undefined}>
           {screenError != null && (
             <div className="gs-error-banner">
               <AlertTriangleIcon size={14} />
@@ -1116,10 +1490,25 @@ export function GreenScreenTerminal({
           <div ref={screenContentRef} className="gs-screen-content">{renderScreen()}</div>
           {overlay}
           {showShortcuts && (
-            <div className="gs-shortcuts-panel">
-              <div className="gs-shortcuts-header">
+            <div
+              ref={shortcutsPanelRef}
+              className="gs-shortcuts-panel"
+              style={shortcutsPos
+                ? { position: 'fixed', left: `${shortcutsPos.x}px`, top: `${shortcutsPos.y}px`, right: 'auto', bottom: 'auto' }
+                : { position: 'fixed', visibility: 'hidden' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                className="gs-shortcuts-header"
+                onMouseDown={startShortcutsDrag}
+                style={{ cursor: isDraggingShortcuts ? 'grabbing' : 'grab', userSelect: 'none' }}
+              >
                 <span>Keyboard Shortcuts</span>
-                <button className="gs-btn-icon" onClick={() => setShowShortcuts(false)}>&times;</button>
+                <button
+                  className="gs-btn-icon"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={() => setShowShortcuts(false)}
+                >&times;</button>
               </div>
               <div className="gs-shortcuts-actions">
                 {([

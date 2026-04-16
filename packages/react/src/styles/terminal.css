@@ -1,19 +1,24 @@
 /* green-screen-react — Multi-protocol Legacy Terminal Emulator Styles */
 
 :root {
-  --gs-green: #10b981;
-  --gs-white: #FFFFFF;
-  --gs-blue: #7B93FF;
-  --gs-cyan: #00FFFF;
-  --gs-turquoise: #00FFFF;
-  --gs-yellow: #FFFF00;
-  --gs-red: #FF5555;
-  --gs-pink: #FF55FF;
-  --gs-bg: #000000;
-  --gs-card-bg: #0e1422;
-  --gs-card-border: #1e293b;
-  --gs-header-bg: #090e1a;
-  --gs-muted: #94a3b8;
+  /* Catppuccin Mocha palette */
+  --gs-green: #a6e3a1;
+  --gs-white: #cdd6f4;
+  --gs-blue: #89b4fa;
+  --gs-cyan: #94e2d5;
+  --gs-turquoise: #94e2d5;
+  --gs-yellow: #f9e2af;
+  --gs-red: #f38ba8;
+  --gs-pink: #f5c2e7;
+  --gs-bg: #1e1e2e;
+  --gs-card-bg: #181825;
+  --gs-card-border: #313244;
+  --gs-header-bg: #11111b;
+  --gs-muted: #6c7086;
+  --gs-surface: #313244;
+  --gs-accent: #cba6f7;
+  --gs-radius: 10px;
+  --gs-radius-inner: 6px;
   /*
    * Monospace font stack with CJK fallbacks. Japanese and other CJK glyphs
    * need a separate font since JetBrains Mono / Courier New don't cover
@@ -27,21 +32,94 @@
     monospace;
 }
 
+/* ── Theme: Classic (ACS / Mocha 5250 style) ─────────────────────── */
+/* A high-contrast black-background palette matching the classic IBM i
+ * desktop clients. Selected via the `theme="classic"` prop on the
+ * <GreenScreenTerminal> component, which adds `gs-theme-classic` to the
+ * root .gs-terminal element. */
+.gs-theme-classic {
+  --gs-green: #29fa29;       /* bright phosphor green */
+  --gs-white: #ffffff;
+  --gs-blue: #6aaaff;        /* title/F-key blue */
+  --gs-cyan: #00ffff;
+  --gs-turquoise: #2fd0e8;
+  --gs-yellow: #ffff40;
+  --gs-red: #ff2a2a;
+  --gs-pink: #ff6ec7;
+  --gs-bg: #000000;
+  --gs-card-bg: #000000;
+  --gs-card-border: #1a1a1a;
+  --gs-header-bg: #0a0a0a;
+  --gs-muted: #8a8a8a;
+  --gs-surface: #1a1a1a;
+  --gs-accent: #29fa29;       /* cursor/active accent in classic = green */
+  --gs-radius: 0px;
+  --gs-radius-inner: 0px;
+}
+
+/* Classic theme: enforce sharp corners on elements that use hardcoded
+ * border-radius values instead of the --gs-radius tokens (e.g. badges,
+ * shortcut keys, inline button chrome). Keeps the authentic blocky
+ * terminal aesthetic. */
+.gs-theme-classic .gs-badge-lock,
+.gs-theme-classic .gs-badge-ins,
+.gs-theme-classic .gs-badge-focused,
+.gs-theme-classic .gs-shortcut-action,
+.gs-theme-classic .gs-shortcut-fkey,
+.gs-theme-classic .gs-btn-icon,
+.gs-theme-classic .gs-disconnect-btn,
+.gs-theme-classic .gs-signin-btn,
+.gs-theme-classic .gs-window,
+.gs-theme-classic .gs-error-banner,
+.gs-theme-classic .gs-shortcuts-panel,
+.gs-theme-classic input,
+.gs-theme-classic select,
+.gs-theme-classic button {
+  border-radius: 0 !important;
+}
+
 /* ── Terminal Container ───────────────────────────────────────────── */
 
 .gs-terminal {
   background-color: var(--gs-card-bg);
   border: 1px solid var(--gs-card-border);
+  border-radius: var(--gs-radius);
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
+/* Focused-border glow uses the theme accent color so the Classic theme
+ * gets a green halo and Modern gets the purple halo. color-mix() keeps
+ * the semi-transparent tints without hardcoding RGB values per theme. */
 .gs-terminal-focused {
-  border-color: rgba(16, 185, 129, 0.4);
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.1);
+  border-color: color-mix(in srgb, var(--gs-accent) 40%, transparent);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.5),
+    0 0 0 1px color-mix(in srgb, var(--gs-accent) 15%, transparent);
+}
+
+/* Suppress the browser's default dotted/dashed focus outline on non-input
+ * elements inside the terminal. F-keys (esp. F12) can cause focus to jump
+ * to the container or a div, leaving a persistent dashed outline that
+ * doesn't clear on subsequent screen updates. Intentional focus (the
+ * hidden input, shortcut panel buttons, disconnect button) are styled
+ * separately and don't need the default outline. */
+.gs-terminal:focus,
+.gs-terminal *:focus,
+.gs-screen:focus,
+.gs-screen-content:focus,
+.gs-screen-content *:focus {
+  outline: none;
+}
+.gs-terminal .gs-btn-icon:focus-visible,
+.gs-terminal .gs-disconnect-btn:focus-visible,
+.gs-terminal .gs-signin-btn:focus-visible {
+  outline: 2px solid var(--gs-accent);
+  outline-offset: 2px;
 }
 
 /* ── Header ───────────────────────────────────────────────────────── */
@@ -49,21 +127,20 @@
 .gs-header {
   background-color: var(--gs-header-bg);
   border-bottom: 1px solid var(--gs-card-border);
-  padding: 0.5rem 1rem;
-  font-family: var(--gs-font);
-  font-size: 0.75rem;
-  font-weight: 400;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  padding: 0 16px;
+  height: 38px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--gs-muted);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  position: relative;
 }
 
 .gs-terminal-focused .gs-header {
-  background-color: rgba(16, 185, 129, 0.04);
-  border-bottom-color: rgba(16, 185, 129, 0.3);
+  border-bottom-color: rgba(203, 166, 247, 0.2);
 }
 
 .gs-header-left {
@@ -86,69 +163,77 @@
 
 .gs-badge-focused {
   padding: 2px 8px;
-  background-color: rgba(16, 185, 129, 0.15);
-  color: var(--gs-green);
+  background-color: rgba(203, 166, 247, 0.12);
+  color: var(--gs-accent);
   font-size: 10px;
   font-weight: 600;
-  border-radius: 4px;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: var(--gs-radius-inner);
+  border: 1px solid rgba(203, 166, 247, 0.25);
 }
 
 .gs-badge-lock {
-  padding: 2px 6px;
-  background-color: #EF4444;
-  color: white;
+  padding: 2px 8px;
+  background-color: rgba(243, 139, 168, 0.15);
+  color: var(--gs-red);
   font-size: 10px;
-  font-weight: bold;
-  border-radius: 4px;
+  font-weight: 600;
+  border-radius: var(--gs-radius-inner);
+  border: 1px solid rgba(243, 139, 168, 0.3);
 }
 
 .gs-badge-ins {
-  padding: 2px 6px;
-  background-color: #F59E0B;
-  color: black;
+  padding: 2px 8px;
+  background-color: rgba(249, 226, 175, 0.12);
+  color: var(--gs-yellow);
   font-size: 10px;
-  font-weight: bold;
-  border-radius: 4px;
+  font-weight: 600;
+  border-radius: var(--gs-radius-inner);
+  border: 1px solid rgba(249, 226, 175, 0.25);
 }
 
 .gs-timestamp {
   font-family: var(--gs-font);
   font-size: 10px;
-  color: #808080;
+  color: var(--gs-muted);
 }
 
 .gs-hint {
   font-family: var(--gs-font);
   font-size: 10px;
-  color: #7a8594;
+  color: var(--gs-muted);
 }
 
 .gs-host {
   font-family: var(--gs-font);
   font-size: 12px;
-  color: #808080;
+  color: var(--gs-muted);
 }
 
 .gs-disconnected-text {
   font-family: var(--gs-font);
   font-size: 12px;
-  color: #FF6B00;
+  color: var(--gs-red);
 }
 
 .gs-btn-icon {
   background: transparent;
   border: none;
-  padding: 4px;
-  border-radius: 4px;
+  /* Padding upped so the icon's click area matches the rendered height
+   * of the adjacent 'TN5250' header title; keeps the icon + title line
+   * visually balanced in the 38px header. */
+  padding: 6px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--gs-radius-inner);
   color: var(--gs-muted);
   cursor: pointer;
-  transition: background-color 0.15s, color 0.15s;
+  transition: background-color 0.12s, color 0.12s;
 }
 
 .gs-btn-icon:hover {
-  background-color: #1A1A1A;
-  color: var(--gs-green);
+  background-color: var(--gs-surface);
+  color: var(--gs-white);
 }
 
 .gs-btn-icon:disabled {
@@ -173,6 +258,11 @@
   flex-direction: column;
   flex-shrink: 0;
   cursor: text;
+  /* Prevent content (e.g. wide STRSQL / 132-col screens, wrapped fields
+   * whose rendered span exceeds the declared column count) from escaping
+   * the terminal's rounded container on the right side. */
+  overflow: hidden;
+  max-width: 100%;
 }
 
 .gs-screen-embedded {
@@ -180,7 +270,7 @@
 }
 
 .gs-screen-content {
-  padding: 8px 12px;
+  padding: 12px 16px;
   flex-shrink: 0;
 }
 
@@ -188,14 +278,15 @@
 
 .gs-cursor {
   display: block;
-  background-color: var(--gs-green);
-  animation: gs-cursor-blink 1s infinite;
-  box-shadow: 0 0 5px rgba(16, 185, 129, 0.5);
+  background-color: var(--gs-accent);
+  animation: gs-cursor-blink 1.2s ease-in-out infinite;
+  border-radius: 1px;
 }
 
 @keyframes gs-cursor-blink {
-  0%, 50% { opacity: 0.8; }
-  51%, 100% { opacity: 0; }
+  0%, 45% { opacity: 0.9; }
+  50%, 95% { opacity: 0; }
+  100% { opacity: 0.9; }
 }
 
 /* ── Row Colors (protocol-driven via CSS classes) ─────────────────── */
@@ -221,14 +312,14 @@
 .gs-input-field {
   display: inline-block;
   position: relative;
-  border-bottom: 1px solid rgba(16, 185, 129, 0.45);
+  border-bottom: 1px solid rgba(166, 227, 161, 0.3);
 }
 
 /* Active input field — accent border when cursor is inside (highlight-on-entry).
  * Combined with the per-span inline style when the host declares a
  * highlight_entry_attr FCW. */
 .gs-field-active {
-  box-shadow: inset 0 -2px 0 0 var(--gs-yellow, #FFFF00);
+  border-bottom-color: var(--gs-accent);
 }
 
 /* DBCS input field marker — faint background tint to signal CJK input mode.
@@ -248,14 +339,16 @@
 .gs-overlay {
   position: absolute;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   z-index: 10;
   pointer-events: none;
-  color: #FF6B00;
+  color: var(--gs-muted);
   font-family: var(--gs-font);
   font-size: 14px;
   gap: 12px;
@@ -268,14 +361,16 @@
 .gs-busy-overlay {
   position: absolute;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.35);
+  background-color: rgba(30, 30, 46, 0.4);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   z-index: 9;
   pointer-events: none;
-  color: var(--gs-yellow, #FFFF00);
+  color: var(--gs-yellow);
   font-family: var(--gs-font);
   gap: 8px;
   animation: gs-fade-in 180ms ease-out;
@@ -303,35 +398,38 @@
   transform: translateX(-50%);
   z-index: 10;
   padding: 12px;
-  background-color: #1A0000;
-  border: 1px solid #FF6B00;
-  border-radius: 4px;
+  background-color: rgba(243, 139, 168, 0.1);
+  border: 1px solid rgba(243, 139, 168, 0.3);
+  border-radius: var(--gs-radius-inner);
   display: flex;
   align-items: center;
   gap: 8px;
   font-family: var(--gs-font);
   font-size: 12px;
-  color: #FF6B00;
+  color: var(--gs-red);
 }
 
 /* ── Shortcuts Panel ──────────────────────────────────────────────── */
 
 .gs-shortcuts-panel {
   position: absolute;
-  bottom: 8px;
-  right: 8px;
+  bottom: 12px;
+  right: 12px;
   z-index: 8;
-  background-color: rgba(14, 20, 34, 0.95);
+  background-color: rgba(24, 24, 37, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--gs-card-border);
-  border-radius: 4px;
-  padding: 8px 10px;
+  border-radius: var(--gs-radius);
+  padding: 12px 14px;
   font-family: var(--gs-font);
   font-size: 11px;
   color: var(--gs-muted);
   pointer-events: auto;
-  animation: gs-fade-in 200ms ease-out;
+  animation: gs-fade-in 150ms ease-out;
   max-height: 90%;
   overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
 .gs-shortcuts-header {
@@ -339,9 +437,8 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 6px;
-  color: var(--gs-green);
+  color: var(--gs-accent);
   font-size: 11px;
-  letter-spacing: 0.05em;
 }
 
 .gs-shortcuts-section-title {
@@ -372,11 +469,11 @@
 }
 
 .gs-shortcut-action:hover {
-  background-color: rgba(16, 185, 129, 0.12);
+  background-color: rgba(203, 166, 247, 0.1);
 }
 
 .gs-shortcut-key {
-  color: var(--gs-green);
+  color: var(--gs-accent);
   font-weight: 500;
   white-space: nowrap;
 }
@@ -406,20 +503,20 @@
 }
 
 .gs-shortcut-fkey {
-  background: transparent;
+  background: rgba(49, 50, 68, 0.5);
   border: 1px solid var(--gs-card-border);
-  border-radius: 3px;
-  padding: 3px 0;
-  color: var(--gs-green);
+  border-radius: var(--gs-radius-inner);
+  padding: 4px 0;
+  color: var(--gs-accent);
   font-family: var(--gs-font);
   font-size: 10px;
   cursor: pointer;
-  transition: background-color 0.1s, border-color 0.1s;
+  transition: background-color 0.12s, border-color 0.12s;
 }
 
 .gs-shortcut-fkey:hover {
-  background-color: rgba(16, 185, 129, 0.15);
-  border-color: var(--gs-green);
+  background-color: rgba(203, 166, 247, 0.12);
+  border-color: rgba(203, 166, 247, 0.4);
 }
 
 /* ── Inline Sign-In ──────────────────────────────────────────────── */
@@ -440,37 +537,167 @@
 
 .gs-signin input:focus,
 .gs-signin select:focus {
-  border-color: var(--gs-green);
-  box-shadow: 0 0 4px rgba(16, 185, 129, 0.3);
+  border-color: var(--gs-accent);
+  box-shadow: 0 0 4px rgba(203, 166, 247, 0.3);
 }
 
 .gs-signin select option {
-  background-color: #0e1422;
-  color: var(--gs-green);
+  background-color: var(--gs-card-bg);
+  color: var(--gs-white);
 }
 
 .gs-signin-btn {
   width: 100%;
-  padding: 8px;
+  padding: 10px;
   margin-top: 4px;
-  background-color: rgba(16, 185, 129, 0.15);
-  border: 1px solid var(--gs-green);
-  color: var(--gs-green);
-  font-family: var(--gs-font);
-  font-size: 12px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  background-color: rgba(203, 166, 247, 0.12);
+  border: 1px solid rgba(203, 166, 247, 0.3);
+  border-radius: var(--gs-radius-inner);
+  color: var(--gs-accent);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   transition: background-color 0.15s;
 }
 
+/* Disclosure toggle: "Show all params" / "Hide all params" with a
+ * chevron that rotates 180° when expanded. Collapses Screen Size,
+ * Username, Password by default to keep the initial form minimal. */
+.gs-signin-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: transparent;
+  border: none;
+  padding: 4px 0;
+  align-self: flex-start;
+  color: var(--gs-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.gs-signin-toggle:hover,
+.gs-signin-toggle:focus-visible {
+  color: var(--gs-accent);
+  outline: none;
+}
+
 .gs-signin-btn:hover:not(:disabled) {
-  background-color: rgba(16, 185, 129, 0.25);
+  background-color: rgba(203, 166, 247, 0.2);
 }
 
 .gs-signin-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* ── Disconnect Button ───────────────────────────────────────────── */
+
+.gs-disconnect-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-radius: var(--gs-radius-inner);
+  background: transparent;
+  border: 1px solid rgba(205, 214, 244, 0.12);
+  color: rgba(205, 214, 244, 0.45);
+  font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+}
+
+.gs-disconnect-btn:hover {
+  color: var(--gs-red);
+  border-color: rgba(243, 139, 168, 0.35);
+  background-color: rgba(243, 139, 168, 0.08);
+}
+
+.gs-disconnect-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Header Title (centered) ─────────────────────────────────────── */
+
+.gs-header-title {
+  /* Left-anchored: title sits on the left side of the header, just after
+   * the keyboard button and badges. `margin-right: auto` pushes the
+   * right-group elements (status, disconnect) to the opposite edge. */
+  margin-right: auto;
+  margin-left: 0.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--gs-muted);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 50%;
+}
+
+/* ── WDSF Popup Window Overlay ───────────────────────────────────── */
+
+/* Styled frame drawn over the proxy's ASCII window border cells (which
+ * are blanked in renderRowWithFields when the metadata is present). Real
+ * 5250 clients (Mocha, ACS) render popups this way — a rounded accent
+ * border with a soft shadow — rather than the literal `:` and `.`
+ * characters the host sends for DBCS/terminal fallback. */
+.gs-window {
+  box-sizing: border-box;
+  border: 1px solid var(--gs-accent);
+  border-radius: var(--gs-radius-inner);
+  background: rgba(17, 17, 27, 0.35);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(203, 166, 247, 0.12);
+}
+
+/* Window title: centered badge on the top edge of the frame.
+ * Uses a tiny negative top offset so it sits on the border line. */
+.gs-window-title,
+.gs-window-footer {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 8px;
+  font-family: var(--gs-font);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--gs-accent);
+  background: var(--gs-bg);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.gs-window-title {
+  top: -6px;
+}
+
+.gs-window-footer {
+  bottom: -6px;
+  color: var(--gs-muted);
+}
+
+/* ── Connection Icon ─────────────────────────────────────────────── */
+
+.gs-connection-icon {
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.gs-connection-icon-connected {
+  color: var(--gs-green);
+}
+
+.gs-connection-icon-disconnected {
+  color: var(--gs-red);
 }
 
 /* ── Animations ───────────────────────────────────────────────────── */

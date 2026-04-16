@@ -61,8 +61,8 @@ export function TerminalBootLoader({
             fontFamily: 'var(--gs-font)',
             fontSize: '1.5rem',
             letterSpacing: '0.1em',
-            color: 'var(--gs-green, #10b981)',
-            textShadow: '0 0 12px rgba(16, 185, 129, 0.4)',
+            color: 'var(--gs-accent, #cba6f7)',
+            textShadow: '0 0 20px rgba(203, 166, 247, 0.15)',
             margin: 0,
           }}
         >
