@@ -66,8 +66,16 @@ export const CMD = {
   READ_IMMEDIATE_ALT: 0x83,
   WRITE_STRUCTURED_FIELD: 0xF3,
   SAVE_SCREEN: 0x02,
+  SAVE_PARTIAL_SCREEN: 0x03,
   RESTORE_SCREEN: 0x12,
+  RESTORE_PARTIAL_SCREEN: 0x13,
   ROLL: 0x23,
+  // Read commands ignored in C library but recognized for dispatch
+  READ_SCREEN_EXTENDED: 0x64,
+  READ_SCREEN_PRINT: 0x66,
+  READ_SCREEN_PRINT_EXTENDED: 0x68,
+  READ_SCREEN_PRINT_GRID: 0x6A,
+  READ_SCREEN_PRINT_EXT_GRID: 0x6C,
 } as const;
 
 // Record header flag byte values (byte 8 of the GDS header).

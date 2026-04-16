@@ -66,6 +66,16 @@ export class TN5250Handler extends ProtocolHandler {
       registerBuiltinDbcsTable();
     }
 
+    // Pass environment variables for NEW_ENVIRON negotiation.
+    // DEVNAME is the IBM i display device name (per lib5250 telnetstr.c:632-664).
+    const envVars: Record<string, string> = {};
+    if (options?.deviceName && typeof options.deviceName === 'string') {
+      envVars['DEVNAME'] = options.deviceName;
+    }
+    if (Object.keys(envVars).length > 0) {
+      this.connection.setEnvVars(envVars);
+    }
+
     const connectTimeout = options?.connectTimeout as number | undefined;
     await this.connection.connect(host, port, termType, connectTimeout);
   }

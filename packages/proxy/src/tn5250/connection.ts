@@ -21,6 +21,8 @@ export class TN5250Connection extends EventEmitter {
   private recvBuffer: Buffer = Buffer.alloc(0);
   private negotiationDone: boolean = false;
   private terminalType: string = DEFAULT_TERMINAL_TYPE;
+  /** Environment variables to send in NEW_ENVIRON (e.g., DEVNAME for device name). */
+  private envVars: Record<string, string> = {};
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly KEEP_ALIVE_INTERVAL = 15_000; // 15s — well under PUB400's ~30s idle timeout
   // Timing Mark (IAC DO TM) instead of NOP — it's a round-trip: the server
@@ -39,6 +41,15 @@ export class TN5250Connection extends EventEmitter {
 
   get remotePort(): number {
     return this.port;
+  }
+
+  /**
+   * Set environment variables to send during NEW_ENVIRON negotiation.
+   * Per lib5250 telnetstr.c:632-664, these are sent as VAR name VALUE value
+   * pairs. Common vars: DEVNAME (device name), TERM, IBMMFRTYPMDL.
+   */
+  setEnvVars(vars: Record<string, string>): void {
+    this.envVars = { ...vars };
   }
 
   connect(host: string, port: number, terminalType?: string, connectTimeout?: number): Promise<void> {
@@ -201,11 +212,17 @@ export class TN5250Connection extends EventEmitter {
     }
   }
 
-  /** Find IAC SE sequence for subnegotiation end */
+  /** Find IAC SE sequence for subnegotiation end, skipping IAC IAC escapes */
   private findSubnegEnd(): number {
     for (let i = 2; i < this.recvBuffer.length - 1; i++) {
-      if (this.recvBuffer[i] === TELNET.IAC && this.recvBuffer[i + 1] === TELNET.SE) {
-        return i;
+      if (this.recvBuffer[i] === TELNET.IAC) {
+        if (this.recvBuffer[i + 1] === TELNET.SE) {
+          return i;
+        }
+        if (this.recvBuffer[i + 1] === TELNET.IAC) {
+          i++; // skip escaped IAC IAC pair
+          continue;
+        }
       }
     }
     return -1;
@@ -311,13 +328,22 @@ export class TN5250Connection extends EventEmitter {
   }
 
   private sendEnviron(data: Buffer): void {
-    // Send empty NEW-ENVIRON response
-    const buf = Buffer.from([
-      TELNET.IAC, TELNET.SB, TELNET.OPT_NEW_ENVIRON,
-      0x00, // IS
-      TELNET.IAC, TELNET.SE,
-    ]);
-    this.sendRaw(buf);
+    // Per lib5250 telnetstr.c:632-664: send NEW_ENVIRON IS with all env vars.
+    // Each var is encoded as: VAR(0x00) name VALUE(0x01) value
+    // USERVAR(0x03) can also be used for user-defined vars.
+    const parts: number[] = [TELNET.IAC, TELNET.SB, TELNET.OPT_NEW_ENVIRON, 0x00 /* IS */];
+
+    for (const [name, value] of Object.entries(this.envVars)) {
+      // Use USERVAR (0x03) for custom vars like DEVNAME, VAR (0x00) for standard ones
+      const varType = (name === 'TERM' || name === 'USER') ? 0x00 : 0x03;
+      parts.push(varType);
+      for (let i = 0; i < name.length; i++) parts.push(name.charCodeAt(i));
+      parts.push(0x01); // VALUE
+      for (let i = 0; i < value.length; i++) parts.push(value.charCodeAt(i));
+    }
+
+    parts.push(TELNET.IAC, TELNET.SE);
+    this.sendRaw(Buffer.from(parts));
   }
 
   private handleTN5250ESubneg(_data: Buffer): void {
