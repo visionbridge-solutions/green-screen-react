@@ -413,9 +413,29 @@ export class ScreenBuffer {
     this.savedMsgLineRow = -1;
   }
 
-  /** Whether a field has the underscore display attribute */
+  /** Whether a field should render with an underline.
+   *
+   *  Two sources:
+   *  1. Explicit 5250 underscore attribute — lower 3 bits of the attribute
+   *     byte encode display type: 4=UL, 5=UL+RI, 6=UL+HI (exclude 7=ND).
+   *     Covers all color+underscore combinations (e.g. green+UL=0x24,
+   *     turquoise+UL=0x34, blue+UL=0x3C, red+UL=0x2C).
+   *  2. Convention — real 5250 clients (IBM ACS, Mocha) visually underline
+   *     ALL input fields, even when the host leaves the attribute as
+   *     NORMAL (0x20). IBM i's default "Selection or command" menu field
+   *     is one such case: the host sends 0x20 but every production 5250
+   *     client still renders an underline so users can see the input zone.
+   *     Password (non-display) fields never get underline.
+   *
+   *  This is rendering-only — callers using `is_underscored` for display
+   *  get consistent visuals; no effect on `is_input`/`is_protected` which
+   *  drive field routing, so the broader rule doesn't create phantom
+   *  input fields for the host-side consumers. */
   isUnderscored(field: FieldDef): boolean {
-    return field.attribute === 0x24;
+    const type = field.attribute & 0x07;
+    if (type >= 0x04 && type < 0x07) return true;
+    // Apply input-field convention (skip password / non-display)
+    return this.isInputField(field) && !this.isNonDisplay(field);
   }
 
   /** Whether a field has the FFW mandatory entry flag (CHECK(ME)) */
