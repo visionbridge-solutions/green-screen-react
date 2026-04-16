@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 import websockets
@@ -78,7 +78,12 @@ class WsClient:
         self._status_listeners: List[Callable[[ConnectionStatus], None]] = []
         self._session_lost_listeners: List[Callable[[str, ConnectionStatus], None]] = []
         self._session_resumed_listeners: List[Callable[[str], None]] = []
+        # Pending response resolvers — one in-flight at a time per type,
+        # mirroring the TS WebSocketAdapter's pendingXResolver pattern.
         self._pending_mdt: Optional[asyncio.Future[List[FieldValue]]] = None
+        self._pending_connect: Optional[asyncio.Future[SendResult]] = None
+        self._pending_screen: Optional[asyncio.Future[Optional[ScreenData]]] = None
+        self._pending_disconnect_ack: Optional[asyncio.Future[None]] = None
 
     @property
     def session_id(self) -> Optional[str]:
@@ -100,6 +105,10 @@ class WsClient:
         await self.close()
 
     async def close(self) -> None:
+        """Close the WebSocket and cancel the reader task. Does NOT send
+        a disconnect — the proxy-side session stays alive and can be
+        re-bound later with reattach(). Use disconnect() to terminate
+        the session on the proxy and host."""
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
             try:
@@ -109,6 +118,17 @@ class WsClient:
         if self._ws is not None:
             try:
                 await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
+    def dispose(self) -> None:
+        """Fire-and-forget WS close (mirrors TS WebSocketAdapter.dispose).
+        Does not await the close handshake; the reader loop will exit
+        on its own. Session on proxy is preserved."""
+        if self._ws is not None:
+            try:
+                asyncio.ensure_future(self._ws.close())
             except Exception:
                 pass
             self._ws = None
@@ -160,6 +180,15 @@ class WsClient:
                 await self._handle_message(data)
         except Exception as e:
             logger.debug("ws reader loop terminated: %s", e)
+        finally:
+            # Mirror TS ws.onclose — surface a disconnected status to
+            # listeners so callers can react to network drops.
+            self._status = ConnectionStatus(connected=False, status="disconnected")
+            for cb in list(self._status_listeners):
+                try:
+                    cb(self._status)
+                except Exception:
+                    logger.exception("status listener error")
 
     async def _handle_message(self, msg: Dict[str, Any]) -> None:
         msg_type = msg.get("type")
@@ -174,6 +203,26 @@ class WsClient:
                     cb(screen)
                 except Exception:
                     logger.exception("screen listener error")
+            self._resolve_screen(screen)
+        elif msg_type == "cursor":
+            # Lightweight cursor-only response for local ops (Tab, Backtab,
+            # arrows, Home, End). Update cached screen's cursor AND notify
+            # screen listeners so UIs re-render the cursor position.
+            cursor_data = msg.get("data", {})
+            cur_row = cursor_data.get("cursor_row")
+            cur_col = cursor_data.get("cursor_col")
+            if self._screen is not None and cur_row is not None and cur_col is not None:
+                self._screen = replace(self._screen, cursor_row=cur_row, cursor_col=cur_col)
+                event.screen = self._screen
+                for cb in list(self._screen_listeners):
+                    try:
+                        cb(self._screen)
+                    except Exception:
+                        logger.exception("screen listener error")
+            # Resolve any pending screen-wait with the cursor-updated screen.
+            if self._pending_screen is not None and not self._pending_screen.done():
+                self._pending_screen.set_result(self._screen)
+                self._pending_screen = None
         elif msg_type == "status":
             status = ConnectionStatus.from_wire(msg.get("data", {}))
             self._status = status
@@ -186,6 +235,15 @@ class WsClient:
         elif msg_type == "connected":
             self._session_id = msg.get("sessionId")
             event.session_id = self._session_id
+            if self._pending_connect is not None and not self._pending_connect.done():
+                self._pending_connect.set_result(SendResult(success=True))
+                self._pending_connect = None
+        elif msg_type == "disconnected":
+            # Server ack for disconnect() — SIGNOFF has been sent (or
+            # attempted) and the proxy-side session is destroyed.
+            if self._pending_disconnect_ack is not None and not self._pending_disconnect_ack.done():
+                self._pending_disconnect_ack.set_result(None)
+                self._pending_disconnect_ack = None
         elif msg_type == "session.lost":
             sid = msg.get("sessionId")
             status = ConnectionStatus.from_wire(msg.get("status", {}))
@@ -210,10 +268,24 @@ class WsClient:
             if self._pending_mdt is not None and not self._pending_mdt.done():
                 fields = [FieldValue.from_wire(f) for f in msg.get("data", {}).get("fields", [])]
                 self._pending_mdt.set_result(fields)
+                self._pending_mdt = None
         elif msg_type == "error":
-            event.error = msg.get("message")
+            err = msg.get("message")
+            event.error = err
+            # Flush pending resolvers with failure, matching TS behavior.
+            if self._pending_connect is not None and not self._pending_connect.done():
+                self._pending_connect.set_result(SendResult(success=False, error=err))
+                self._pending_connect = None
+            elif self._pending_screen is not None and not self._pending_screen.done():
+                self._pending_screen.set_result(None)
+                self._pending_screen = None
 
         await self._event_queue.put(event)
+
+    def _resolve_screen(self, screen: ScreenData) -> None:
+        if self._pending_screen is not None and not self._pending_screen.done():
+            self._pending_screen.set_result(screen)
+            self._pending_screen = None
 
     async def _send(self, payload: Dict[str, Any]) -> None:
         ws = await self._ensure_ws()
@@ -223,32 +295,86 @@ class WsClient:
     # Adapter operations
     # ------------------------------------------------------------------
 
-    async def connect(self, config: ConnectConfig) -> SendResult:
+    async def connect(self, config: ConnectConfig, *, timeout: float = 30.0) -> SendResult:
+        """Request the proxy to open a TCP connection to the host. Waits
+        for the server's `connected` or `error` reply, with a 30s default
+        timeout (matching the TS WebSocketAdapter)."""
         await self._ensure_ws()
+        loop = asyncio.get_running_loop()
+        if self._pending_connect is not None and not self._pending_connect.done():
+            self._pending_connect.cancel()
+        future: asyncio.Future[SendResult] = loop.create_future()
+        self._pending_connect = future
         await self._send({"type": "connect", **config.to_wire()})
-        return SendResult(success=True)
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending_connect = None
+            return SendResult(success=False, error="Connection timeout")
 
-    async def reattach(self, session_id: str) -> SendResult:
-        """Re-bind this WS to an existing proxy session (e.g. after page
-        reload). The proxy keeps the TCP connection alive; this just
-        reconnects the WebSocket and receives the current screen."""
+    async def reattach(self, session_id: str, *, timeout: float = 10.0) -> SendResult:
+        """Re-bind this WS to an existing proxy session (e.g. after process
+        restart). Waits up to 10s for the server's `connected` reply."""
         self._session_id = session_id
         await self._ensure_ws()
+        loop = asyncio.get_running_loop()
+        if self._pending_connect is not None and not self._pending_connect.done():
+            self._pending_connect.cancel()
+        future: asyncio.Future[SendResult] = loop.create_future()
+        self._pending_connect = future
         await self._send({"type": "reattach", "sessionId": session_id})
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending_connect = None
+            return SendResult(success=False, error="Reattach timeout")
+
+    async def send_text(self, text: str) -> SendResult:
+        return await self._send_and_wait_for_screen({"type": "text", "text": text})
+
+    async def send_key(self, key: str) -> SendResult:
+        return await self._send_and_wait_for_screen({"type": "key", "key": key})
+
+    async def set_cursor(self, row: int, col: int) -> SendResult:
+        return await self._send_and_wait_for_screen({"type": "setCursor", "row": row, "col": col})
+
+    async def disconnect(self, *, timeout: float = 3.0) -> SendResult:
+        """Ask the proxy to send SIGNOFF to the host and tear down the
+        session. Waits for the server's `disconnected` ack (3s hard cap)
+        before closing the WS — closing earlier orphans the session on
+        the proxy and, for IBM i with LMTDEVSSN=*YES, trips CPF1220 on
+        the next login."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[None] = loop.create_future()
+        self._pending_disconnect_ack = future
+        try:
+            await self._send({"type": "disconnect"})
+        except Exception:
+            self._pending_disconnect_ack = None
+            future.cancel()
+
+        try:
+            await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._pending_disconnect_ack = None
+
+        self._status = ConnectionStatus(connected=False, status="disconnected")
+        self._session_id = None
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
         return SendResult(success=True)
 
-    async def send_text(self, text: str) -> None:
-        await self._send({"type": "text", "text": text})
-
-    async def send_key(self, key: str) -> None:
-        await self._send({"type": "key", "key": key})
-
-    async def set_cursor(self, row: int, col: int) -> None:
-        await self._send({"type": "setCursor", "row": row, "col": col})
-
-    async def disconnect(self) -> None:
-        await self._send({"type": "disconnect"})
-        self._session_id = None
+    async def reconnect(self) -> SendResult:
+        """Not supported on the WS adapter — use disconnect() then
+        connect() instead. Returns the same failure shape as the TS
+        WebSocketAdapter so callers can treat them identically."""
+        return SendResult(success=False, error="Use disconnect() then connect() instead")
 
     async def read_mdt(self, modified_only: bool = True, timeout: float = 5.0) -> List[FieldValue]:
         loop = asyncio.get_running_loop()
@@ -260,6 +386,7 @@ class WsClient:
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
+            self._pending_mdt = None
             return []
 
     async def mark_authenticated(self, username: str) -> None:
@@ -267,3 +394,49 @@ class WsClient:
 
     async def wait_for_fields(self, min_fields: int, *, timeout_ms: int = 5000) -> None:
         await self._send({"type": "waitForFields", "minFields": min_fields, "timeoutMs": timeout_ms})
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _send_and_wait_for_screen(self, payload: Dict[str, Any], *, timeout: float = 5.0) -> SendResult:
+        """Send a command and wait for the next `screen` or `cursor`
+        push. Mirrors TS WebSocketAdapter.sendAndWaitForScreen — returns
+        a SendResult populated with cursor_row/col/content/signature from
+        the next screen update. On timeout, returns success with the
+        cached screen (if any), matching TS behavior."""
+        loop = asyncio.get_running_loop()
+        # Flush any existing pending resolver with the current screen.
+        if self._pending_screen is not None and not self._pending_screen.done():
+            self._pending_screen.set_result(self._screen)
+            self._pending_screen = None
+        future: asyncio.Future[Optional[ScreenData]] = loop.create_future()
+        self._pending_screen = future
+        try:
+            await self._send(payload)
+        except Exception as e:
+            self._pending_screen = None
+            future.cancel()
+            return SendResult(success=False, error=str(e))
+
+        try:
+            screen = await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending_screen = None
+            return SendResult(
+                success=True,
+                cursor_row=self._screen.cursor_row if self._screen else None,
+                cursor_col=self._screen.cursor_col if self._screen else None,
+                content=self._screen.content if self._screen else None,
+                screen_signature=self._screen.screen_signature if self._screen else None,
+            )
+
+        if screen is None:
+            return SendResult(success=False, error="No screen data received")
+        return SendResult(
+            success=True,
+            cursor_row=screen.cursor_row,
+            cursor_col=screen.cursor_col,
+            content=screen.content,
+            screen_signature=screen.screen_signature,
+        )

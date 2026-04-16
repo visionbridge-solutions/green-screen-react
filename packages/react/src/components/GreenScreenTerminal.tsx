@@ -1398,11 +1398,11 @@ export function GreenScreenTerminal({
           {embedded ? (
             <>
               <span className="gs-header-left">
-                {showShortcutsButton && !readOnly && isFocused && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={16} /></button>}
+                {showShortcutsButton && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={16} /></button>}
                 {(screenData?.keyboard_locked || optimisticLock) && <span className="gs-badge-lock">X II</span>}
                 {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
               </span>
-              <span className="gs-header-title">Terminal</span>
+              <span className="gs-header-title"><TerminalIcon size={14} />Terminal</span>
               <div className="gs-header-right">
                 {connStatus && connStatus.status !== 'loading' && (
                   connStatus.connected
@@ -1417,11 +1417,12 @@ export function GreenScreenTerminal({
           ) : (
             <>
               <span className="gs-header-left">
-                {showShortcutsButton && !readOnly && isFocused && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={16} /></button>}
+                {showShortcutsButton && <button onClick={(e) => { e.stopPropagation(); setShowShortcuts(s => !s); }} className="gs-btn-icon" title="Keyboard shortcuts"><KeyboardIcon size={16} /></button>}
                 {(screenData?.keyboard_locked || optimisticLock) && <span className="gs-badge-lock">X II</span>}
                 {screenData?.insert_mode && <span className="gs-badge-ins">INS</span>}
               </span>
               <span className="gs-header-title">
+                <TerminalIcon size={14} />
                 {profile.headerLabel.replace(' TERMINAL', '')}
               </span>
               <div className="gs-header-right">
