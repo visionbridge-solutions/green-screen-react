@@ -5,34 +5,161 @@
 }
 
 body {
-  background: #0a0a0a;
-  color: #e2e8f0;
-  font-family: 'IBM Plex Mono', 'Courier New', monospace;
+  background: #11111b;
+  color: #cdd6f4;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   min-height: 100vh;
+  transition: background 0.3s ease;
+}
+
+/* Theme-driven body background: lets the demo page feel consistent with
+ * whichever terminal palette is selected. Classic = dark gray that's
+ * slightly LIGHTER than the terminal's own pure-black background — so
+ * the terminal visibly "pops" against the page. */
+body.gs-demo-theme-classic {
+  background: #1a1a1a;
+}
+body.gs-demo-theme-modern {
+  background: #11111b;
+}
+
+/* Classic theme: phosphor-CRT look extends to page chrome — the
+ * "green-screen-react" title and the npx install command pill pick up
+ * the same green glow the terminal uses. */
+body.gs-demo-theme-classic .demo-title {
+  color: #29fa29;
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  text-shadow: 0 0 8px rgba(41, 250, 41, 0.35);
+  letter-spacing: 0.02em;
+}
+
+body.gs-demo-theme-classic .install-cmd-wrap {
+  background: #000000;
+  border-color: #1a1a1a;
+}
+
+body.gs-demo-theme-classic .install-cmd {
+  color: #29fa29;
+  text-shadow: 0 0 6px rgba(41, 250, 41, 0.35);
+}
+
+body.gs-demo-theme-classic .copy-btn.copied {
+  color: #29fa29;
+  border-color: rgba(41, 250, 41, 0.4);
+  background: rgba(41, 250, 41, 0.08);
 }
 
 .demo-page {
   max-width: 920px;
   margin: 0 auto;
-  padding: 2rem 1rem;
+  padding: 2.5rem 1rem;
+  /* Flex column so the fit-to-content .terminal-wrapper child centers
+   * horizontally via align-items. Previously it hugged the left edge in
+   * the block-layout flow. Header/footer stay full-width via
+   * align-self: stretch where needed. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.demo-page > * {
+  width: 100%;
+  max-width: 920px;
+}
+
+/* Terminal wrapper stays fit-to-content — width:auto overrides the 100%
+ * rule above so the box hugs the 80×24 terminal, not the full column.
+ * The theme-picker pill and the terminal-block (which wraps the terminal
+ * and its footer) get the same treatment so they don't stretch. */
+.demo-page > .terminal-wrapper,
+.demo-page > .theme-picker,
+.demo-page > .terminal-block {
+  width: auto;
+  max-width: none;
+}
+
+/* Terminal block: hugs the terminal's scaled width so the chrome above/
+ * below (install-cmd + GitHub, theme toggle) aligns to the terminal's
+ * own edges instead of the full 920px page column. `display: inline-flex`
+ * makes the container auto-size to its widest child (the zoomed
+ * terminal). `position: relative` anchors the absolute-positioned
+ * `.connect-info` heading to the block's top-left corner. */
+.terminal-block {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1rem;
+  position: relative;
 }
 
 .demo-header {
-  text-align: center;
-  margin-bottom: 1.5rem;
+  text-align: left;
+  margin-bottom: 0.5rem;
+}
+
+/* Header row: title + subtitle on the LEFT (stacked), GitHub + npx on
+ * the RIGHT (stacked). Both inner columns use space-between to pin the
+ * first item to the TOP and the last item to the BOTTOM — so GitHub
+ * lines up with the title and npx lines up with the subtitle. */
+.demo-header-row {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+}
+
+.demo-header-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.25rem;
 }
 
 .demo-title {
   font-size: 2rem;
-  font-weight: 600;
-  color: #33ff33;
-  letter-spacing: -0.02em;
+  font-weight: 700;
+  color: #cba6f7;
+  letter-spacing: -0.03em;
+  white-space: nowrap;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+/* Small capsule label displayed next to the title to flag the page as
+ * a live demo / preview of the package. Renders as an outlined pill
+ * with uppercase tracked lettering; picks up theme colors for the
+ * border and text so it harmonises with the rest of the header. */
+.demo-title-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: #cba6f7;
+  opacity: 0.7;
+  line-height: 1;
+  white-space: nowrap;
+  /* Nudge down so the badge's optical center aligns with the title's
+   * x-height rather than its cap-height (feels more balanced next to
+   * the descender-heavy "@green-screen-react"). */
+  transform: translateY(2px);
+}
+
+body.gs-demo-theme-classic .demo-title-badge {
+  color: #29fa29;
+  border-radius: 0;
+  text-shadow: 0 0 4px rgba(41, 250, 41, 0.35);
 }
 
 .demo-subtitle {
   font-size: 0.875rem;
-  color: #6b7280;
-  margin-top: 0.25rem;
+  color: #6c7086;
+  margin-top: 0.375rem;
+  font-weight: 400;
 }
 
 /* ── Protocol tabs ─────────────────────────── */
@@ -42,36 +169,35 @@ body {
   gap: 0;
   justify-content: center;
   margin-bottom: 0;
-  border-bottom: 1px solid #1e1e1e;
+  border-bottom: 1px solid #313244;
 }
 
 .protocol-tab {
   background: none;
   border: none;
-  color: #6b7280;
+  color: #6c7086;
   font-family: inherit;
   font-size: 0.8rem;
   font-weight: 500;
   padding: 0.5rem 1.25rem;
   cursor: pointer;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.02em;
   border-bottom: 2px solid transparent;
   transition: color 0.15s, border-color 0.15s;
 }
 
 .protocol-tab:hover {
-  color: #a0a0a0;
+  color: #a6adc8;
 }
 
 .protocol-tab.active {
-  color: #33ff33;
-  border-bottom-color: #33ff33;
+  color: #cba6f7;
+  border-bottom-color: #cba6f7;
 }
 
 .connect-tab.active {
-  color: #60a5fa;
-  border-bottom-color: #60a5fa;
+  color: #89b4fa;
+  border-bottom-color: #89b4fa;
 }
 
 /* ── Demo hint ─────────────────────────────── */
@@ -79,47 +205,276 @@ body {
 .demo-hint {
   text-align: center;
   font-size: 0.75rem;
-  color: #4b5563;
+  color: #585b70;
   padding: 0.5rem 0;
-  letter-spacing: 0.03em;
 }
 
 /* ── Terminal wrapper ──────────────────────── */
 
+/* Fit-to-content: wrap sizes to the terminal's inner render area instead
+ * of stretching to the full page width. The flex container centers it.
+ * `position: relative` anchors the theme sticker at the top-right.
+ *
+ * `zoom: 1.2` makes the terminal render ~20% larger than the pixel-exact
+ * 80×24 grid — more readable without distorting the cursor/click math
+ * (zoom scales layout including pointer coordinates, unlike transform
+ * scale). Supported in Chrome/Safari/Edge and modern Firefox. */
 .terminal-wrapper {
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 0 40px rgba(51, 255, 51, 0.05);
+  border-radius: 10px;
+  display: inline-flex;
+  position: relative;
+  zoom: 1.2;
+}
+
+/* ── Theme sticker ─────────────────────────── */
+
+/* Theme sticker: positioned BELOW the terminal (not overlapping header/
+ * footer). Per-theme visual variants below. z-index keeps it above the
+ * terminal border/shadow. `pointer-events: none` makes it click-through
+ * so the terminal below still receives clicks. */
+.theme-sticker {
+  position: absolute;
+  bottom: -64px;
+  z-index: 20;
+  padding: 10px 16px;
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  line-height: 1.15;
+  pointer-events: none;
+  user-select: none;
+  transition: transform 0.25s ease, background 0.3s ease, color 0.3s ease;
+}
+
+.theme-sticker-line1 {
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.theme-sticker-line2 {
+  font-size: 0.82rem;
+  opacity: 0.85;
+  margin-top: 2px;
+}
+
+/* ── Classic: paper sticky-note, right side, tilted, taped on ── */
+
+.theme-sticker-classic {
+  right: 24px;
+  left: auto;
+  background: linear-gradient(135deg, #fff3c4 0%, #ffd868 100%);
+  color: #6b4a00;
+  font-family: 'Caveat', 'Comic Sans MS', 'Bradley Hand', cursive;
+  border-radius: 3px;
+  transform: rotate(-4deg);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+/* Translucent tape strip at the top center — attaches the note to the
+ * terminal above it. Slightly offset rotation makes it feel hand-applied. */
+.theme-sticker-classic::before {
+  content: '';
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%) rotate(3deg);
+  width: 58px;
+  height: 18px;
+  background: linear-gradient(180deg,
+    rgba(230, 220, 180, 0.5) 0%,
+    rgba(210, 200, 160, 0.65) 100%);
+  border: 1px solid rgba(170, 160, 120, 0.4);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+/* ── Modern: brushed-metal panel, left side, flat, four screws ── */
+
+.theme-sticker-modern {
+  /* Positioned so the nameplate hangs just below the terminal edge,
+   * clearing the header while staying visually "attached" to the chrome.
+   * Darker brushed-metal palette — reads as gunmetal/anthracite rather
+   * than polished silver, so the panel sits against the page background
+   * without glowing. */
+  bottom: -59px;
+  left: 24px;
+  right: auto;
+  background: linear-gradient(145deg, #4a4f58 0%, #5a6069 40%, #3a3e46 100%);
+  color: #e6e9ee;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  border: 1px solid #2a2d33;
+  border-radius: 4px;
+  transform: none;
+  padding: 16px 22px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.15),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.35),
+    0 2px 4px rgba(0, 0, 0, 0.35),
+    0 10px 18px rgba(0, 0, 0, 0.4);
+}
+
+.theme-sticker-modern .theme-sticker-line1 {
+  letter-spacing: 0.02em;
+}
+.theme-sticker-modern .theme-sticker-line2 {
+  color: #b8bcc4;
+}
+
+/* Screw heads: small gray circles inset into the metal corners. Radial
+ * gradient simulates a tiny highlight on the top-left of each screw. */
+.sticker-screw {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: radial-gradient(circle at 35% 35%,
+    #6c7079 0%, #4a4e55 55%, #2d3036 100%);
+  border-radius: 50%;
+  box-shadow: inset 0 0.5px 0.5px rgba(255, 255, 255, 0.35);
+}
+.sticker-screw-tl { top: 5px; left: 5px; }
+.sticker-screw-tr { top: 5px; right: 5px; }
+.sticker-screw-bl { bottom: 5px; left: 5px; }
+.sticker-screw-br { bottom: 5px; right: 5px; }
+
+/* Parent row that centers the fit-to-content wrapper. */
+.connect-form,
+.standalone-page {
+  display: flex;
+  justify-content: center;
 }
 
 /* ── Connect panel ─────────────────────────── */
 
-.connect-panel {
-  padding: 1.5rem;
+/* .connect-panel is no longer emitted — ConnectPanel returns a Fragment
+ * with .connect-info + .connect-form as direct children of .terminal-block.
+ * Keeping the old rule here would apply 1.5rem of dead padding. */
+
+/* Info block holds only the heading + info-tooltip trigger. Absolutely
+ * positioned so it straddles the terminal's top-left CORNER — centered
+ * on the top edge with a matching page-bg background so the heading
+ * visually "cuts" through the terminal's border at the corner, like a
+ * tag attached there. */
+.connect-info {
+  position: absolute;
+  /* Sits INSIDE the terminal's top-left area — no background pill, just
+   * the heading text sitting against the terminal's dark surface.
+   * Offset clears the header row (~68px) + gap (16px) + ~25px inside
+   * the terminal's top edge. */
+  top: 117px;
+  left: 20px;
+  z-index: 10;
+  margin: 0;
+  padding: 0;
+  background: transparent;
 }
 
-.connect-info {
-  margin-bottom: 1.5rem;
+.connect-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #cdd6f4;
+}
+
+/* Info-tooltip button: small (i) icon after the heading. Hovering or
+ * focusing it reveals the .info-tooltip bubble positioned below. */
+.info-tooltip-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid #313244;
+  border-radius: 50%;
+  color: #6c7086;
+  cursor: help;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.info-tooltip-btn:hover,
+.info-tooltip-btn:focus-visible {
+  color: #cdd6f4;
+  border-color: #45475a;
+  background: rgba(205, 214, 244, 0.04);
+  outline: none;
+}
+
+.info-tooltip {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  z-index: 30;
+  width: 380px;
+  max-width: 85vw;
+  padding: 0.75rem 0.9rem;
+  background: #181825;
+  color: #a6adc8;
+  border: 1px solid #313244;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s;
+  pointer-events: none;
+}
+
+.info-tooltip-btn:hover .info-tooltip,
+.info-tooltip-btn:focus-visible .info-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+/* Classic theme: tooltip adopts the stark black/gray palette. */
+body.gs-demo-theme-classic .info-tooltip-btn {
+  border-color: #1a1a1a;
+  color: #8a8a8a;
+}
+body.gs-demo-theme-classic .info-tooltip-btn:hover,
+body.gs-demo-theme-classic .info-tooltip-btn:focus-visible {
+  color: #e0e0e0;
+  border-color: #333333;
+  background: rgba(255, 255, 255, 0.04);
+}
+body.gs-demo-theme-classic .info-tooltip {
+  background: #0a0a0a;
+  color: #cfcfcf;
+  border-color: #1f1f1f;
 }
 
 .connect-info h3 {
   font-size: 1rem;
-  color: #e2e8f0;
+  color: #cdd6f4;
   margin-bottom: 0.5rem;
+  font-weight: 600;
 }
 
 .connect-info p {
   font-size: 0.8rem;
-  color: #6b7280;
-  line-height: 1.5;
+  color: #6c7086;
+  line-height: 1.6;
 }
 
 .connect-info code {
-  background: #161616;
-  color: #33ff33;
+  background: #181825;
+  color: #cba6f7;
   padding: 0.15rem 0.4rem;
-  border-radius: 3px;
+  border-radius: 4px;
   font-size: 0.75rem;
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
 }
 
 .connect-steps {
@@ -134,7 +489,7 @@ body {
   align-items: flex-start;
   gap: 0.75rem;
   font-size: 0.8rem;
-  color: #9ca3af;
+  color: #a6adc8;
 }
 
 .step-num {
@@ -144,8 +499,8 @@ body {
   min-width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #1e1e1e;
-  color: #33ff33;
+  background: #313244;
+  color: #cba6f7;
   font-size: 0.7rem;
   font-weight: 600;
   flex-shrink: 0;
@@ -153,17 +508,18 @@ body {
 
 .step code {
   display: block;
-  background: #161616;
-  color: #33ff33;
+  background: #181825;
+  color: #cba6f7;
   padding: 0.15rem 0.4rem;
-  border-radius: 3px;
+  border-radius: 4px;
   font-size: 0.75rem;
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
   margin-bottom: 0.25rem;
 }
 
 .step-desc {
   font-size: 0.7rem;
-  color: #4b5563;
+  color: #585b70;
 }
 
 .connect-form {
@@ -175,9 +531,8 @@ body {
 .connect-label {
   display: block;
   font-size: 0.7rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: #6b7280;
+  letter-spacing: 0.05em;
+  color: #6c7086;
 }
 
 .connect-input {
@@ -185,32 +540,33 @@ body {
   width: 100%;
   margin-top: 0.25rem;
   padding: 0.5rem 0.625rem;
-  background: rgba(16, 185, 129, 0.05);
-  border: 1px solid #1e293b;
-  color: #33ff33;
-  font-family: inherit;
+  background: rgba(203, 166, 247, 0.05);
+  border: 1px solid #313244;
+  color: #cdd6f4;
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
   font-size: 0.85rem;
   outline: none;
-  border-radius: 3px;
+  border-radius: 6px;
+  transition: border-color 0.15s;
 }
 
 .connect-input:focus {
-  border-color: #33ff33;
+  border-color: #cba6f7;
 }
 
 .connect-input::placeholder {
-  color: #374151;
+  color: #45475a;
 }
 
 .connect-note {
   margin-top: 0.75rem;
   font-size: 0.7rem;
-  color: #4b5563;
+  color: #585b70;
   font-style: italic;
 }
 
 .connect-error {
-  color: #ef4444;
+  color: #f38ba8;
   font-size: 0.75rem;
   font-family: inherit;
 }
@@ -221,61 +577,307 @@ body {
 }
 
 .connect-status.connected {
-  color: #33ff33;
+  color: #a6e3a1;
 }
 
 .disconnect-btn {
   background: none;
-  border: 1px solid #374151;
-  color: #9ca3af;
+  border: 1px solid #45475a;
+  color: #a6adc8;
   font-family: inherit;
-  font-size: 0.7rem;
-  padding: 0.3rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.35rem 0.85rem;
   cursor: pointer;
-  border-radius: 3px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  transition: color 0.15s, border-color 0.15s;
+  border-radius: 6px;
+  transition: color 0.15s, border-color 0.15s, background-color 0.15s;
 }
 
 .disconnect-btn:hover {
-  color: #ef4444;
-  border-color: #ef4444;
+  color: #f38ba8;
+  border-color: rgba(243, 139, 168, 0.4);
+  background-color: rgba(243, 139, 168, 0.08);
 }
 
 /* ── Footer ────────────────────────────────── */
 
+/* Footer alignment is theme-driven: Modern → right-aligned, Classic →
+ * left-aligned. The footer fills the .terminal-block's width (which
+ * equals the terminal-wrapper's scaled width), so the justify-content
+ * anchors items to the terminal's left/right edges. */
 .demo-footer {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1.5rem;
-  margin-top: 1.5rem;
+  flex-direction: column;
+  align-items: flex-end; /* keeps the stack anchored to the terminal's right edge */
+  justify-content: space-between;
+  gap: 0.5rem;
   font-size: 0.8rem;
 }
 
+
+/* Shared height for install-cmd pill + GitHub button so they visually
+ * align. 38px is set explicitly; internal flex centering handles the
+ * content regardless of per-element padding. */
+.install-cmd-wrap,
+.github-btn {
+  height: 34px;
+  box-sizing: border-box;
+}
+
+.install-cmd-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #181825;
+  border: 1px solid #313244;
+  border-radius: 6px;
+  padding: 0 0.6rem 0 0.85rem;
+}
+
 .install-cmd {
-  background: #161616;
-  color: #33ff33;
-  padding: 0.4rem 0.75rem;
+  color: #cba6f7;
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: 4px;
-  border: 1px solid #2a2a2a;
+  color: #6c7086;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+  padding: 0;
 }
 
-.github-link {
-  color: #6b7280;
+.copy-btn:hover {
+  color: #cdd6f4;
+  background: rgba(205, 214, 244, 0.06);
+  border-color: #313244;
+}
+
+.copy-btn.copied {
+  color: #a6e3a1;
+  border-color: rgba(166, 227, 161, 0.4);
+  background: rgba(166, 227, 161, 0.08);
+}
+
+/* ── GitHub button ─────────────────────────── */
+
+.github-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  /* No vertical padding: the shared 38px `height` + `align-items: center`
+   * handles vertical centering. Matches install-cmd-wrap's padding model
+   * so both boxes look identical in weight across both themes. */
+  padding: 0 0.85rem;
+  background: #24292f;
+  color: #f0f6fc;
+  border: 1px solid #444c56;
+  border-radius: 6px;
   text-decoration: none;
-  transition: color 0.15s;
+  font-weight: 600;
+  font-size: 0.85rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  line-height: 1;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-.github-link:hover {
-  color: #e2e8f0;
+.github-btn:hover {
+  background: #30363d;
+  border-color: #6e7681;
+}
+
+.github-btn svg {
+  flex-shrink: 0;
+}
+
+/* ── Theme toggle (2-state pill switch) ─────── */
+
+/* Inset shadow on the track gives the pill visible depth, as if the
+ * active option is sunk into a groove. The active pill adds a small
+ * raised shadow plus a subtle scale-on-hover for tactile feedback. */
+/* Theme-toggle row: full-width flex container that holds .theme-picker.
+ * Uses flex-grow on ::before/::after pseudo-elements to push the picker to
+ * one side: Classic → left, Modern → right. flex-grow IS animatable, so
+ * the picker slides smoothly between the two sides when the user swaps
+ * themes. Also adds vertical headroom so the picker clears the theme
+ * sticker (sticker is on the OPPOSITE side in each theme, so horizontal
+ * overlap is impossible; this just handles any residual vertical
+ * co-occupancy). */
+.terminal-block-theme-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  margin-top: 1rem;
+}
+.terminal-block-theme-row::before,
+.terminal-block-theme-row::after {
+  content: '';
+  flex-grow: 0;
+  transition: flex-grow 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* Modern: ::before grows, picker pushed to the RIGHT edge of the row. */
+body.gs-demo-theme-modern .terminal-block-theme-row::before { flex-grow: 1; }
+body.gs-demo-theme-modern .terminal-block-theme-row::after  { flex-grow: 0; }
+/* Classic: ::after grows, picker pushed to the LEFT edge of the row. */
+body.gs-demo-theme-classic .terminal-block-theme-row::before { flex-grow: 0; }
+body.gs-demo-theme-classic .terminal-block-theme-row::after  { flex-grow: 1; }
+
+.theme-picker {
+  display: inline-flex;
+  margin: 0 0 1.25rem;
+  padding: 3px;
+  background: #181825;
+  border: 1px solid #313244;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.45),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.02);
+  transition: background 0.3s ease, border-color 0.3s ease,
+              box-shadow 0.3s ease;
+}
+
+.theme-toggle-option {
+  background: transparent;
+  color: #6c7086;
+  border: none;
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  white-space: nowrap;
+  /* Smooth cross-fade + slide-in effect when toggling. */
+  transition: background 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+              color 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.theme-toggle-option:hover:not(.active) {
+  color: #cdd6f4;
+  background: rgba(205, 214, 244, 0.04);
+}
+
+.theme-toggle-option.active {
+  background: #cba6f7;
+  color: #11111b;
+  box-shadow:
+    0 2px 6px rgba(203, 166, 247, 0.35),
+    0 1px 2px rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+/* Classic theme: remove all rounded corners on demo chrome (theme
+ * sticker, copy button, github button, terminal wrapper, etc.) to match
+ * the blocky CRT aesthetic of the terminal itself. */
+body.gs-demo-theme-classic .terminal-wrapper,
+body.gs-demo-theme-classic .install-cmd-wrap,
+body.gs-demo-theme-classic .copy-btn,
+body.gs-demo-theme-classic .github-btn,
+body.gs-demo-theme-classic .theme-sticker,
+body.gs-demo-theme-classic .connect-error,
+body.gs-demo-theme-classic .connect-note {
+  border-radius: 0;
+}
+
+/* Classic: the active pill flips to phosphor green on the black track. */
+body.gs-demo-theme-classic .theme-picker {
+  background: #0a0a0a;
+  border-color: #1a1a1a;
+}
+body.gs-demo-theme-classic .theme-toggle-option.active {
+  background: #29fa29;
+  color: #000000;
+}
+body.gs-demo-theme-classic .theme-toggle-option {
+  border-radius: 0;
+}
+body.gs-demo-theme-classic .theme-picker {
+  border-radius: 0;
+}
+
+/* ── "Powered by LegacyBridge" attribution ───────────── */
+
+.powered-by {
+  margin-top: 2.5rem;
+  padding: 1rem 0 0.5rem;
+  text-align: center;
+  color: #6c7086;
+  font-size: 0.8rem;
+  border-top: 1px solid #1f1f2e;
+  transition: border-color 0.3s ease, color 0.3s ease;
+}
+
+body.gs-demo-theme-classic .powered-by {
+  border-top-color: #1a1a1a;
+  color: #8a8a8a;
+}
+
+.powered-by-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.powered-by-label {
+  opacity: 0.75;
+}
+
+.legacybridge-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  /* Icon color — teal-green matching the chip outline in the mark. */
+  color: #3fba7a;
+  font-weight: 700;
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+
+.legacybridge-logo:hover {
+  opacity: 0.85;
+}
+
+.legacybridge-wordmark {
+  display: inline-flex;
+  letter-spacing: -0.01em;
+  font-size: 0.95rem;
+}
+
+.lb-legacy { color: #3fba7a; }
+.lb-bridge { color: #cdd6f4; }
+
+/* Classic theme: whole mark flips to phosphor green to match the CRT
+ * aesthetic of the rest of the page. */
+body.gs-demo-theme-classic .legacybridge-logo,
+body.gs-demo-theme-classic .lb-legacy,
+body.gs-demo-theme-classic .lb-bridge {
+  color: #29fa29;
+}
+
+.powered-by-tagline {
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  opacity: 0.75;
+  font-style: italic;
 }
 
 /* ── Standalone mode ─────────────────────── */
 
 body.standalone {
-  background: #000000;
+  background: #11111b;
   overflow: hidden;
 }
 
@@ -285,7 +887,7 @@ body.standalone {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #000000;
+  background: #11111b;
 }
 
 .standalone-page .terminal-wrapper {

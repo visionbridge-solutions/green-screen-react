@@ -19,6 +19,9 @@ export class TN5250Parser {
    *  relative to the window content area, not the full screen. */
   winRowOff = 0;
   winColOff = 0;
+  /** Set during parseRecord when opcode is RESTORE_SCREEN; used by
+   *  parseOrders for post-WTD cursor positioning per lib5250. */
+  private isRestoreScreen = false;
 
   constructor(screen: ScreenBuffer) {
     this.screen = screen;
@@ -30,6 +33,7 @@ export class TN5250Parser {
    */
   parseRecord(record: Buffer): boolean {
     this.icApplied = false;
+    this.isRestoreScreen = false;
     if (record.length < 2) return false;
 
     // 5250 record header:
@@ -97,6 +101,7 @@ export class TN5250Parser {
         break;
 
       case OPCODE.RESTORE_SCREEN:
+        this.isRestoreScreen = true;
         this.screen.restoreState();
         this.screen.windowList = [];
         this.winRowOff = 0;
@@ -125,12 +130,41 @@ export class TN5250Parser {
     return this.parseCommandsFromOffset(record, 0);
   }
 
+  /** Check if a byte is a known 5250 command code. */
+  private static isKnownCommand(b: number): boolean {
+    return (
+      b === CMD.WRITE_TO_DISPLAY ||
+      b === CMD.CLEAR_UNIT ||
+      b === CMD.CLEAR_UNIT_ALT ||
+      b === CMD.CLEAR_FORMAT_TABLE ||
+      b === CMD.WRITE_STRUCTURED_FIELD ||
+      b === CMD.WRITE_ERROR_CODE ||
+      b === CMD.WRITE_ERROR_CODE_WIN ||
+      b === CMD.READ_INPUT_FIELDS ||
+      b === CMD.READ_MDT_FIELDS ||
+      b === CMD.READ_MDT_FIELDS_ALT ||
+      b === CMD.READ_SCREEN_IMMEDIATE ||
+      b === CMD.READ_IMMEDIATE ||
+      b === CMD.READ_IMMEDIATE_ALT ||
+      b === CMD.SAVE_SCREEN ||
+      b === CMD.SAVE_PARTIAL_SCREEN ||
+      b === CMD.RESTORE_SCREEN ||
+      b === CMD.RESTORE_PARTIAL_SCREEN ||
+      b === CMD.ROLL ||
+      b === CMD.READ_SCREEN_EXTENDED ||
+      b === CMD.READ_SCREEN_PRINT ||
+      b === CMD.READ_SCREEN_PRINT_EXTENDED ||
+      b === CMD.READ_SCREEN_PRINT_GRID ||
+      b === CMD.READ_SCREEN_PRINT_EXT_GRID
+    );
+  }
+
   /**
-   * Handle records with non-standard framing (e.g. opcode 0x04 from
-   * pub400.com). These records contain valid commands (CLEAR_UNIT, WTD,
-   * READ_*, etc.) but with extra sub-record marker bytes (0x04) between
-   * the GDS header and the actual commands.  We scan for the first known
-   * command byte, skipping 0x04 markers, and hand off to parseCommands.
+   * Parse commands from a data region.
+   *
+   * Per lib5250 session.c:620-629 each command is preceded by an ESC byte
+   * (0x04). We look for ESC+command pairs. As a fallback for non-conforming
+   * servers (e.g. pub400.com) we also accept a bare known-command byte.
    *
    * CRITICAL: the recognition list MUST include every command the host
    * may send alone in its own record. Missing READ_* here would cause a
@@ -139,37 +173,49 @@ export class TN5250Parser {
    * Read handler is the only path that clears `keyboardLocked`.
    */
   private parseCommandsFromOffset(data: Buffer, start: number): boolean {
-    for (let i = start; i < data.length; i++) {
-      // Skip sub-record markers (0x04)
-      if (data[i] === 0x04) continue;
-      // Known command bytes — hand off to normal parsing
-      const b = data[i];
-      if (
-        b === CMD.WRITE_TO_DISPLAY ||
-        b === CMD.CLEAR_UNIT ||
-        b === CMD.CLEAR_UNIT_ALT ||
-        b === CMD.CLEAR_FORMAT_TABLE ||
-        b === CMD.WRITE_STRUCTURED_FIELD ||
-        b === CMD.WRITE_ERROR_CODE ||
-        b === CMD.WRITE_ERROR_CODE_WIN ||
-        b === CMD.READ_INPUT_FIELDS ||
-        b === CMD.READ_MDT_FIELDS ||
-        b === CMD.READ_MDT_FIELDS_ALT ||
-        b === CMD.READ_SCREEN_IMMEDIATE ||
-        b === CMD.READ_IMMEDIATE ||
-        b === CMD.READ_IMMEDIATE_ALT ||
-        b === CMD.SAVE_SCREEN ||
-        b === CMD.RESTORE_SCREEN ||
-        b === CMD.ROLL
-      ) {
-        return this.parseCommands(data, i);
+    let pos = start;
+    let modified = false;
+
+    while (pos < data.length) {
+      const b = data[pos];
+
+      if (b === 0x04) {
+        // ESC byte — per lib5250, next byte is the command
+        if (pos + 1 < data.length && TN5250Parser.isKnownCommand(data[pos + 1])) {
+          pos++; // skip ESC, parseCommands starts at the command byte
+          const result = this.parseCommands(data, pos);
+          modified = modified || result.modified;
+          pos = result.pos;
+        } else {
+          // Stray 0x04 without a valid command following — skip it
+          pos++;
+        }
+        continue;
       }
+
+      // Fallback: bare command byte without ESC prefix (non-conforming servers)
+      if (TN5250Parser.isKnownCommand(b)) {
+        const result = this.parseCommands(data, pos);
+        modified = modified || result.modified;
+        pos = result.pos;
+        continue;
+      }
+
+      // Unknown byte at command level — skip
+      pos++;
     }
-    return false;
+
+    return modified;
   }
 
-  /** Parse one or more 5250 commands starting at offset */
-  private parseCommands(data: Buffer, offset: number): boolean {
+  /**
+   * Parse one or more 5250 commands starting at offset.
+   * Returns the new position and whether the screen was modified.
+   * The command loop terminates when ESC (0x04) is encountered (it is
+   * NOT consumed — the caller re-dispatches it as the start of the next
+   * ESC+command pair, per lib5250 session.c:964-967).
+   */
+  private parseCommands(data: Buffer, offset: number): { pos: number; modified: boolean } {
     let pos = offset;
     let modified = false;
 
@@ -183,6 +229,7 @@ export class TN5250Parser {
           this.screen.resize(24, 80);
           this.screen.keyboardLocked = true;
           this.screen.insertMode = false;
+          this.screen.pendingInsert = false;
           this.screen.savedCursorBeforeError = null;
           this.screen.windowList = [];
           this.screen.selectionFields = [];
@@ -202,6 +249,7 @@ export class TN5250Parser {
           this.screen.resize(27, 132);
           this.screen.keyboardLocked = true;
           this.screen.insertMode = false;
+          this.screen.pendingInsert = false;
           this.screen.savedCursorBeforeError = null;
           this.screen.windowList = [];
           this.screen.selectionFields = [];
@@ -212,13 +260,24 @@ export class TN5250Parser {
           this.winRowOff = 0;
           this.winColOff = 0;
           pos++;
-          // Skip the trailing flag byte (per 5250 spec)
-          if (pos < data.length) pos++;
+          // Read and validate the flag byte (per lib5250 session.c:1148-1156)
+          if (pos < data.length) {
+            const flag = data[pos++];
+            if (flag !== 0x00 && flag !== 0x80) {
+              // Per lib5250: invalid flag; log but continue
+            }
+          }
           modified = true;
           break;
 
         case CMD.CLEAR_FORMAT_TABLE:
+          // Per lib5250 display.c:1949-1956: clear format table, reset cursor,
+          // lock keyboard, and clear insert mode.
           this.screen.fields = [];
+          this.screen.cursorRow = 0;
+          this.screen.cursorCol = 0;
+          this.screen.keyboardLocked = true;
+          this.screen.insertMode = false;
           pos++;
           modified = true;
           break;
@@ -226,59 +285,24 @@ export class TN5250Parser {
         case CMD.WRITE_TO_DISPLAY: {
           pos++; // skip command byte
           // WTD has a CC (control character) — 2 bytes
+          let wtdCC2 = 0;
           if (pos + 1 < data.length) {
             const cc1 = data[pos++];
-            const cc2 = data[pos++];
+            wtdCC2 = data[pos++];
 
-            // CC1 upper 3 bits (0xE0 mask) control MDT reset + null fill.
-            // Per lib5250 session.c:820-851, this is a 7-value switch:
-            let resetNonBypassMdt = false;
-            let resetAllMdt = false;
-            let nullNonBypassMdt = false;
-            let nullNonBypass = false;
-
-            // CC1: lock keyboard for all values except 0x00
-            // Per lib5250 session.c:853-858
-            if ((cc1 & 0xE0) !== 0x00) {
-              this.screen.keyboardLocked = true;
-            }
-
-            switch (cc1 & 0xE0) {
-              case 0x00: break; // no action (don't lock keyboard)
-              case 0x20: break; // reserved / no action in lib5250
-              case 0x40: resetNonBypassMdt = true; break;
-              case 0x60: resetAllMdt = true; break;
-              case 0x80: nullNonBypassMdt = true; break;
-              case 0xA0: resetNonBypassMdt = true; nullNonBypass = true; break;
-              case 0xC0: resetNonBypassMdt = true; nullNonBypassMdt = true; break;
-              case 0xE0: resetAllMdt = true; nullNonBypass = true; break;
-            }
-
-            for (const f of this.screen.fields) {
-              const isInput = this.screen.isInputField(f);
-              // Null fill: clear input field content
-              if (isInput && (nullNonBypass || (nullNonBypassMdt && f.modified))) {
-                const start = this.screen.offset(f.row, f.col);
-                for (let i = start; i < start + f.length; i++) {
-                  this.screen.buffer[i] = ' ';
-                }
-              }
-              // MDT reset
-              if (resetAllMdt || (resetNonBypassMdt && isInput)) {
-                f.modified = false;
-              }
-            }
+            // CC1 handling (shared with Read commands)
+            this.handleCC1(cc1);
 
             // Mark that subsequent SF orders in this WTD should clear stale fields
-            if (resetAllMdt || resetNonBypassMdt) {
-              this.pendingFieldsClear = true;
-            }
+            // (done after handleCC1 since it checks MDT reset flags)
 
             // CC2 handling per lib5250 session.c:1033-1066
-            this.handleCC2(cc2);
+            // Note: CC2 is handled AFTER orders in lib5250 (session.c:1018),
+            // but we handle message/alarm bits here; cursor logic is in parseOrders.
+            this.handleCC2(wtdCC2);
           }
           // Parse orders and data following WTD
-          pos = this.parseOrders(data, pos);
+          pos = this.parseOrders(data, pos, wtdCC2, this.isRestoreScreen);
           modified = true;
           break;
         }
@@ -306,8 +330,8 @@ export class TN5250Parser {
           // IC sets cursor position (but NOT pending insert per spec)
           while (pos < data.length) {
             const c = data[pos];
-            if (c === 0x27) { // ESC — end of error code data
-              break;
+            if (c === 0x04) { // ESC — end of error code data (per lib5250 session.c:765-767)
+              break; // don't advance pos; command loop will see 0x04 for next dispatch
             }
             if (c === ORDER.IC && pos + 2 < data.length) {
               // IC within error code: just move cursor, don't set pending insert
@@ -362,22 +386,23 @@ export class TN5250Parser {
         case CMD.READ_IMMEDIATE:
         case CMD.READ_IMMEDIATE_ALT: {
           // Per lib5250 session.c:2328-2354 (tn5250_session_read_cmd):
-          // Reads 2 CC bytes, handles CC1/CC2, unlocks the keyboard (if
-          // normally locked), and sets read_opcode. The CC bytes have the
-          // same semantics as WTD CC1/CC2.
+          // Reads 2 CC bytes, handles CC1/CC2, clears X_SYSTEM/X_CLOCK,
+          // and unlocks the keyboard only if in normal LOCKED state
+          // (not POSTHELP/error state).
           const readOp = cmd;
           pos++;
           if (pos + 1 < data.length) {
             const cc1 = data[pos++];
             const cc2 = data[pos++];
-            // Lock keyboard if CC1 non-zero (same as WTD behavior)
-            if ((cc1 & 0xE0) !== 0x00) {
-              this.screen.keyboardLocked = true;
-            }
+            this.handleCC1(cc1);
             this.handleCC2(cc2);
           }
-          // Unlock keyboard on Read command — host is requesting input
-          this.screen.keyboardLocked = false;
+          // Per lib5250 session.c:2348-2351: only unlock if in normal
+          // locked state (not error/POSTHELP). We use savedCursorBeforeError
+          // as a proxy for the POSTHELP state.
+          if (this.screen.savedCursorBeforeError === null) {
+            this.screen.keyboardLocked = false;
+          }
           this.screen.readOpcode = readOp;
           modified = true;
           break;
@@ -403,10 +428,22 @@ export class TN5250Parser {
           break;
         }
 
-        case 0x04:
-          // Sub-record marker — skip (appears between commands in some hosts)
+        // Commands recognized by lib5250 but not processed (logged only)
+        case CMD.SAVE_PARTIAL_SCREEN:
+        case CMD.RESTORE_PARTIAL_SCREEN:
+        case CMD.READ_SCREEN_EXTENDED:
+        case CMD.READ_SCREEN_PRINT:
+        case CMD.READ_SCREEN_PRINT_EXTENDED:
+        case CMD.READ_SCREEN_PRINT_GRID:
+        case CMD.READ_SCREEN_PRINT_EXT_GRID:
+          // Per lib5250 session.c: these commands are logged but ignored.
           pos++;
           break;
+
+        case 0x04:
+          // ESC byte — per lib5250 session.c:964-967, return to caller for
+          // re-dispatch as the start of the next ESC+command pair.
+          return { pos, modified };
 
         default:
           // Not a recognized command at this position
@@ -417,14 +454,16 @@ export class TN5250Parser {
       }
     }
 
-    return modified;
+    return { pos, modified };
   }
 
   /**
    * Parse orders and text data within a WTD (or similar) command.
    * Updates the screen buffer and returns the new position.
    */
-  private parseOrders(data: Buffer, pos: number): number {
+  private parseOrders(data: Buffer, pos: number, cc2 = 0, isRestoreScreen = false): number {
+    const oldCursorRow = this.screen.cursorRow;
+    const oldCursorCol = this.screen.cursorCol;
     let currentAddr = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
     let currentAttr: number = ATTR.NORMAL;
     let useSymbolCharSet = false; // SA type 0x22 can switch to APL/symbol CGCS
@@ -450,6 +489,8 @@ export class TN5250Parser {
 
     // Helper: write a single rendered character at currentAddr, applying
     // current attributes and resetting the DBCS continuation flag for SBCS.
+    // Per lib5250 dbuffer.c:672-680 (addch + right): wraps around to 0
+    // when reaching the end of the screen buffer.
     const writeChar = (ch: string): void => {
       if (currentAddr < this.screen.size) {
         this.screen.setCharAt(currentAddr, ch);
@@ -458,6 +499,7 @@ export class TN5250Parser {
         this.screen.dbcsCont[currentAddr] = false;
       }
       currentAddr++;
+      if (currentAddr >= this.screen.size) currentAddr = 0;
     };
 
     // Helper: write a DBCS character — glyph in cell N, empty continuation
@@ -470,6 +512,7 @@ export class TN5250Parser {
         this.screen.dbcsCont[currentAddr] = false;
       }
       currentAddr++;
+      if (currentAddr >= this.screen.size) currentAddr = 0;
       if (currentAddr < this.screen.size) {
         this.screen.setCharAt(currentAddr, '');
         this.screen.setAttrAt(currentAddr, currentAttr);
@@ -477,6 +520,7 @@ export class TN5250Parser {
         this.screen.dbcsCont[currentAddr] = true;
       }
       currentAddr++;
+      if (currentAddr >= this.screen.size) currentAddr = 0;
     };
 
     while (pos < data.length) {
@@ -521,20 +565,25 @@ export class TN5250Parser {
           const icCol = data[pos++] - 1 + this.winColOff;
           pendingICRow = icRow;
           pendingICCol = icCol;
+          // Per lib5250 display.c:458-462: IC sets a persistent position
+          // that setCursorHome uses on subsequent WTDs without IC.
+          this.screen.pendingInsert = true;
+          this.screen.pendingInsertRow = icRow;
+          this.screen.pendingInsertCol = icCol;
           break;
         }
 
         case ORDER.MC: {
-          // Move Cursor: 2 bytes follow (row, col) — 1-based from host
+          // Move Cursor: 2 bytes follow (row, col) — 1-based from host.
+          // Per lib5250 session.c:2024-2047: MC does NOT actually move the
+          // cursor or update the display address. It only stores end_y/end_x
+          // for post-WTD cursor positioning (same as IC).
           if (pos + 2 >= data.length) return data.length;
           pos++;
           const mcRow = data[pos++] - 1 + this.winRowOff;
           const mcCol = data[pos++] - 1 + this.winColOff;
-          if (mcRow >= 0 && mcRow < this.screen.rows && mcCol >= 0 && mcCol < this.screen.cols) {
-            this.screen.cursorRow = mcRow;
-            this.screen.cursorCol = mcCol;
-            currentAddr = this.screen.offset(mcRow, mcCol);
-          }
+          pendingICRow = mcRow;
+          pendingICCol = mcCol;
           break;
         }
 
@@ -550,21 +599,26 @@ export class TN5250Parser {
           const charByte = data[pos++];
           const targetAddr = this.screen.offset(raRow, raCol);
           const ch = ebcdicToChar(charByte, this.screen.codePage);
+          // Per lib5250 addch semantics: set char, attribute, and ext attrs
+          const raExt = snapExt();
+          const raFill = () => {
+            this.screen.setCharAt(currentAddr, ch);
+            this.screen.setAttrAt(currentAddr, currentAttr);
+            this.screen.setExtAttrAt(currentAddr, raExt);
+            currentAddr++;
+          };
           if (targetAddr >= currentAddr) {
             while (currentAddr <= targetAddr && currentAddr < this.screen.size) {
-              this.screen.setCharAt(currentAddr, ch);
-              currentAddr++;
+              raFill();
             }
           } else {
             // Wrap-around: fill to end of screen, then from start to target (inclusive)
             while (currentAddr < this.screen.size) {
-              this.screen.setCharAt(currentAddr, ch);
-              currentAddr++;
+              raFill();
             }
             currentAddr = 0;
             while (currentAddr <= targetAddr && currentAddr < this.screen.size) {
-              this.screen.setCharAt(currentAddr, ch);
-              currentAddr++;
+              raFill();
             }
           }
           break;
@@ -580,17 +634,15 @@ export class TN5250Parser {
           const eaRow = data[pos++] - 1 + this.winRowOff;
           const eaCol = data[pos++] - 1 + this.winColOff;
           const eaLength = data[pos++];
-          // Consume (length-1) attribute bytes
+          // Consume (length-1) attribute bytes. Per lib5250 session.c:2131,
+          // only the LAST attribute byte is checked for 0xFF.
           const attrCount = Math.max(0, eaLength - 1);
-          let eraseAll = false;
+          let lastAttr = 0;
           for (let i = 0; i < attrCount && pos < data.length; i++) {
-            if (data[pos] === 0xFF) eraseAll = true;
-            pos++;
+            lastAttr = data[pos++];
           }
-          // lib5250 only erases characters when attribute 0xFF is present
-          // (we don't track extended attributes separately). Default on any
-          // attribute list so the region is cleared — safe for typical hosts.
-          if (eraseAll || attrCount === 0) {
+          // lib5250 only erases characters when the last attribute is 0xFF
+          if (lastAttr === 0xFF) {
             const eaTarget = this.screen.offset(eaRow, eaCol);
             if (eaTarget >= currentAddr) {
               while (currentAddr <= eaTarget && currentAddr < this.screen.size) {
@@ -619,17 +671,24 @@ export class TN5250Parser {
 
         case ORDER.SOH: {
           // Start of Header: variable-length header for input fields.
-          // Per lib5250: SOH clears format table and pending insert cursor.
+          // Per lib5250 session.c:1810-1841: SOH clears format table, clears
+          // pending insert cursor, locks keyboard, and sets X_SYSTEM.
           // Format: [0x01] [length] [data...]
           // The length byte specifies the number of data bytes following it
-          // (NOT including SOH or length byte itself).
+          // (NOT including SOH or length byte itself). Must be 0-7.
           if (pos + 1 >= data.length) return data.length;
           pos++;
           this.screen.fields = [];
           this.screen.selectionFields = [];
+          this.screen.keyboardLocked = true;
+          this.screen.pendingInsert = false;
           pendingICRow = -1;
           pendingICCol = -1;
           const hdrLen = data[pos++];
+          if (hdrLen > 7) {
+            // Per lib5250: invalid SOH length — skip remaining
+            return data.length;
+          }
           // Per lib5250 dbuffer.c:167-178: copy header bytes for later use
           // (byte 3 carries the error message line row).
           const safeLen = Math.max(0, Math.min(hdrLen, data.length - pos));
@@ -740,6 +799,9 @@ export class TN5250Parser {
                     // Fallback: remove the top (last) window
                     this.screen.windowList.pop();
                   }
+                  // Per lib5250 session.c:3495-3502: removing a window also
+                  // destroys all scrollbars.
+                  this.screen.scrollbarList = [];
                   this.winRowOff = 0;
                   this.winColOff = 0;
                   break;
@@ -762,6 +824,22 @@ export class TN5250Parser {
                   this.winRowOff = 0;
                   this.winColOff = 0;
                   break;
+                case WDSF_TYPE.WRITE_DATA: {
+                  // Per lib5250 session.c:3575-3613: write data to the current
+                  // field position. Flag byte followed by EBCDIC data bytes.
+                  if (pos < wdsfEnd) {
+                    const _flagbyte = data[pos++]; // 0x80 = write to entry field
+                    while (pos < wdsfEnd) {
+                      const ch = ebcdicToChar(data[pos++], this.screen.codePage);
+                      if (currentAddr < this.screen.size) {
+                        this.screen.setCharAt(currentAddr, ch);
+                      }
+                      currentAddr++;
+                      if (currentAddr >= this.screen.size) currentAddr = 0;
+                    }
+                  }
+                  break;
+                }
                 default:
                   break;
               }
@@ -845,11 +923,25 @@ export class TN5250Parser {
       afterSBA = false;
     }
 
-    // Apply deferred IC cursor position (last IC wins, per lib5250)
-    if (pendingICRow >= 0 && pendingICCol >= 0) {
+    // Post-WTD cursor positioning per lib5250 session.c:998-1018.
+    // Three-branch logic using CC2 bit 0x40 (IC_ULOCK):
+    const icUlock = (cc2 & 0x40) !== 0;
+    const willUnlock = (cc2 & 0x08) !== 0;
+    const hasIC = pendingICRow >= 0 && pendingICCol >= 0;
+
+    if (hasIC && !icUlock) {
+      // IC/MC position wins
       this.screen.cursorRow = pendingICRow;
       this.screen.cursorCol = pendingICCol;
       this.icApplied = true;
+    } else if ((willUnlock && !icUlock) || isRestoreScreen) {
+      // Cursor home: first input field, or (0,0)
+      this.screen.setCursorHome();
+      this.icApplied = true;
+    } else {
+      // Keep original pre-WTD cursor position
+      this.screen.cursorRow = oldCursorRow;
+      this.screen.cursorCol = oldCursorCol;
     }
 
     return pos;
@@ -1021,7 +1113,8 @@ export class TN5250Parser {
       fcw2,
       attribute: fieldDisplayAttr,
       rawAttrByte,
-      modified: false,
+      // Per lib5250 field.h:148: MDT is bit 3 (0x08) of ffw1 (FFW high byte)
+      modified: inputField ? (ffw1 & 0x08) !== 0 : false,
       continuous: continuous || undefined,
       continuedFirst: contFirst || undefined,
       continuedMiddle: contMiddle || undefined,
@@ -1046,7 +1139,34 @@ export class TN5250Parser {
     };
 
     this.clearStaleFieldsOnce();
-    this.screen.fields.push(field);
+
+    // Per lib5250 session.c:1717-1724: if a field already exists at this
+    // position, modify it rather than adding a duplicate.
+    if (inputField) {
+      const existing = this.screen.fields.find(f => f.row === row && f.col === col);
+      if (existing) {
+        existing.ffw1 = ffw1;
+        existing.ffw2 = ffw2;
+        existing.attribute = fieldDisplayAttr;
+        existing.rawAttrByte = rawAttrByte;
+      } else {
+        this.screen.fields.push(field);
+      }
+    } else {
+      this.screen.fields.push(field);
+    }
+
+    // Per lib5250 session.c:1766-1795: for input fields, write 0x20 (space)
+    // at the position after the end of the field (field separator marker),
+    // so adjacent fields render correctly.
+    if (inputField && fieldLength > 0) {
+      let endAddr = this.screen.offset(row, col) + fieldLength;
+      if (endAddr >= this.screen.size) endAddr -= this.screen.size;
+      if (endAddr < this.screen.size) {
+        this.screen.setCharAt(endAddr, ' ');
+      }
+    }
+
     return pos;
   }
 
@@ -1197,37 +1317,40 @@ export class TN5250Parser {
         const _choiceFlagbyte2 = data[pos + 3];
         const choiceFlagbyte3 = data[pos + 4];
 
-        // Skip if flagbyte3 bits 7-5 are all zero (choice not applicable)
-        if ((choiceFlagbyte3 & 0xE0) !== 0) {
-          // Calculate text offset: skip flags, optional mnemonic/AID/numeric fields
-          let textOff = 5;
-          if (choiceFlagbyte1 & 0x08) textOff++; // mnemonic offset
-          if (choiceFlagbyte1 & 0x04) textOff++; // AID byte
-          const numericSel = choiceFlagbyte1 & 0x03;
-          if (numericSel === 1) textOff++;        // single-digit numeric
-          else if (numericSel === 2) textOff += 2; // double-digit numeric
+        // Per lib5250 session.c:2885-2910: choice availability is determined
+        // by flagbyte1 bits 6-7 (0xC0), not flagbyte3. Include all choices.
+        // Calculate text offset: skip flags, optional mnemonic/AID/numeric fields
+        let textOff = 5;
+        if (choiceFlagbyte1 & 0x08) textOff++; // mnemonic offset
+        if (choiceFlagbyte1 & 0x04) textOff++; // AID byte
+        const numericSel = choiceFlagbyte1 & 0x03;
+        if (numericSel === 1) textOff++;        // single-digit numeric
+        else if (numericSel === 2) textOff += 2; // double-digit numeric
 
-          let text = '';
-          for (let i = textOff; i < minorLen; i++) {
-            text += ebcdicToChar(data[pos + i]);
-          }
-
-          const choiceRow = baseRow + choiceIndex;
-          choices.push({ text, row: choiceRow, col: baseCol });
-          choiceIndex++;
+        let text = '';
+        for (let i = textOff; i < minorLen; i++) {
+          text += ebcdicToChar(data[pos + i]);
         }
+
+        const choiceRow = baseRow + choiceIndex;
+        choices.push({ text, row: choiceRow, col: baseCol });
+        choiceIndex++;
       }
 
       pos += minorLen;
     }
 
-    this.screen.selectionFields.push({
-      row: baseRow,
-      col: baseCol,
-      numRows,
-      numCols: itemSize,
-      choices,
-    });
+    // Per lib5250 session.c:2619-2624: if a selection field already exists at
+    // this position, redefine it rather than creating a duplicate.
+    const existingSel = this.screen.selectionFields.findIndex(
+      s => s.row === baseRow && s.col === baseCol,
+    );
+    const selDef = { row: baseRow, col: baseCol, numRows, numCols: itemSize, choices };
+    if (existingSel >= 0) {
+      this.screen.selectionFields[existingSel] = selDef;
+    } else {
+      this.screen.selectionFields.push(selDef);
+    }
   }
 
   /**
@@ -1376,6 +1499,56 @@ export class TN5250Parser {
     }
   }
 
+  /**
+   * Handle CC1 byte (first control character of WTD / Read commands).
+   * Per lib5250 session.c:812-878.
+   *
+   * CC1 upper 3 bits (0xE0 mask) control keyboard lock, MDT reset,
+   * and null-fill operations on fields.
+   */
+  private handleCC1(cc1: number): void {
+    let resetNonBypassMdt = false;
+    let resetAllMdt = false;
+    let nullNonBypassMdt = false;
+    let nullNonBypass = false;
+
+    // Lock keyboard for all CC1 values except 0x00
+    if ((cc1 & 0xE0) !== 0x00) {
+      this.screen.keyboardLocked = true;
+    }
+
+    switch (cc1 & 0xE0) {
+      case 0x00: break;
+      case 0x20: break; // reserved
+      case 0x40: resetNonBypassMdt = true; break;
+      case 0x60: resetAllMdt = true; break;
+      case 0x80: nullNonBypassMdt = true; break;
+      case 0xA0: resetNonBypassMdt = true; nullNonBypass = true; break;
+      case 0xC0: resetNonBypassMdt = true; nullNonBypassMdt = true; break;
+      case 0xE0: resetAllMdt = true; nullNonBypass = true; break;
+    }
+
+    for (const f of this.screen.fields) {
+      const isInput = this.screen.isInputField(f);
+      // Null fill: clear input field content
+      if (isInput && (nullNonBypass || (nullNonBypassMdt && f.modified))) {
+        const start = this.screen.offset(f.row, f.col);
+        for (let i = start; i < start + f.length; i++) {
+          this.screen.buffer[i] = ' ';
+        }
+      }
+      // MDT reset
+      if (resetAllMdt || (resetNonBypassMdt && isInput)) {
+        f.modified = false;
+      }
+    }
+
+    // Mark that subsequent SF orders in this WTD should clear stale fields
+    if (resetAllMdt || resetNonBypassMdt) {
+      this.pendingFieldsClear = true;
+    }
+  }
+
   /** Clear stale fields when the first SF order arrives after a Reset MDT WTD */
   private clearStaleFieldsOnce(): void {
     if (this.pendingFieldsClear) {
@@ -1475,6 +1648,18 @@ export class TN5250Parser {
         if (!onSignOnScreen) f.ffw1 |= 0x20;
         continue;
       }
+
+      // Native underscore attribute (lower 3 bits = 4, 5, or 6 → UL,
+      // UL+RI, UL+HI) is a strong signal that this is a real input field.
+      // UIM popup screens (e.g. "Exit Interactive SQL", CRTLIB prompter)
+      // use short underscore-attribute fields pre-populated with default
+      // values like "1". Without this check the empty-content rule below
+      // demotes them, which strips the cursor and breaks TAB walking on
+      // those screens. Decoration/label fields don't carry the underscore
+      // attribute, so this exception is safe.
+      const attrType = f.rawAttrByte & 0x07;
+      const hasNativeUnderscore = attrType >= 0x04 && attrType < 0x07;
+      if (hasNativeUnderscore) continue;
 
       // (a) Same-row termination check
       const next = sortedFields[i + 1];

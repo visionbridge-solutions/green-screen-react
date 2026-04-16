@@ -78,6 +78,19 @@ export class TN5250Encoder {
       );
     }
 
+    // Per lib5250 dbuffer.c:193-318: check the SOH header key mask to see
+    // if field data should be sent for this AID key. If the mask says no,
+    // send cursor+AID only (like CLEAR).
+    if (!this.shouldSendDataForAid(aidByte)) {
+      this.screen.readOpcode = 0;
+      this.screen.keyboardLocked = true;
+      return this.buildPacket(
+        RECORD_H.NONE,
+        RECORD_OPCODE.PUT_GET,
+        Buffer.concat(parts),
+      );
+    }
+
     // Dispatch by read_opcode — each mode has different encoding rules for
     // modified flag selection, NUL handling, and sign-nibble handling.
     // If no read_opcode is set (host never issued a Read), fall back to
@@ -251,6 +264,44 @@ export class TN5250Encoder {
     }
 
     return Buffer.concat(pieces);
+  }
+
+  /** Encode one single field's content to EBCDIC (no continuation walk). */
+  /**
+   * Check the SOH header key mask to determine if field data should be
+   * sent for the given AID key. Per lib5250 dbuffer.c:193-318.
+   *
+   * The key mask is stored in SOH header bytes 4-6 (0-indexed).
+   * Uses `header_data[byte] & (0x80 >> bit)` where bit descends from 7
+   * for the first key in each group. If the masked bit is CLEAR (0),
+   * data SHOULD be sent (result=1); if SET (1), data should NOT be sent.
+   * For non-function-key AIDs (Enter, PageUp, etc.) data is always sent.
+   */
+  private shouldSendDataForAid(aidByte: number): boolean {
+    const hdr = this.screen.headerData;
+    // No key mask if header is too short (< 7 bytes)
+    if (!hdr || hdr.length <= 6) return true;
+
+    // Map F-key AID bytes to (byteIndex, bit) matching lib5250 exactly.
+    // The C code uses: result = ((header_data[byte] & (0x80 >> bit)) == 0)
+    // F1-F8: byte 6, bits 7..0
+    // F9-F16: byte 5, bits 7..0
+    // F17-F24: byte 4, bits 7..0
+    const aidKeyMap: Record<number, [number, number]> = {
+      [AID.F1]: [6, 7],  [AID.F2]: [6, 6],  [AID.F3]: [6, 5],  [AID.F4]: [6, 4],
+      [AID.F5]: [6, 3],  [AID.F6]: [6, 2],  [AID.F7]: [6, 1],  [AID.F8]: [6, 0],
+      [AID.F9]: [5, 7],  [AID.F10]: [5, 6], [AID.F11]: [5, 5], [AID.F12]: [5, 4],
+      [AID.F13]: [5, 3], [AID.F14]: [5, 2], [AID.F15]: [5, 1], [AID.F16]: [5, 0],
+      [AID.F17]: [4, 7], [AID.F18]: [4, 6], [AID.F19]: [4, 5], [AID.F20]: [4, 4],
+      [AID.F21]: [4, 3], [AID.F22]: [4, 2], [AID.F23]: [4, 1], [AID.F24]: [4, 0],
+    };
+
+    const mapping = aidKeyMap[aidByte];
+    if (!mapping) return true; // Non-F-key AIDs always send data
+
+    const [byteIdx, bit] = mapping;
+    // Per lib5250: bit CLEAR = send data; bit SET = don't send
+    return (hdr[byteIdx] & (0x80 >> bit)) === 0;
   }
 
   /** Encode one single field's content to EBCDIC (no continuation walk). */

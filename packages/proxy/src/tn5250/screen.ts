@@ -28,6 +28,13 @@ interface SavedScreenState {
   fields: FieldDef[];
   cursorRow: number;
   cursorCol: number;
+  // Per lib5250 session.c:1389-1394: save/restore read state and display metadata
+  readOpcode: number;
+  keyboardLocked: boolean;
+  headerData: number[];
+  windowList: WindowDef[];
+  selectionFields: SelectionFieldDef[];
+  scrollbarList: ScrollbarDef[];
 }
 
 export interface WindowDef {
@@ -185,6 +192,17 @@ export class ScreenBuffer {
   savedMsgLine: string[] | null = null;
   /** Row (0-based) where savedMsgLine was captured from. */
   savedMsgLineRow: number = -1;
+  /**
+   * Persistent Insert Cursor position from IC order. Per lib5250
+   * display.c:458-462 (set_pending_insert) and display.c:614-635
+   * (set_cursor_home). Set by IC order, cleared by SOH and CLEAR_UNIT.
+   * When set, setCursorHome goes to this position instead of the first
+   * input field.
+   */
+  pendingInsert = false;
+  pendingInsertRow = 0;
+  pendingInsertCol = 0;
+
   /**
    * Current Read command opcode — set when the host sends a Read command
    * (READ_INPUT_FIELDS, READ_MDT_FIELDS, READ_MDT_FIELDS_ALT, READ_IMMEDIATE,
@@ -363,6 +381,29 @@ export class ScreenBuffer {
     return (field.ffw1 & 0x20) === 0; // BYPASS bit not set
   }
 
+  /**
+   * Set cursor to "home" position per lib5250 display.c:614-635:
+   *   1) If pending insert (from a prior IC order), go to the IC position
+   *   2) Otherwise, first position of the first non-bypass field
+   *   3) Otherwise, (0,0)
+   */
+  setCursorHome(): void {
+    if (this.pendingInsert) {
+      this.cursorRow = this.pendingInsertRow;
+      this.cursorCol = this.pendingInsertCol;
+      return;
+    }
+    for (const f of this.fields) {
+      if (this.isInputField(f)) {
+        this.cursorRow = f.row;
+        this.cursorCol = f.col;
+        return;
+      }
+    }
+    this.cursorRow = 0;
+    this.cursorCol = 0;
+  }
+
   /** Whether a field is highlighted (high intensity) */
   isHighlighted(field: FieldDef): boolean {
     return field.attribute === 0x22;
@@ -413,9 +454,24 @@ export class ScreenBuffer {
     this.savedMsgLineRow = -1;
   }
 
-  /** Whether a field has the underscore display attribute */
+  /** Whether a field should render with an underline.
+   *
+   *  Two sources:
+   *  1. Explicit 5250 underscore attribute — lower 3 bits of the attribute
+   *     byte encode display type: 4=UL, 5=UL+RI, 6=UL+HI (exclude 7=ND).
+   *     Covers all color+underscore combinations (e.g. green+UL=0x24,
+   *     turquoise+UL=0x34, blue+UL=0x3C, etc.).
+   *  2. Convention — real 5250 clients (IBM ACS, Mocha) visually underline
+   *     ALL input fields, even when the host leaves the attribute as
+   *     NORMAL (0x20). IBM i's default "Selection or command" menu field
+   *     is one such case: the host sends 0x20 but every production 5250
+   *     client still renders an underline so users can see the input zone.
+   *     Password (non-display) fields never get underline. */
   isUnderscored(field: FieldDef): boolean {
-    return field.attribute === 0x24;
+    const type = field.attribute & 0x07;
+    if (type >= 0x04 && type < 0x07) return true;
+    // Apply input-field convention (skip password / non-display)
+    return this.isInputField(field) && !this.isNonDisplay(field);
   }
 
   /** Whether a field has the FFW mandatory entry flag (CHECK(ME)) */
@@ -464,7 +520,9 @@ export class ScreenBuffer {
     }
   }
 
-  /** Save current screen state to the stack */
+  /** Save current screen state to the stack.
+   *  Per lib5250 session.c:1377-1404: saves display buffer, fields, cursor,
+   *  and read state so they can be restored later. */
   saveState(): void {
     this.screenStack.push({
       buffer: [...this.buffer],
@@ -474,6 +532,12 @@ export class ScreenBuffer {
       fields: this.fields.map(f => ({ ...f })),
       cursorRow: this.cursorRow,
       cursorCol: this.cursorCol,
+      readOpcode: this.readOpcode,
+      keyboardLocked: this.keyboardLocked,
+      headerData: [...this.headerData],
+      windowList: this.windowList.map(w => ({ ...w })),
+      selectionFields: this.selectionFields.map(s => ({ ...s, choices: [...s.choices] })),
+      scrollbarList: this.scrollbarList.map(sb => ({ ...sb })),
     });
   }
 
@@ -488,6 +552,12 @@ export class ScreenBuffer {
     this.fields = state.fields;
     this.cursorRow = state.cursorRow;
     this.cursorCol = state.cursorCol;
+    this.readOpcode = state.readOpcode;
+    this.keyboardLocked = state.keyboardLocked;
+    this.headerData = state.headerData;
+    this.windowList = state.windowList;
+    this.selectionFields = state.selectionFields;
+    this.scrollbarList = state.scrollbarList;
     return true;
   }
 

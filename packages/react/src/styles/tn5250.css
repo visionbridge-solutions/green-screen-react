@@ -1,18 +1,19 @@
 /* green-screen-react — Legacy Terminal Emulator Styles */
 
 :root {
-  --gs-green: #10b981;
-  --gs-white: #FFFFFF;
-  --gs-blue: #7B93FF;
-  --gs-cyan: #00FFFF;
-  --gs-yellow: #FFFF00;
-  --gs-red: #FF5555;
-  --gs-pink: #FF55FF;
-  --gs-bg: #000000;
-  --gs-card-bg: #0e1422;
-  --gs-card-border: #1e293b;
-  --gs-header-bg: #090e1a;
-  --gs-muted: #94a3b8;
+  /* Catppuccin Mocha palette */
+  --gs-green: #a6e3a1;
+  --gs-white: #cdd6f4;
+  --gs-blue: #89b4fa;
+  --gs-cyan: #94e2d5;
+  --gs-yellow: #f9e2af;
+  --gs-red: #f38ba8;
+  --gs-pink: #f5c2e7;
+  --gs-bg: #1e1e2e;
+  --gs-card-bg: #181825;
+  --gs-card-border: #313244;
+  --gs-header-bg: #11111b;
+  --gs-muted: #6c7086;
   --gs-font: 'JetBrains Mono', 'Courier New', monospace;
 
   /* Legacy aliases */
@@ -36,16 +37,18 @@
 .gs-terminal {
   background-color: var(--gs-card-bg);
   border: 1px solid var(--gs-card-border);
+  border-radius: var(--gs-radius, 10px);
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .gs-terminal-focused {
-  border-color: rgba(16, 185, 129, 0.4);
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.1);
+  border-color: rgba(203, 166, 247, 0.4);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(203, 166, 247, 0.15);
 }
 
 /* ── Header ───────────────────────────────────────────────────────── */
@@ -53,21 +56,20 @@
 .gs-header {
   background-color: var(--gs-header-bg);
   border-bottom: 1px solid var(--gs-card-border);
-  padding: 0.5rem 1rem;
-  font-family: var(--gs-font);
-  font-size: 0.75rem;
-  font-weight: 400;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  padding: 0 16px;
+  height: 38px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--gs-muted);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  position: relative;
 }
 
 .gs-terminal-focused .gs-header {
-  background-color: rgba(16, 185, 129, 0.04);
-  border-bottom-color: rgba(16, 185, 129, 0.3);
+  border-bottom-color: rgba(203, 166, 247, 0.2);
 }
 
 .gs-header-left {
@@ -90,30 +92,32 @@
 
 .gs-badge-focused {
   padding: 2px 8px;
-  background-color: rgba(16, 185, 129, 0.15);
-  color: var(--gs-green);
+  background-color: rgba(203, 166, 247, 0.12);
+  color: var(--gs-accent, #cba6f7);
   font-size: 10px;
   font-weight: 600;
-  border-radius: 4px;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: 6px;
+  border: 1px solid rgba(203, 166, 247, 0.25);
 }
 
 .gs-badge-lock {
-  padding: 2px 6px;
-  background-color: #EF4444;
-  color: white;
+  padding: 2px 8px;
+  background-color: rgba(243, 139, 168, 0.15);
+  color: var(--gs-red);
   font-size: 10px;
-  font-weight: bold;
-  border-radius: 4px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid rgba(243, 139, 168, 0.3);
 }
 
 .gs-badge-ins {
-  padding: 2px 6px;
-  background-color: #F59E0B;
-  color: black;
+  padding: 2px 8px;
+  background-color: rgba(249, 226, 175, 0.12);
+  color: var(--gs-yellow);
   font-size: 10px;
-  font-weight: bold;
-  border-radius: 4px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid rgba(249, 226, 175, 0.25);
 }
 
 .gs-timestamp {
@@ -137,22 +141,22 @@
 .gs-disconnected-text {
   font-family: var(--gs-font);
   font-size: 12px;
-  color: #FF6B00;
+  color: var(--gs-red);
 }
 
 .gs-btn-icon {
   background: transparent;
   border: none;
-  padding: 4px;
-  border-radius: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
   color: var(--gs-muted);
   cursor: pointer;
-  transition: background-color 0.15s, color 0.15s;
+  transition: background-color 0.12s, color 0.12s;
 }
 
 .gs-btn-icon:hover {
-  background-color: #1A1A1A;
-  color: var(--gs-green);
+  background-color: var(--gs-card-border);
+  color: var(--gs-white);
 }
 
 .gs-btn-icon:disabled {
@@ -191,14 +195,15 @@
 
 .gs-cursor {
   display: block;
-  background-color: var(--gs-green);
-  animation: gs-cursor-blink 1s infinite;
-  box-shadow: 0 0 5px rgba(16, 185, 129, 0.5);
+  background-color: var(--gs-accent, #cba6f7);
+  animation: gs-cursor-blink 1.2s ease-in-out infinite;
+  border-radius: 1px;
 }
 
 @keyframes gs-cursor-blink {
-  0%, 50% { opacity: 0.8; }
-  51%, 100% { opacity: 0; }
+  0%, 45% { opacity: 0.9; }
+  50%, 95% { opacity: 0; }
+  100% { opacity: 0.9; }
 }
 
 /* ── Row Colors (protocol-driven conventions) ─────────────────────── */
@@ -224,7 +229,7 @@
 .gs-input-field {
   display: inline-block;
   position: relative;
-  border-bottom: 2px solid var(--gs-green);
+  border-bottom: 1px solid rgba(166, 227, 161, 0.3);
 }
 
 /* ── Overlays ─────────────────────────────────────────────────────── */
@@ -232,14 +237,16 @@
 .gs-overlay {
   position: absolute;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   z-index: 10;
   pointer-events: none;
-  color: #FF6B00;
+  color: var(--gs-muted);
   font-family: var(--gs-font);
   font-size: 14px;
   gap: 12px;
@@ -252,15 +259,15 @@
   transform: translateX(-50%);
   z-index: 10;
   padding: 12px;
-  background-color: #1A0000;
-  border: 1px solid #FF6B00;
-  border-radius: 4px;
+  background-color: rgba(243, 139, 168, 0.1);
+  border: 1px solid rgba(243, 139, 168, 0.3);
+  border-radius: 6px;
   display: flex;
   align-items: center;
   gap: 8px;
   font-family: var(--gs-font);
   font-size: 12px;
-  color: #FF6B00;
+  color: var(--gs-red);
 }
 
 /* ── Animations ───────────────────────────────────────────────────── */

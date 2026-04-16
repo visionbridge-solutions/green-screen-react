@@ -100,4 +100,12 @@ export interface TerminalAdapter {
   disconnect(): Promise<SendResult>;
   /** Reconnect to the host */
   reconnect(): Promise<SendResult>;
+  /**
+   * Subscribe to pushed screen updates. Returns an unsubscribe function.
+   * Adapters that support server-initiated push (e.g. WebSocket) should
+   * implement this — the React hooks use it to surface updates to state
+   * immediately rather than waiting for the next poll tick. Adapters
+   * without push support may omit it; the hooks fall back to polling.
+   */
+  onScreen?(listener: (screen: ScreenData) => void): () => void;
 }

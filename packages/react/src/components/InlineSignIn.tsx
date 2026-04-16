@@ -88,6 +88,10 @@ export function InlineSignIn({ defaultProtocol, loading: externalLoading, error,
 
   const termTypeOptions = TERMINAL_TYPE_OPTIONS[selectedProtocol];
   const [submitted, setSubmitted] = useState(false);
+  // Collapsible block that hides Screen Size + Username + Password behind
+  // a "Show all params" toggle. Keeps the initial form minimal (just Host
+  // / Port / Protocol / Connect), users can reveal the rest when needed.
+  const [showAllParams, setShowAllParams] = useState(false);
 
   const loading = externalLoading || submitted;
 
@@ -107,9 +111,10 @@ export function InlineSignIn({ defaultProtocol, loading: externalLoading, error,
   const inputStyle: React.CSSProperties = {
     width: '100%',
     padding: '6px 8px',
-    backgroundColor: 'rgba(16, 185, 129, 0.05)',
-    border: '1px solid var(--gs-card-border, #1e293b)',
-    color: 'var(--gs-green, #10b981)',
+    backgroundColor: 'rgba(203, 166, 247, 0.05)',
+    border: '1px solid var(--gs-card-border, #313244)',
+    borderRadius: '6px',
+    color: 'var(--gs-white, #cdd6f4)',
     fontFamily: 'var(--gs-font)',
     fontSize: '13px',
     outline: 'none',
@@ -162,27 +167,49 @@ export function InlineSignIn({ defaultProtocol, loading: externalLoading, error,
         </select>
       </div>
 
-      {termTypeOptions && termTypeOptions.length > 1 && (
-        <div>
-          <label style={labelStyle}>Screen Size</label>
-          <select style={{ ...inputStyle, appearance: 'none' }} value={terminalType || termTypeOptions[0].value} onChange={e => setTerminalType(e.target.value)}>
-            {termTypeOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
+      <button
+        type="button"
+        onClick={() => setShowAllParams(s => !s)}
+        aria-expanded={showAllParams}
+        className="gs-signin-toggle"
+      >
+        <span>{showAllParams ? 'Hide all params' : 'Show all params'}</span>
+        <svg
+          width="12" height="12" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" strokeWidth="2.5"
+          strokeLinecap="round" strokeLinejoin="round"
+          style={{ transform: showAllParams ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s ease' }}
+          aria-hidden="true"
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {showAllParams && (
+        <>
+          {termTypeOptions && termTypeOptions.length > 1 && (
+            <div>
+              <label style={labelStyle}>Screen Size</label>
+              <select style={{ ...inputStyle, appearance: 'none' }} value={terminalType || termTypeOptions[0].value} onChange={e => setTerminalType(e.target.value)}>
+                {termTypeOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+          )}
+
+          <div>
+            <label style={labelStyle}>Username</label>
+            <input style={inputStyle} value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" />
+          </div>
+
+          <div>
+            <label style={labelStyle}>Password</label>
+            <input style={inputStyle} type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" />
+          </div>
+        </>
       )}
 
-      <div>
-        <label style={labelStyle}>Username</label>
-        <input style={inputStyle} value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" />
-      </div>
-
-      <div>
-        <label style={labelStyle}>Password</label>
-        <input style={inputStyle} type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" />
-      </div>
-
       {error && (
-        <div style={{ color: '#FF6B00', fontSize: '11px', fontFamily: 'var(--gs-font)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <div style={{ color: 'var(--gs-red, #f38ba8)', fontSize: '11px', fontFamily: 'var(--gs-font)', display: 'flex', alignItems: 'center', gap: '6px' }}>
           <AlertTriangleIcon size={12} />
           <span>{error}</span>
         </div>

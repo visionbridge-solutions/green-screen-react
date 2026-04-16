@@ -1,6 +1,6 @@
 // Components
 export { GreenScreenTerminal } from './components/GreenScreenTerminal';
-export type { GreenScreenTerminalProps } from './components/GreenScreenTerminal';
+export type { GreenScreenTerminalProps, TerminalHeaderState } from './components/GreenScreenTerminal';
 export { TerminalBootLoader } from './components/TerminalBootLoader';
 export type { TerminalBootLoaderProps } from './components/TerminalBootLoader';
 export { InlineSignIn } from './components/InlineSignIn';
@@ -34,6 +34,10 @@ export {
   useTerminalScreen,
   useTerminalInput,
 } from './hooks/useTerminal';
+export { useTerminalState } from './hooks/useTerminalState';
+export type { UseTerminalStateOptions, UseTerminalStateResult } from './hooks/useTerminalState';
+export { useAutoReconnect } from './hooks/useAutoReconnect';
+export type { UseAutoReconnectOptions, UseAutoReconnectResult } from './hooks/useAutoReconnect';
 
 // Protocols
 export { getProtocolProfile } from './protocols/registry';

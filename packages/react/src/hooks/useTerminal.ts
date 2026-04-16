@@ -71,7 +71,16 @@ export function useTerminalConnection(adapter: TerminalAdapter) {
 }
 
 /**
- * Hook for terminal screen content with polling.
+ * Hook for terminal screen content with polling + push subscription.
+ *
+ * If the adapter exposes `onScreen(listener)` (e.g. WebSocketAdapter), we
+ * subscribe to it so server-initiated updates surface to React state
+ * instantly. This is what keeps backspace/delete/edit operations visually
+ * in sync with the cursor — without the subscription, content would only
+ * refresh on the next poll tick (up to `interval` ms later), producing a
+ * visible lag where the cursor moved but the character stayed on screen.
+ *
+ * Polling still runs as a reliability fallback.
  */
 export function useTerminalScreen(
   adapter: TerminalAdapter,
@@ -101,8 +110,15 @@ export function useTerminalScreen(
     poll(); // Initial fetch
     intervalRef.current = setInterval(poll, interval);
 
+    // Subscribe to pushed updates if the adapter supports them.
+    const unsubscribe = adapter.onScreen?.((screen) => {
+      setData(screen);
+      setError(null);
+    });
+
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
+      unsubscribe?.();
     };
   }, [adapter, interval, enabled]);
 
