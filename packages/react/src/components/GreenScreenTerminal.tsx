@@ -825,119 +825,25 @@ export function GreenScreenTerminal({
     return { row: cursorRow, col: cursorCol };
   };
 
-  // --- WDSF popup windows + heuristic plain-char popup detection ---
+  // --- WDSF popup windows ---
   // IBM i UIM popups (DSPMSG help, CRTLIB prompter, Exit Interactive SQL,
-  // etc.) arrive in two flavors:
-  //   (a) CREATE_WINDOW structured fields — proxy records metadata in
-  //       screenData.windows. Easy: read the metadata.
-  //   (b) Plain WRITE_TO_DISPLAY with literal `.` / `:` border characters
-  //       painted into the buffer. No metadata. We detect these heuristically
-  //       by scanning for rectangular patterns of `.` on top/bottom rows and
-  //       `:` on left/right columns.
-  // In either case we produce a unified window list, blank the underlying
-  // ASCII border cells in renderRowWithFields, and draw styled .gs-window
-  // overlays (Mocha/ACS-style rounded accent frame with title/footer).
+  // etc.) arrive as CREATE_WINDOW structured fields; the proxy records
+  // metadata in `screenData.windows` and we render a styled .gs-window
+  // overlay on top of the ASCII border the host painted. When the proxy
+  // isn't populating `screenData.windows` (older parser / fallback mode),
+  // popups simply render with plain ASCII borders — no styled overlay,
+  // but the underlying terminal content is always intact.
+  //
+  // A previous version of this code tried to heuristically detect popups
+  // from `.` / `:` border characters on non-WDSF screens. The scanner
+  // false-positived on several real IBM i screens (e.g. WRKACTJOB → F13
+  // Info Assistant → back to Main Menu), claiming a rectangle that
+  // spanned the screen width and blanking column 0 of every row. See
+  // v1.3.5 release notes.
   const detectedWindows = useMemo(() => {
     const wdsf = (screenData as any)?.windows as Array<{ row: number; col: number; height: number; width: number; title?: string; footer?: string }> | undefined;
-    if (wdsf && wdsf.length > 0) return wdsf;
-    const content = screenData?.content;
-    const cols = screenData?.cols || profile.defaultCols;
-    const termRows = screenData?.rows || profile.defaultRows;
-    if (!content) return [];
-    const lines = content.split('\n');
-    const rowAt = (r: number) => (lines[r] || '').padEnd(cols, ' ');
-    const DOT = '.';
-    const COL = ':';
-    // Heuristic: a run of 5+ consecutive `.` chars at the same col range on
-    // two distinct rows, with `:` at both edges on every row between them.
-    // MIN_WIDTH 5 rules out dotted separators ("........") used as filler in
-    // label fields like "Option . . . . . . . . 1". MIN_HEIGHT 2 rules out
-    // single-line patterns. We only keep the first rectangle that starts on
-    // each row to avoid pathological nesting.
-    const MIN_WIDTH = 20; // popups are typically wide; avoids matching "Selection . . . . . . ."
-    const found: Array<{ row: number; col: number; height: number; width: number; title?: string; footer?: string }> = [];
-    const claimedTop = new Set<number>();
-    for (let rTop = 0; rTop < termRows - 2; rTop++) {
-      if (claimedTop.has(rTop)) continue;
-      const topLine = rowAt(rTop);
-      // Find runs of dots (length >= MIN_WIDTH)
-      let c = 0;
-      while (c < cols) {
-        if (topLine[c] !== DOT) { c++; continue; }
-        let end = c;
-        while (end < cols && topLine[end] === DOT) end++;
-        const runLen = end - c;
-        if (runLen >= MIN_WIDTH) {
-          const startCol = c;
-          const endCol = end - 1;
-          // Scan downward: need `:` at startCol and endCol on subsequent rows
-          // until we hit a row that doesn't match (bottom edge candidate).
-          let r = rTop + 1;
-          while (r < termRows) {
-            const line = rowAt(r);
-            if (line[startCol] !== COL || line[endCol] !== COL) break;
-            r++;
-          }
-          const lastMidRow = r - 1; // last row with `:` at both edges
-          const heightMid = lastMidRow - rTop; // rows between top edge and break
-          if (heightMid < 2) { c = end; continue; }
-          // Bottom-edge detection. Two shapes observed in IBM i:
-          //   (a) The `:` pattern terminates, and row lastMidRow+1 is a
-          //       horizontal `.` run (no corner chars). Top was pure dots;
-          //       bottom is pure dots.
-          //   (b) The LAST mid row itself is the bottom edge: `:` at
-          //       startCol, dots in between, `:` at endCol. No separate
-          //       bottom row.
-          let bottomRow = -1;
-          let title: string | undefined;
-          let footer: string | undefined;
-          // Try (b) first: is lastMidRow actually `:...:`?
-          {
-            const line = rowAt(lastMidRow);
-            let dots = 0;
-            for (let cc = startCol + 1; cc < endCol; cc++) if (line[cc] === DOT) dots++;
-            const innerLen = Math.max(1, endCol - startCol - 1);
-            if (dots >= innerLen * 0.8) {
-              bottomRow = lastMidRow;
-            }
-          }
-          // Try (a): row below lastMidRow is a `.` row
-          if (bottomRow < 0 && lastMidRow + 1 < termRows) {
-            const line = rowAt(lastMidRow + 1);
-            let dots = 0;
-            for (let cc = startCol; cc <= endCol; cc++) if (line[cc] === DOT) dots++;
-            const span = Math.max(1, endCol - startCol + 1);
-            if (dots >= span * 0.8) {
-              bottomRow = lastMidRow + 1;
-            }
-          }
-          if (bottomRow < 0) { c = end; continue; }
-          // Extract title/footer: any non-dot non-space text on the border
-          // rows. E.g. " Option - Help " embedded in the top row dots.
-          const topInner = topLine.substring(startCol + 1, endCol)
-            .replace(/\./g, ' ').trim();
-          if (topInner.length > 0) title = topInner;
-          const botLine = rowAt(bottomRow);
-          const botInner = botLine.substring(startCol + 1, endCol)
-            .replace(/\./g, ' ').trim();
-          if (botInner.length > 0) footer = botInner;
-          found.push({
-            row: rTop,
-            col: startCol,
-            height: bottomRow - rTop - 1,
-            width: endCol - startCol - 1,
-            title,
-            footer,
-          });
-          claimedTop.add(rTop);
-          claimedTop.add(bottomRow);
-          break;
-        }
-        c = end;
-      }
-    }
-    return found;
-  }, [screenData, profile.defaultCols, profile.defaultRows]);
+    return wdsf && wdsf.length > 0 ? wdsf : [];
+  }, [screenData]);
 
   const windowBorderAddrs = useMemo(() => {
     const set = new Set<number>();
