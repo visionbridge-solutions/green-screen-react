@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import type { TerminalAdapter, ScreenData, ConnectionStatus, Field, TerminalProtocol, ProtocolProfile, ConnectConfig } from '../adapters/types';
 import { RestAdapter } from '../adapters/RestAdapter';
 import { WebSocketAdapter } from '../adapters/WebSocketAdapter';
@@ -1396,7 +1397,7 @@ export function GreenScreenTerminal({
           )}
           <div ref={screenContentRef} className="gs-screen-content">{renderScreen()}</div>
           {overlay}
-          {showShortcuts && (
+          {showShortcuts && typeof document !== 'undefined' && createPortal((
             <div
               ref={shortcutsPanelRef}
               className="gs-shortcuts-panel"
@@ -1461,7 +1462,7 @@ export function GreenScreenTerminal({
                 ))}
               </div>
             </div>
-          )}
+          ), document.body)}
           {connStatus && !connStatus.connected && connStatus.status !== 'loading' && screenData && (
             <div className="gs-overlay">
               <WifiOffIcon size={28} />
