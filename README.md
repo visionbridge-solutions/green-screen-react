@@ -75,14 +75,28 @@ apps/
 - Pluggable adapter interface
 - Zero runtime dependencies (peer dep: React 18+)
 
-## What's New in v1.2.0
+## What's New in v1.3.x
 
-- **Per-field MDT state on the wire** — `Field.modified` and a new `FieldValue` type let integrators do cheap post-write verification without diffing the entire screen.
-- **`/read-mdt` primitive** — REST `GET /read-mdt` and WS `readMdt` command return just the input fields whose modified-data-tag bit is set. Exposed on both `RestAdapter` and `WebSocketAdapter` as `readMdt()`.
-- **Pluggable session store** — implement `SessionStore` and call `setSessionStore()` before the proxy starts accepting traffic. Default is the built-in `InMemorySessionStore`.
-- **Session resumption** — REST `POST /session/resume`, WS `reattach`, plus `session.lost` / `session.resumed` lifecycle events (`WebSocketAdapter.onSessionLost()` / `onSessionResumed()` on the client).
-- **Lower-level sign-on primitives** — `markAuthenticated(username)` and `waitForScreenWithFields(min, timeoutMs)` so integrators can build robust sign-on cascades without the proxy growing host-specific logic.
-- **`green-screen-client`** — new standalone Python package (`packages/client-py/`) that mirrors the adapter contract for async Python clients. Ships separately on PyPI.
+**Terminal pluggability (React)**
+- `theme` prop — built-in `'modern'` and `'classic'` presets (phosphor palette, zero-radius corners in Classic).
+- `header` prop — fully pluggable header (render prop, ReactNode, or `false` to hide).
+- `autoConnect`, `persistFocus`, `alwaysFocused` props for tighter embedding control.
+- Collapsible "Show all params" block in the inline sign-in form; non-secret fields persisted to `localStorage`.
+- Optimistic cursor prediction for arrow keys / TAB; key-lock badge reflects submit-key presses immediately.
+- WDSF / `CREATE_WINDOW` popups render as styled overlays (plus a heuristic detector for plain-char popups).
+
+**Proxy robustness**
+- Keep-alive upgraded from TELNET `NOP` → **Timing Mark** (hosts actually acknowledge it).
+- Graceful `SIGNOFF` on shutdown + new `/disconnect-all` endpoint.
+- Sign-on screen detected structurally (via text matching), not by field attributes — no more false negatives on custom sign-on messages.
+- TN5250 parser: native-underscore attribute exception fixes missing fields on `STRSQL` and similar screens.
+- Local-key REST path now broadcasts screen updates over WS.
+
+**Demo app**
+- Modern / Classic theme toggle with side-switching transition.
+- Refreshed header: `@green-screen-react` badge, npx pill, and GitHub button pinned to the terminal edge.
+
+See [CHANGELOG](https://github.com/visionbridge-solutions/green-screen-react/releases) for the full list.
 
 ## License
 
