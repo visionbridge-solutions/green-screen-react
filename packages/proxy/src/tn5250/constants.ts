@@ -174,6 +174,13 @@ export const KEY_TO_AID: Record<string, number> = {
   'Clear': AID.CLEAR,
   'Help': AID.HELP,
   'Print': AID.PRINT,
+  // 'Heartbeat' aliases to AID.PRINT — encoder.ts already treats PRINT as a
+  // clean cursor+AID-only NO_OP packet (per lib5250 session.c:1246-1262), so
+  // this is the safest "I'm still here, please reset QINACTITV" signal we
+  // can send without risking a program-defined side effect. Naming it
+  // Heartbeat keeps caller intent clear and lets us swap the underlying
+  // AID later without touching every keep-alive site.
+  'Heartbeat': AID.PRINT,
   'SysReq': AID.SYS_REQUEST,
   'Attn': AID.ATTN,
   'TestReq': AID.TEST_REQUEST,

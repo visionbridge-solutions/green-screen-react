@@ -358,6 +358,7 @@ export class TN5250Handler extends ProtocolHandler {
       'UP': 'ArrowUp', 'DOWN': 'ArrowDown', 'LEFT': 'ArrowLeft', 'RIGHT': 'ArrowRight',
       'HOME': 'Home', 'END': 'End', 'INSERT': 'Insert',
       'RESET': 'Reset',
+      'HEARTBEAT': 'Heartbeat',
       'FIELD_EXIT': 'FieldExit', 'FIELDEXIT': 'FieldExit',
     };
     return map[key] || key;

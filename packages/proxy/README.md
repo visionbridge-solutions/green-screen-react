@@ -85,7 +85,7 @@ All routes accept an `X-Session-Id` header (or `?sessionId=` query) to target a 
 | `GET`  | `/screen` | Read the latest `ScreenData` snapshot. |
 | `GET`  | `/status` | Read `ConnectionStatus`. |
 | `POST` | `/send-text` | Type text at the current cursor. |
-| `POST` | `/send-key` | Send a key (`Enter`, `F1`–`F24`, `Tab`, arrows, etc.). |
+| `POST` | `/send-key` | Send a key (`Enter`, `F1`–`F24`, `Tab`, arrows, `Heartbeat` for idle keep-alive, etc.). |
 | `POST` | `/set-cursor` | Move cursor to `{row, col}`. |
 | `POST` | `/batch` | Atomic batch of `{type: 'key'|'text'|'setCursor', ...}` operations. |
 | `GET`  | `/read-mdt` | **v1.2.0** — return input fields whose MDT bit is set. `?includeUnmodified=1` returns all input fields. |
