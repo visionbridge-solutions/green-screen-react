@@ -52,6 +52,26 @@ function cancelOrphanReap(sessionId: string): void {
   if (t) { clearTimeout(t); orphanReapTimers.delete(sessionId); }
 }
 
+/**
+ * Cancel a pending orphan reap when an HTTP REST request touches the
+ * session. The orphan reaper assumes "WS gone for 20s = closed tab",
+ * which is correct for browser-driven sessions but wrong for backend
+ * integrators that drive the session over REST and merely lost their
+ * WS subscription momentarily (api restart, reload, network blip).
+ * Real activity through any REST endpoint proves the client is still
+ * here — keep the session alive.
+ */
+export function cancelOrphanReapOnRestActivity(sessionId: string): void {
+  if (orphanedControllers.has(sessionId)) {
+    cancelOrphanReap(sessionId);
+    // Move the controller out of the orphaned bucket — the REST-only
+    // client has effectively re-claimed it. We don't have a WS to
+    // bind it to, but the controller can stay alive as long as the
+    // 5-min idle-timeout (Session._idleTimer) keeps not firing.
+    orphanedControllers.delete(sessionId);
+  }
+}
+
 function indexClient(client: WsClient): void {
   if (client.sessionId) {
     let set = sessionClients.get(client.sessionId);

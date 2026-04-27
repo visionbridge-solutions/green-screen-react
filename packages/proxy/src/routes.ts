@@ -9,17 +9,26 @@ import {
   gracefullyDestroySession,
 } from './session.js';
 import { TN5250Handler } from './protocols/index.js';
-import { broadcastScreenToSession, destroyWsSession } from './websocket.js';
+import {
+  broadcastScreenToSession,
+  cancelOrphanReapOnRestActivity,
+  destroyWsSession,
+} from './websocket.js';
 const router = Router();
 
-/** Resolve session from header, query param, or default. Resets idle timer on access. */
+/** Resolve session from header, query param, or default. Resets idle
+ *  timer on access AND cancels any pending orphan-reap — REST activity
+ *  proves the client is still around, even if its WebSocket dropped. */
 function resolveSession(req: Request): Session | undefined {
   const sessionId =
     (req.headers['x-session-id'] as string) ||
     (req.query.sessionId as string);
 
   const session = sessionId ? getSession(sessionId) : getDefaultSession();
-  if (session) session.touch();
+  if (session) {
+    session.touch();
+    cancelOrphanReapOnRestActivity(session.id);
+  }
   return session;
 }
 
