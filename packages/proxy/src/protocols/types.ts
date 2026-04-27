@@ -90,6 +90,25 @@ export abstract class ProtocolHandler extends EventEmitter {
   /** Send raw bytes over the connection */
   abstract sendRaw(data: Buffer): void;
 
+  /**
+   * Liveness signal for the underlying TCP — wall-clock ms timestamps
+   * of the most recent byte sent to the host and the most recent byte
+   * received from the host. Either can be 0 for a freshly-constructed
+   * handler that has never connected.
+   *
+   * The intended use is unambiguous half-open detection: if the caller
+   * sent something at time T, but ``lastReceivedAtMs`` is still < T
+   * after a reasonable RTT-plus-margin window, the host is silent and
+   * the link is dead. No reading of screen state, no overlap with
+   * "keyboard locked because the user typed an invalid menu option".
+   *
+   * Default returns zeros so non-socket protocols don't have to
+   * implement anything. TN5250 overrides.
+   */
+  getLiveness(): { lastReceivedAtMs: number; lastSentAtMs: number } {
+    return { lastReceivedAtMs: 0, lastSentAtMs: 0 };
+  }
+
   /** Clean up resources */
   abstract destroy(): void;
 }

@@ -24,6 +24,25 @@ export class TN5250Connection extends EventEmitter {
   /** Environment variables to send in NEW_ENVIRON (e.g., DEVNAME for device name). */
   private envVars: Record<string, string> = {};
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Wall-clock ms timestamp of the most recent byte received from the
+   * host (any byte — telnet IAC, 5250 record header, payload, anything).
+   * Set to ``connect()`` resolution time on session open. Updated in
+   * ``onData`` before any parsing. This is the unambiguous liveness
+   * signal: if (now - lastRecvAtMs) is large AND we sent something
+   * after lastRecvAtMs, the host stopped replying. No interpretation of
+   * screen state, no overlap with kbd-locked-for-error / etc.
+   */
+  private lastRecvAtMs: number = 0;
+  /**
+   * Wall-clock ms timestamp of the most recent AID byte sent to the
+   * host. Updated only on ``sendRaw`` calls that follow a host-bound
+   * AID write (AID/PRINT/CLEAR/SYS_REQUEST/etc.); telnet keepalive
+   * probes and negotiation traffic do NOT count, since "is the host
+   * sending us anything?" is what we're measuring against.
+   * Set by callers via ``recordHostBoundSend()``.
+   */
+  private lastHostBoundSendAtMs: number = 0;
   private static readonly KEEP_ALIVE_INTERVAL = 15_000; // 15s — well under PUB400's ~30s idle timeout
   // Timing Mark (IAC DO TM) instead of NOP — it's a round-trip: the server
   // must respond with WILL/WONT TM.  If the IBM i interactive job has ended
@@ -41,6 +60,18 @@ export class TN5250Connection extends EventEmitter {
 
   get remotePort(): number {
     return this.port;
+  }
+
+  /** Wall-clock ms of the most recent byte received from the host. 0 if never. */
+  get lastReceivedAtMs(): number {
+    return this.lastRecvAtMs;
+  }
+
+  /** Wall-clock ms of the most recent byte sent to the host. 0 if never.
+   * Includes 5250 records, telnet negotiation, telnet keepalive — every
+   * write that expects a reply. */
+  get lastSentAtMs(): number {
+    return this.lastHostBoundSendAtMs;
   }
 
   /**
@@ -76,6 +107,9 @@ export class TN5250Connection extends EventEmitter {
 
       this.socket.connect(port, host, () => {
         this.connected = true;
+        // Seed the recv timestamp so a brand-new session looks alive
+        // even before the first byte arrives from the host.
+        this.lastRecvAtMs = Date.now();
         this.socket!.removeListener('error', onError);
 
         // Enable OS-level TCP keepalive. Linux defaults (75s probe
@@ -116,9 +150,13 @@ export class TN5250Connection extends EventEmitter {
     }
   }
 
-  /** Send raw bytes over the socket */
+  /** Send raw bytes over the socket. Stamps ``lastHostBoundSendAtMs``
+   * so the liveness check has a definitive "did the host respond
+   * since I last asked it something?" comparison. Includes telnet
+   * negotiation and keepalive — they all expect host replies. */
   sendRaw(data: Buffer): void {
     if (this.socket && this.connected) {
+      this.lastHostBoundSendAtMs = Date.now();
       this.socket.write(data);
     }
   }
@@ -172,6 +210,11 @@ export class TN5250Connection extends EventEmitter {
   }
 
   private onData(data: Buffer): void {
+    // Stamp before any parsing — every byte from the host counts as
+    // proof of a live link, regardless of what protocol layer
+    // ultimately consumes it.
+    this.lastRecvAtMs = Date.now();
+
     // Append to receive buffer
     this.recvBuffer = Buffer.concat([this.recvBuffer, data]);
 

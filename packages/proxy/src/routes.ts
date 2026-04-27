@@ -198,6 +198,36 @@ router.get('/status', (req: Request, res: Response) => {
   res.json(session.status);
 });
 
+// GET /liveness — unambiguous half-open detection.
+//
+// Returns wall-clock ms timestamps of the most recent byte SENT to the
+// host and the most recent byte RECEIVED from the host. The intended
+// use: after writing an AID at time T, poll this endpoint after a
+// short window and check whether ``lastReceivedAtMs > T``. If yes, the
+// host responded → link alive. If no, the host has been silent since
+// our send → link is half-open, treat as dead.
+//
+// This sidesteps the screen-state heuristic (kbd_locked) entirely.
+// kbd_locked can stay true for legitimate reasons (error message
+// awaiting Reset, host reply that omits CC2 unlock bit, etc.) and
+// confuses any liveness check that reads it.
+//
+// 404 if no session — caller should treat that as "session is gone,
+// reconnect from scratch".
+router.get('/liveness', (req: Request, res: Response) => {
+  const session = resolveSession(req);
+  if (!session) {
+    return res.status(404).json({ error: 'session not found' });
+  }
+  const liveness = session.handler.getLiveness();
+  res.json({
+    connected: session.status.connected,
+    lastReceivedAtMs: liveness.lastReceivedAtMs,
+    lastSentAtMs: liveness.lastSentAtMs,
+    nowMs: Date.now(),
+  });
+});
+
 // GET /screen
 router.get('/screen', (req: Request, res: Response) => {
   const session = resolveSession(req);

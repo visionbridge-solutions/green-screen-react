@@ -196,6 +196,25 @@ class RestClient:
             return None
         return ConnectionStatus.from_wire(data.get("status", {}))
 
+    async def get_liveness(self) -> Optional[Dict[str, Any]]:
+        """Liveness signal for unambiguous half-open detection.
+
+        Returns a dict with wall-clock ms timestamps:
+            ``lastReceivedAtMs`` — last byte received from the host
+            ``lastSentAtMs``     — last byte sent to the host
+            ``nowMs``            — proxy's current wall-clock
+            ``connected``        — proxy's view of session state
+
+        The intended use: after writing an AID at local time T, poll this
+        endpoint after a grace window and check whether
+        ``lastReceivedAtMs >= T``. If yes, the host responded → link
+        alive. If no, the host has been silent since the send → half-open,
+        declare dead.
+
+        Returns None on 404 (session no longer exists on proxy).
+        """
+        return await self._request("GET", "/liveness")
+
     async def mark_authenticated(self, username: str) -> SendResult:
         """Flip the session status to 'authenticated'. Call this after
         your own sign-on cascade completes; the proxy has no

@@ -603,6 +603,13 @@ export class TN5250Handler extends ProtocolHandler {
     this.connection.sendRaw(data);
   }
 
+  getLiveness(): { lastReceivedAtMs: number; lastSentAtMs: number } {
+    return {
+      lastReceivedAtMs: this.connection.lastReceivedAtMs,
+      lastSentAtMs: this.connection.lastSentAtMs,
+    };
+  }
+
   destroy(): void {
     this.disconnect();
     this.removeAllListeners();
