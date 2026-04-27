@@ -24,7 +24,21 @@ export class TN5250Connection extends EventEmitter {
   /** Environment variables to send in NEW_ENVIRON (e.g., DEVNAME for device name). */
   private envVars: Record<string, string> = {};
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  /** Timestamp of the last byte received from the host. Refreshed on every
+   * ``onData`` call. The keepalive loop compares this against the dead-link
+   * threshold to detect "half-open" TCP — connections where the kernel's
+   * write succeeds (buffer absorbs it) but the host can't reply because
+   * something between us and IBM i died (e.g. ssh tunnel restart). The
+   * proxy's read loop just sits on ``socket.read()`` forever in that
+   * scenario, never firing 'close' or 'error', so any liveness detection
+   * has to come from us actively timing out the silence. */
+  private lastDataReceivedAt: number = 0;
   private static readonly KEEP_ALIVE_INTERVAL = 15_000; // 15s — well under PUB400's ~30s idle timeout
+  /** If we've sent KEEP_ALIVE_TM and gotten zero host bytes back for this
+   * long, declare the connection dead. 45s = 3 missed Timing-Mark cycles.
+   * IBM i normally responds to TM within ms; even on a heavily loaded host
+   * 3 misses in a row is unambiguous failure. */
+  private static readonly DEAD_LINK_THRESHOLD_MS = 45_000;
   // Timing Mark (IAC DO TM) instead of NOP — it's a round-trip: the server
   // must respond with WILL/WONT TM.  If the IBM i interactive job has ended
   // (QINACTITV), processing the TM may cause the TELNET server to push the
@@ -76,7 +90,14 @@ export class TN5250Connection extends EventEmitter {
 
       this.socket.connect(port, host, () => {
         this.connected = true;
+        this.lastDataReceivedAt = Date.now();
         this.socket!.removeListener('error', onError);
+
+        // Enable OS-level TCP keepalive as a backstop. Linux defaults
+        // (75s probe interval × 9 probes) are slow but catch the case
+        // where the app-layer Timing-Mark loop is somehow stuck. Initial
+        // delay 30s = no probes during normal traffic.
+        try { this.socket!.setKeepAlive(true, 30_000); } catch { /* ignore */ }
 
         this.socket!.on('error', (err) => {
           this.emit('error', err);
@@ -120,8 +141,24 @@ export class TN5250Connection extends EventEmitter {
   private startKeepAlive(): void {
     this.stopKeepAlive();
     this.keepAliveTimer = setInterval(() => {
-      if (this.socket && this.connected) {
-        this.sendRaw(TN5250Connection.KEEP_ALIVE_TM);
+      if (!this.socket || !this.connected) return;
+
+      // Send the IAC DO TM probe — IBM i acknowledges with WILL/WONT TM
+      // promptly under normal conditions.
+      this.sendRaw(TN5250Connection.KEEP_ALIVE_TM);
+
+      // App-layer dead-link detection. If the kernel's write absorbed
+      // bytes into a half-open TCP buffer (tunnel down, host unreachable
+      // without a clean FIN), no reply ever comes back, our 'data'
+      // handler never fires, and the socket sits idle indefinitely.
+      // Detect that silence here.
+      const idleMs = Date.now() - this.lastDataReceivedAt;
+      if (idleMs > TN5250Connection.DEAD_LINK_THRESHOLD_MS) {
+        const msg = `No host data for ${idleMs}ms (>${TN5250Connection.DEAD_LINK_THRESHOLD_MS}ms threshold) — connection appears dead`;
+        console.warn(`[tn5250] ${msg}`);
+        this.emit('error', new Error(msg));
+        this.cleanup();
+        this.emit('disconnected');
       }
     }, TN5250Connection.KEEP_ALIVE_INTERVAL);
   }
@@ -144,6 +181,11 @@ export class TN5250Connection extends EventEmitter {
   }
 
   private onData(data: Buffer): void {
+    // Refresh liveness timestamp on every byte received — the keepalive
+    // loop reads this to decide whether the link has gone silent past
+    // the dead-link threshold. ANY data counts: real screen records,
+    // Telnet negotiations, even Timing-Mark replies.
+    this.lastDataReceivedAt = Date.now();
     // Append to receive buffer
     this.recvBuffer = Buffer.concat([this.recvBuffer, data]);
 
