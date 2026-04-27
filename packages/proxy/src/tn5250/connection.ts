@@ -24,21 +24,7 @@ export class TN5250Connection extends EventEmitter {
   /** Environment variables to send in NEW_ENVIRON (e.g., DEVNAME for device name). */
   private envVars: Record<string, string> = {};
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
-  /** Timestamp of the last byte received from the host. Refreshed on every
-   * ``onData`` call. The keepalive loop compares this against the dead-link
-   * threshold to detect "half-open" TCP — connections where the kernel's
-   * write succeeds (buffer absorbs it) but the host can't reply because
-   * something between us and IBM i died (e.g. ssh tunnel restart). The
-   * proxy's read loop just sits on ``socket.read()`` forever in that
-   * scenario, never firing 'close' or 'error', so any liveness detection
-   * has to come from us actively timing out the silence. */
-  private lastDataReceivedAt: number = 0;
   private static readonly KEEP_ALIVE_INTERVAL = 15_000; // 15s — well under PUB400's ~30s idle timeout
-  /** If we've sent KEEP_ALIVE_TM and gotten zero host bytes back for this
-   * long, declare the connection dead. 45s = 3 missed Timing-Mark cycles.
-   * IBM i normally responds to TM within ms; even on a heavily loaded host
-   * 3 misses in a row is unambiguous failure. */
-  private static readonly DEAD_LINK_THRESHOLD_MS = 45_000;
   // Timing Mark (IAC DO TM) instead of NOP — it's a round-trip: the server
   // must respond with WILL/WONT TM.  If the IBM i interactive job has ended
   // (QINACTITV), processing the TM may cause the TELNET server to push the
@@ -90,13 +76,12 @@ export class TN5250Connection extends EventEmitter {
 
       this.socket.connect(port, host, () => {
         this.connected = true;
-        this.lastDataReceivedAt = Date.now();
         this.socket!.removeListener('error', onError);
 
-        // Enable OS-level TCP keepalive as a backstop. Linux defaults
-        // (75s probe interval × 9 probes) are slow but catch the case
-        // where the app-layer Timing-Mark loop is somehow stuck. Initial
-        // delay 30s = no probes during normal traffic.
+        // Enable OS-level TCP keepalive. Linux defaults (75s probe
+        // interval × 9 probes after the initial-delay window) catch
+        // half-open connections via TCP-layer retransmission timeout.
+        // Initial delay 30s — no probes during normal traffic.
         try { this.socket!.setKeepAlive(true, 30_000); } catch { /* ignore */ }
 
         this.socket!.on('error', (err) => {
@@ -143,23 +128,29 @@ export class TN5250Connection extends EventEmitter {
     this.keepAliveTimer = setInterval(() => {
       if (!this.socket || !this.connected) return;
 
-      // Send the IAC DO TM probe — IBM i acknowledges with WILL/WONT TM
-      // promptly under normal conditions.
+      // Send the IAC DO TIMING-MARK probe. This serves two purposes
+      // even though IBM i doesn't always reply:
+      //   1. Keeps idle TCP traffic flowing so middleboxes (NAT,
+      //      load balancers, ssh tunnel, etc.) don't drop the
+      //      connection as inactive.
+      //   2. Best-effort liveness signal — when the kernel's TCP
+      //      stack tries to flush the write to a dead socket, it
+      //      eventually returns EPIPE/ECONNRESET, triggering the
+      //      socket 'error' handler which emits 'disconnected'.
+      //
+      // We INTENTIONALLY do NOT do app-layer dead-link detection
+      // here. An earlier attempt (45s of "no host data" → declare
+      // dead) caused false positives during normal idle, because
+      // IBM i frequently doesn't respond to TIMING-MARK at all on
+      // some screens — the protocol allows but does not require it.
+      // Real dead-link detection is delegated to:
+      //   - OS-level TCP_KEEPALIVE (set in connect()) — ~12 min
+      //     fallback when the kernel discovers the connection is
+      //     half-open via retransmission timeout.
+      //   - The proxy session orphan reaper — 5 min idle TTL.
+      //   - The api-side stale-session detection — fires on the
+      //     first send that fails after a real keystroke.
       this.sendRaw(TN5250Connection.KEEP_ALIVE_TM);
-
-      // App-layer dead-link detection. If the kernel's write absorbed
-      // bytes into a half-open TCP buffer (tunnel down, host unreachable
-      // without a clean FIN), no reply ever comes back, our 'data'
-      // handler never fires, and the socket sits idle indefinitely.
-      // Detect that silence here.
-      const idleMs = Date.now() - this.lastDataReceivedAt;
-      if (idleMs > TN5250Connection.DEAD_LINK_THRESHOLD_MS) {
-        const msg = `No host data for ${idleMs}ms (>${TN5250Connection.DEAD_LINK_THRESHOLD_MS}ms threshold) — connection appears dead`;
-        console.warn(`[tn5250] ${msg}`);
-        this.emit('error', new Error(msg));
-        this.cleanup();
-        this.emit('disconnected');
-      }
     }, TN5250Connection.KEEP_ALIVE_INTERVAL);
   }
 
@@ -181,11 +172,6 @@ export class TN5250Connection extends EventEmitter {
   }
 
   private onData(data: Buffer): void {
-    // Refresh liveness timestamp on every byte received — the keepalive
-    // loop reads this to decide whether the link has gone silent past
-    // the dead-link threshold. ANY data counts: real screen records,
-    // Telnet negotiations, even Timing-Mark replies.
-    this.lastDataReceivedAt = Date.now();
     // Append to receive buffer
     this.recvBuffer = Buffer.concat([this.recvBuffer, data]);
 
