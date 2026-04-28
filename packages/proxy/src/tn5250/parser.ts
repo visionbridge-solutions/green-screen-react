@@ -966,9 +966,21 @@ export class TN5250Parser {
     // Map attribute byte to display characteristic, falling back to SA context.
     const fieldDisplayAttr = this.decodeDisplayAttr(attrByte, displayAttr);
 
-    // Determine input vs protected from the SA-decoded display attribute.
-    // UNDERSCORE and NON_DISPLAY = input fields; everything else = protected.
-    const isInput = fieldDisplayAttr === ATTR.UNDERSCORE || fieldDisplayAttr === ATTR.NON_DISPLAY;
+    // Synthesized fields (bare SBA + attribute byte, no SF order) are
+    // display-attribute boundaries, not input declarations. The host uses
+    // SF orders to declare real input fields. Treating UNDERSCORE alone as
+    // an input marker on synthesized regions misclassifies literal labels
+    // decorated with DSPATR(UL) — e.g. an underscored section header like
+    // "TRANSACTION" or "INSURANCE COMPANY / DENTAL PLAN" with COLOR(YLW)
+    // DSPATR(HI) DSPATR(UL) — as input fields. Downstream consumers
+    // (LegacyBridge field-mapping discovery) then add phantom inputs for
+    // these labels and the agent types into the wrong cells, sabotaging
+    // form submission.
+    //
+    // NON_DISPLAY remains a hint for password fields. Real password
+    // input still has an explicit SF order in practice; this fallback
+    // only catches edge cases where the host omits SF.
+    const isInput = fieldDisplayAttr === ATTR.NON_DISPLAY;
 
     const field: FieldDef = {
       row,
