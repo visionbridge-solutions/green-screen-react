@@ -539,8 +539,19 @@ export function GreenScreenTerminal({
 
   const handleTerminalClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (readOnly) return;
+    const wasUnfocused = !isFocused;
     setIsFocused(true);
     inputRef.current?.focus();
+
+    // The first click that focuses the terminal is an "unlock" click
+    // (host read-only overlays in consumer wrappers like LegacyBridge
+    // disappear when this component flips isFocused to true). That
+    // click should NOT move the host cursor to the clicked position —
+    // the user just wanted to interact, not reposition. Subsequent
+    // clicks on the already-focused terminal still place the cursor.
+    // This also covers programmatic `gsScreen.click()` from host
+    // wrappers, which similarly arrive while unfocused.
+    if (wasUnfocused) return;
 
     // Click-to-cursor: calculate which row/col was clicked
     const contentEl = screenContentRef.current;
@@ -595,6 +606,29 @@ export function GreenScreenTerminal({
       }
     }
 
+    // Left-trim cursor placement: when clicking into an input field, snap
+    // the cursor to just after the field's last non-space character so
+    // typing always continues left-justified. Without this, clicking the
+    // middle of an empty field (e.g. IBM i command line) would write the
+    // first typed char at that column, leaving leading EBCDIC spaces that
+    // cause the host's command parser to reject the input. For fields
+    // with existing content, the clamp keeps the cursor at "click col"
+    // so mid-content edits still work.
+    if (clickedField && screenData.content) {
+      const slice = fieldSliceForRow(clickedField, clickedRow, screenData.cols || profile.defaultCols);
+      if (slice) {
+        const lines = screenData.content.split('\n');
+        const rowText = lines[clickedRow] ?? '';
+        const fieldText = rowText.substring(slice.col, slice.col + slice.length);
+        const trimmed = fieldText.replace(/\s+$/, '');
+        const firstEmptyCol = slice.col + trimmed.length;
+        const targetCol = Math.min(clickedCol, Math.max(firstEmptyCol, slice.col));
+        setSyncedCursor({ row: clickedRow, col: targetCol });
+        adapter.setCursor?.(clickedRow, targetCol);
+        return;
+      }
+    }
+
     // Set the click position optimistically and fire the proxy request.
     // Intentionally fire-and-forget — do NOT chain .then() to update
     // syncedCursor from the response. WebSocketAdapter.sendAndWaitForScreen
@@ -607,7 +641,7 @@ export function GreenScreenTerminal({
     // next render's fallback.
     setSyncedCursor({ row: clickedRow, col: clickedCol });
     adapter.setCursor?.(clickedRow, clickedCol);
-  }, [readOnly, screenData, adapter, sendKey]);
+  }, [readOnly, isFocused, screenData, adapter, sendKey]);
 
   // --- Field helpers ---
   const getCurrentField = useCallback(() => {
