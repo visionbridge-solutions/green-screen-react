@@ -312,7 +312,7 @@
 .gs-input-field {
   display: inline-block;
   position: relative;
-  border-bottom: 1px solid rgba(166, 227, 161, 0.3);
+  border-bottom: 1px dotted rgba(166, 227, 161, 0.5);
 }
 
 /* Active input field — accent border when cursor is inside (highlight-on-entry).
