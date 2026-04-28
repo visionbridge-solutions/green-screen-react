@@ -85,6 +85,19 @@ export interface Field {
   /** Monocase field (FFW2 bit 0x20) — input is auto-converted to upper case. */
   monocase?: boolean;
   /**
+   * Auto-adjust behaviour on FIELD-EXIT (FFW2 bits 0-2 ADJUST mask).
+   * Per 5250 Functions Reference:
+   *   'right_zero'  — right-justify, zero-fill (most common for Y / EDTCDE numeric)
+   *   'right_blank' — right-justify, blank-fill (alpha right-aligned)
+   *   'mandatory_fill' — operator must fill every position before submit
+   * Absent → no auto-adjust. Clients should pre-pad input to the field's full
+   * width when this is set, since direct cursor-positioning + ENTER bypasses
+   * the host's auto-adjust step that normally fires on Field+/Tab.
+   */
+  auto_adjust?: 'right_zero' | 'right_blank' | 'mandatory_fill';
+  /** Mandatory entry (FFW2 bit 0x08) — operator must type at least one character. */
+  mandatory_entry?: boolean;
+  /**
    * Modified Data Tag (MDT) — true when the operator has typed into this
    * input field since the last host read. Mirrors the 5250 per-field MDT bit
    * (set on any keystroke into the field, cleared by CC1 `reset MDT` mask or

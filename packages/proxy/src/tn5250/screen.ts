@@ -823,6 +823,21 @@ export class ScreenBuffer {
       const shift_type = this.isInputField(f) ? shiftMap[f.ffw1 & 0x07] : undefined;
       const monocase = (f.ffw2 & 0x20) !== 0;
       const isInput = this.isInputField(f);
+      // FFW2 lower 3 bits: ADJUST mask. Per IBM 5250 Functions Reference:
+      //   101 (0x05) = right-adjust + zero-fill (DDS Y / EDTCDE numeric)
+      //   110 (0x06) = right-adjust + blank-fill (alpha right-aligned)
+      //   111 (0x07) = mandatory fill (every position must be typed)
+      // Other values = no auto-adjust. Clients use this to pre-pad input
+      // when not entering via Field+/Tab, since ENTER alone may skip the
+      // host's auto-adjust step.
+      const adjustBits = f.ffw2 & 0x07;
+      let auto_adjust: 'right_zero' | 'right_blank' | 'mandatory_fill' | undefined;
+      if (isInput) {
+        if (adjustBits === 0x05) auto_adjust = 'right_zero';
+        else if (adjustBits === 0x06) auto_adjust = 'right_blank';
+        else if (adjustBits === 0x07) auto_adjust = 'mandatory_fill';
+      }
+      const mandatory_entry = isInput && (f.ffw2 & 0x08) !== 0;
       return {
         row: f.row,
         col: f.col,
@@ -844,6 +859,8 @@ export class ScreenBuffer {
         self_check_mod11: f.selfCheckMod11,
         shift_type,
         monocase: monocase || undefined,
+        auto_adjust,
+        mandatory_entry: mandatory_entry || undefined,
         // MDT bit — only meaningful for input fields; leave undefined on
         // protected fields to keep the wire payload minimal.
         modified: isInput && f.modified ? true : undefined,
