@@ -456,22 +456,22 @@ export class ScreenBuffer {
 
   /** Whether a field should render with an underline.
    *
-   *  Two sources:
-   *  1. Explicit 5250 underscore attribute — lower 3 bits of the attribute
-   *     byte encode display type: 4=UL, 5=UL+RI, 6=UL+HI (exclude 7=ND).
-   *     Covers all color+underscore combinations (e.g. green+UL=0x24,
-   *     turquoise+UL=0x34, blue+UL=0x3C, etc.).
-   *  2. Convention — real 5250 clients (IBM ACS, Mocha) visually underline
-   *     ALL input fields, even when the host leaves the attribute as
-   *     NORMAL (0x20). IBM i's default "Selection or command" menu field
-   *     is one such case: the host sends 0x20 but every production 5250
-   *     client still renders an underline so users can see the input zone.
-   *     Password (non-display) fields never get underline. */
+   *  Strict 5250 attribute-byte mode: only fields whose attribute byte has
+   *  the UL bits explicitly set (lower 3 bits = 4=UL, 5=UL+RI, 6=UL+HI;
+   *  exclude 7=ND) are marked underscored. Covers all color+underscore
+   *  combos (green+UL=0x24, turquoise+UL=0x34, blue+UL=0x3C, etc.).
+   *
+   *  This used to also apply an "input-field convention" — mark every
+   *  input field as underscored even when the host left the attribute as
+   *  NORMAL (0x20), to mimic IBM ACS/Mocha which paint an underline under
+   *  every input zone. We dropped that convention: it overrode the host's
+   *  intent. Developers who omit DSPATR(UL) on a DDS field now actually
+   *  get a non-underlined field, as the DDS specifies. Hosts that want
+   *  every input field underlined should put DSPATR(UL) on each one (the
+   *  IBM-standard way to express that intent). */
   isUnderscored(field: FieldDef): boolean {
     const type = field.attribute & 0x07;
-    if (type >= 0x04 && type < 0x07) return true;
-    // Apply input-field convention (skip password / non-display)
-    return this.isInputField(field) && !this.isNonDisplay(field);
+    return type >= 0x04 && type < 0x07;
   }
 
   /** Whether a field has the FFW mandatory entry flag (CHECK(ME)) */
