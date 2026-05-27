@@ -99,10 +99,14 @@ class ScreenBuffer:
             "is_reverse": bool(field.is_reverse),
             "is_underscored": bool(field.is_underscored),
             "is_non_display": bool(field.is_non_display),
-            "is_mandatory": False,
+            # PATCH-LOADED-CHECK: this line proves the patched buffer.py
+            # is being executed by the worker. Remove with the
+            # [MANDATORY-DEBUG] log after verification.
+            "is_mandatory": bool(getattr(field, "mandatory_entry", None) or False),
             "color": field.color,
             "shift_type": field.shift_type,
             "monocase": bool(field.monocase),
+            "auto_adjust": getattr(field, "auto_adjust", None),
             "is_dbcs": bool(field.is_dbcs),
             "self_check_mod10": bool(field.self_check_mod10),
             "self_check_mod11": bool(field.self_check_mod11),

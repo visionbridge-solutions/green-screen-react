@@ -58,6 +58,12 @@ class Field:
     shift_type: Optional[ShiftType] = None
     monocase: Optional[bool] = None
     modified: Optional[bool] = None
+    # FFW2 mandatory-entry bit (DDS CHECK(ME)) — host requires the
+    # operator to type into this field before submit accepts.
+    mandatory_entry: Optional[bool] = None
+    # FFW2 ADJUST bits (DDS CHECK(RZ) / CHECK(RB) / mandatory-fill) —
+    # tells the client how the host auto-adjusts input on field-exit.
+    auto_adjust: Optional[str] = None
 
     @classmethod
     def from_wire(cls, data: Dict[str, Any]) -> "Field":
@@ -83,6 +89,8 @@ class Field:
             shift_type=data.get("shift_type"),
             monocase=data.get("monocase"),
             modified=data.get("modified"),
+            mandatory_entry=data.get("mandatory_entry"),
+            auto_adjust=data.get("auto_adjust"),
         )
 
 
