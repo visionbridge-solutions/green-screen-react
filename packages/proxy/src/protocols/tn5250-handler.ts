@@ -335,6 +335,26 @@ export class TN5250Handler extends ProtocolHandler {
    * Pads the end of the field with a space. Marks field as modified.
    * Per lib5250 dbuffer.c:693-737 (dbuffer_del).
    */
+  /**
+   * Erase from the cursor position to the end of the current input field,
+   * padding with spaces. Marks the field as modified so the MDT bit is set
+   * (matches the standard TN5250 EraseEOF/EraseInput aid-key semantics
+   * applied to the current field). Used to clear stale residue before
+   * typing a shorter replacement value. No-op if cursor isn't in a field.
+   */
+  eraseEOF(): boolean {
+    const field = this.screen.getFieldAtCursor();
+    if (!field || !this.screen.isInputField(field)) return false;
+    const fieldStart = this.screen.offset(field.row, field.col);
+    const fieldEnd = fieldStart + field.length;
+    const cursorAddr = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
+    for (let i = cursorAddr; i < fieldEnd; i++) {
+      this.screen.buffer[i] = ' ';
+    }
+    field.modified = true;
+    return true;
+  }
+
   private deleteCharAtCursor(field: FieldDef): void {
     const fieldStart = this.screen.offset(field.row, field.col);
     const fieldEnd = fieldStart + field.length;

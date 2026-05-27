@@ -58,6 +58,15 @@ export abstract class ProtocolHandler extends EventEmitter {
   }
 
   /**
+   * Erase from cursor to end of current input field (TN5250 EraseEOF).
+   * Used by integrators to clear stale residue in a field before typing a
+   * shorter replacement value. Protocols without a field model return false.
+   */
+  eraseEOF(): boolean {
+    return false;
+  }
+
+  /**
    * Read the current text content of input fields on the screen, optionally
    * restricted to fields whose per-field modified-data-tag (MDT) bit is set.
    * Used by the `/read-mdt` primitive as a cheap post-write verification

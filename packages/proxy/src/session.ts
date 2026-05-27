@@ -19,9 +19,11 @@ export class Session extends EventEmitter {
   /** Timeout (ms) to wait for screen data after connect or key send (default 5000) */
   screenTimeout: number = 5000;
 
-  /** Idle timeout (ms) — session auto-destroys if no activity. Default 5 min.
-   *  Prevents stale TCP sessions when the backend crashes or misses a disconnect call. */
-  static IDLE_TIMEOUT = 5 * 60 * 1000;
+  /** Idle timeout (ms) — session auto-destroys if no REST/screen activity.
+   *  Safety net for backend crashes; the backend's own keepalive handles
+   *  IBM i QINACTITV separately. 30 min is long enough that hot-reload
+   *  restarts and slow startup sequences don't race against this timer. */
+  static IDLE_TIMEOUT = 30 * 60 * 1000;
 
   constructor(protocol: ProtocolType = 'tn5250') {
     super();
@@ -125,6 +127,10 @@ export class Session extends EventEmitter {
 
   setCursor(row: number, col: number): boolean {
     return this.handler.setCursor(row, col);
+  }
+
+  eraseEOF(): boolean {
+    return this.handler.eraseEOF();
   }
 
   getScreenData() {

@@ -161,6 +161,15 @@ export class SessionController {
     this.send({ type: 'cursor', data: { cursor_row: sd.cursor_row, cursor_col: sd.cursor_col } });
   }
 
+  handleEraseEOF(): void {
+    if (!this.handler || !this.connected) {
+      this.send({ type: 'error', message: 'Not connected' });
+      return;
+    }
+    this.handler.eraseEOF();
+    this.send({ type: 'screen', data: this.handler.getScreenData() });
+  }
+
   handleDisconnect(): void {
     if (this.handler) {
       this.handler.destroy();

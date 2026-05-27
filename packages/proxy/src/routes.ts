@@ -429,6 +429,11 @@ router.post('/batch', async (req: Request, res: Response) => {
           lastRemoteKey = false;
           break;
 
+        case 'eraseEOF':
+          session.eraseEOF();
+          lastRemoteKey = false;
+          break;
+
         default:
           return res.json({ success: false, error: `Unknown operation type: ${op.type}` });
       }
