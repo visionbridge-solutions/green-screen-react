@@ -164,6 +164,11 @@ export interface GreenScreenTerminalProps {
   /** Show the keyboard-shortcuts button in the header (default true) */
   showShortcutsButton?: boolean;
 
+  /** Callback fired when the user clicks the close button on a popup window.
+   *  Receives the window index. The consumer sends the appropriate dismiss
+   *  key (e.g. F12) to the host — this component stays protocol-generic. */
+  onWindowClose?: (windowIndex: number) => void;
+
   /** Persist focus state to localStorage across page reloads (default true) */
   persistFocus?: boolean;
 
@@ -236,6 +241,7 @@ export function GreenScreenTerminal({
   onDisconnect,
   onMinimize,
   showShortcutsButton = true,
+  onWindowClose,
   persistFocus = true,
   alwaysFocused = false,
   theme = 'modern',
@@ -1235,6 +1241,17 @@ export function GreenScreenTerminal({
               pointerEvents: 'none',
             }}
           >
+            {onWindowClose && !readOnly && (
+              <button
+                className="gs-window-close"
+                onClick={(e) => { e.stopPropagation(); onWindowClose(wi); }}
+                title="Close window (F12)"
+                aria-label="Close popup window"
+                style={{ pointerEvents: 'auto' }}
+              >
+                {'×'}
+              </button>
+            )}
             {w.title && (
               <span className="gs-window-title">{w.title}</span>
             )}

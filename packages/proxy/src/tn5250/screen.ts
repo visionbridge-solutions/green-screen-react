@@ -583,6 +583,18 @@ export class ScreenBuffer {
     }
     if (maxRow < 0) return; // nothing written
 
+    // Reject trivially small bounding boxes (cursor artifacts, stale chars)
+    if (maxRow - minRow < 1 || maxCol - minCol < 2) return;
+
+    // Require meaningful content — fewer than 3 non-space cells is noise
+    let nonSpaceCount = 0;
+    for (let r = minRow; r <= maxRow && nonSpaceCount < 3; r++) {
+      for (let c = minCol; c <= maxCol && nonSpaceCount < 3; c++) {
+        if (this.buffer[this.offset(r, c)] !== ' ') nonSpaceCount++;
+      }
+    }
+    if (nonSpaceCount < 3) return;
+
     // Save the prompted command content and fields
     const contentBuf = [...this.buffer];
     const contentAttr = [...this.attrBuffer];
@@ -653,13 +665,21 @@ export class ScreenBuffer {
     this.cursorRow = contentCursorRow;
     this.cursorCol = contentCursorCol;
 
-    // Track as a synthetic window
-    this.windowList.push({
+    // Track as a synthetic window (deduplicate by geometry)
+    const newWin: WindowDef = {
       row: Math.max(0, minRow - 1),
       col: Math.max(0, minCol - 1),
       height: maxRow - minRow + 1,
       width: maxCol - minCol + 1,
-    });
+    };
+    const isDup = this.windowList.some(
+      w => w.row === newWin.row && w.col === newWin.col
+        && w.height === newWin.height && w.width === newWin.width
+    );
+    if (!isDup) {
+      this.windowList.push(newWin);
+      if (this.windowList.length > 10) this.windowList = this.windowList.slice(-10);
+    }
   }
 
   /** Erase a rectangular region (inclusive bounds, 0-based) */

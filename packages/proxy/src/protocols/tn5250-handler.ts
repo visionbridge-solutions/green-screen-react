@@ -632,7 +632,7 @@ export class TN5250Handler extends ProtocolHandler {
       // If we're in a SAVE_SCREEN context but the host didn't send CREATE_WINDOW,
       // synthesize a window by overlaying the content on the saved screen.
       // Check if a real CREATE_WINDOW was used (parser sets winRowOff/winColOff).
-      if (this.screen.screenStack.length > 0 && this.parser.winRowOff === 0 && this.parser.winColOff === 0) {
+      if (this.screen.screenStack.length > 0 && this.parser.winRowOff === 0 && this.parser.winColOff === 0 && this.screen.fields.length > 0) {
         this.screen.synthesizeWindow();
       }
 

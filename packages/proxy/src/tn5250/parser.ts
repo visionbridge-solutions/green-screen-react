@@ -1258,14 +1258,23 @@ export class TN5250Parser {
     const winRow = this.screen.cursorRow;
     const winCol = this.screen.cursorCol;
 
-    this.screen.windowList.push({
-      row: winRow,
-      col: winCol,
-      height: depth,
-      width: width,
-      title: titleText || undefined,
-      footer: footerText || undefined,
-    });
+    // Deduplicate by geometry before pushing
+    const isDup = this.screen.windowList.some(
+      w => w.row === winRow && w.col === winCol && w.height === depth && w.width === width
+    );
+    if (!isDup) {
+      this.screen.windowList.push({
+        row: winRow,
+        col: winCol,
+        height: depth,
+        width: width,
+        title: titleText || undefined,
+        footer: footerText || undefined,
+      });
+      if (this.screen.windowList.length > 10) {
+        this.screen.windowList = this.screen.windowList.slice(-10);
+      }
+    }
 
     // Render border with custom characters from host
     this.screen.renderWindowBorderCustom(winRow, winCol, depth, width, borderChars, titleText, footerText);

@@ -688,6 +688,32 @@
   color: var(--gs-muted);
 }
 
+.gs-window-close {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--gs-accent);
+  border-radius: 50%;
+  background: var(--gs-bg);
+  color: var(--gs-accent);
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  cursor: pointer;
+  z-index: 1;
+  padding: 0;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.gs-window-close:hover {
+  opacity: 1;
+  background: var(--gs-accent);
+  color: var(--gs-bg);
+}
+
 /* ── Connection Icon ─────────────────────────────────────────────── */
 
 .gs-connection-icon {
