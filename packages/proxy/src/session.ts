@@ -63,8 +63,11 @@ export class Session extends EventEmitter {
     this.stopIdleTimer();
     this._idleTimer = setInterval(() => {
       if (Date.now() - this._lastActivity > Session.IDLE_TIMEOUT) {
-        console.log(`[Session ${this.id.slice(0, 8)}] Idle timeout (${Session.IDLE_TIMEOUT / 1000}s) — destroying`);
-        destroySession(this.id);
+        console.log(`[Session ${this.id.slice(0, 8)}] Idle timeout (${Session.IDLE_TIMEOUT / 1000}s) — signing off`);
+        // Graceful SIGNOFF + TCP close, not a bare destroy: a hard drop leaves
+        // the IBM i QPADEV device hanging (it accumulates and, under churn,
+        // trips QMAXSIGN/QAUTOVRT and gets disabled). Best-effort + non-blocking.
+        void gracefullyDestroySession(this.id).catch(() => { /* best-effort */ });
       }
     }, 30_000); // Check every 30s
   }

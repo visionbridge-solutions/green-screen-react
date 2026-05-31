@@ -5,7 +5,6 @@ import {
   getSession,
   getDefaultSession,
   getAllSessions,
-  destroySession,
   gracefullyDestroySession,
 } from './session.js';
 import { TN5250Handler } from './protocols/index.js';
@@ -44,8 +43,17 @@ router.post('/connect', async (req: Request, res: Response) => {
     if (previousSessionId) {
       const prev = getSession(previousSessionId);
       if (prev) {
-        console.log(`[connect] Destroying caller's previous session ${previousSessionId.slice(0, 8)} for ${host}:${port} before new connect`);
-        destroySession(previousSessionId);
+        console.log(`[connect] Signing off caller's previous session ${previousSessionId.slice(0, 8)} for ${host}:${port} before new connect`);
+        // Graceful SIGNOFF + TCP close (best-effort, non-blocking) rather than
+        // a bare socket drop. A hard destroy leaves the IBM i interactive job
+        // and its QPADEV virtual device hanging until QDEVRCYACN reaps it.
+        // Under a reconnect storm those hung devices accumulate, exhaust
+        // QAUTOVRT, trip QMAXSIGN (which disables them), and the host can no
+        // longer allocate a device for new TN5250 connections — telnet stops
+        // negotiating entirely. Releasing the device on every replace keeps
+        // the host's device pool clean. Fire-and-forget so the new connect
+        // isn't delayed by the ~1.5s sign-off wait.
+        void gracefullyDestroySession(previousSessionId).catch(() => { /* best-effort */ });
       }
     }
 
