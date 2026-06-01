@@ -196,6 +196,18 @@ export interface ScreenData {
   fields: Field[];
   /** Unique identifier for the current screen state */
   screen_signature: string;
+  /**
+   * Structural screen identity — sha256 of the value- and text-independent
+   * input-field skeleton (sorted (row,col,length) of unprotected fields above
+   * the status region). Unlike `screen_signature` (an md5 of rendered content
+   * that flips on every keystroke/counter/status line), this is stable across
+   * value-dirty re-renders and transient host error lines, so it identifies
+   * *which screen* the operator is on regardless of the data in it. Optional:
+   * absent from older proxies and on screens with no input fields. Computed by
+   * `computeStructuralSignature` (proxy `structural-signature.ts`);
+   * protocol-generic (5250/3270/VT/HP6530).
+   */
+  structural_signature?: string;
   /** ISO timestamp of when this screen was captured */
   timestamp: string;
   /** Whether the keyboard is locked by the host (X SYSTEM indicator) */

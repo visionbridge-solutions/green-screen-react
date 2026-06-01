@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { SCREEN } from './constants.js';
 import type { EbcdicCodePage } from './ebcdic.js';
 import type { ScreenData, Field, CellExtAttr } from 'green-screen-types';
+import { computeStructuralSignature } from '../structural-signature.js';
 
 /**
  * Per-cell extended attribute set from WEA (Write Extended Attribute, 0x12)
@@ -911,6 +912,11 @@ export class ScreenBuffer {
     // Generate screen signature
     const hash = createHash('md5').update(content).digest('hex').substring(0, 12);
 
+    // Structural screen identity: value/text-independent id from the input-field
+    // skeleton (see structural-signature.ts). Carried on the wire so consumers
+    // stop re-deriving screen identity from the rendered grid.
+    const structural_signature = computeStructuralSignature(fields);
+
     // Consume pending alarm (one-shot)
     const alarm = this.pendingAlarm;
     this.pendingAlarm = false;
@@ -947,6 +953,7 @@ export class ScreenBuffer {
       cols: this.cols,
       fields,
       screen_signature: hash,
+      structural_signature,
       timestamp: new Date().toISOString(),
       keyboard_locked: this.keyboardLocked || undefined,
       insert_mode: this.insertMode || undefined,
