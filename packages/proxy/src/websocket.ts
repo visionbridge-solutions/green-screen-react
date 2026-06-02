@@ -23,13 +23,20 @@ const sessionClients: Map<string, Set<WsClient>> = new Map();
 const unassignedClients: Set<WsClient> = new Set();
 /** Controllers whose WebSocket disconnected but TCP is still alive (for reattach) */
 const orphanedControllers: Map<string, SessionController> = new Map();
-/** Auto-reap timers for orphaned controllers. A page reload typically
- *  reattaches within a few seconds; anything longer is almost certainly
- *  a closed tab / abandoned session, and keeping the TCP socket alive
- *  counts against the host's per-user session quota (IBM i LMTDEVSSN →
- *  CPF1220). Short TTL bounds the leak. */
+/** Auto-reap timers for orphaned controllers. A page reload (or a backend
+ *  integrator that briefly loses its WS subscription mid-operation) reattaches
+ *  to the SAME live controller — the TCP to the host stays up the whole time, so
+ *  the in-flight screen/job is preserved seamlessly. Anything longer than the
+ *  window is treated as a closed tab / abandoned session. Keeping the socket
+ *  alive counts against the host's per-user session quota (IBM i LMTDEVSSN →
+ *  CPF1220), so the window is bounded — but it MUST comfortably exceed a single
+ *  host round-trip (a 5250 lookup + two-phase ENTER can leave a backend driver
+ *  briefly without a WS for longer than a couple of seconds). 20s was too tight:
+ *  a transient blip mid-data-entry reaped the session before the backend could
+ *  resume, abandoning the in-progress record. 90s leaves ample reattach room
+ *  while the 30-min idle timer still releases genuinely-abandoned sessions. */
 const orphanReapTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-const ORPHAN_TTL_MS = 20_000;
+const ORPHAN_TTL_MS = 90_000;
 
 function scheduleOrphanReap(sessionId: string): void {
   const prev = orphanReapTimers.get(sessionId);
@@ -39,10 +46,16 @@ function scheduleOrphanReap(sessionId: string): void {
     const ctrl = orphanedControllers.get(sessionId);
     if (!ctrl) return;
     orphanedControllers.delete(sessionId);
-    console.log(`[orphan-reap] TTL expired for session ${sessionId.slice(0, 8)} — destroying`);
-    // Best-effort graceful tear-down: SIGNOFF + TCP close. The owning
-    // WebSocket is already gone, so no ack needs to flow back.
-    ctrl.handleGracefulDisconnect().catch(() => { /* ignore */ });
+    console.log(`[orphan-reap] TTL expired for session ${sessionId.slice(0, 8)} — closing (re-attachable)`);
+    // Bare TCP close, NOT a graceful SIGNOFF. An orphan-reap means a client
+    // dropped its WS and didn't resume in time — but we can't tell a closed
+    // browser tab from a backend driver mid-record whose resume is still
+    // racing. SIGNOFF here ENDS the host job, so a late resume lands on a
+    // fresh Sign On and the in-progress record is lost (the bug this restores).
+    // A bare close leaves the IBM i job DISCONNECTED — re-attachable — and the
+    // 30-min idle timer (Session._idleTimer) still SIGNOFFs a genuinely
+    // abandoned session, so device slots aren't leaked indefinitely.
+    ctrl.handleDisconnect();
   }, ORPHAN_TTL_MS);
   orphanReapTimers.set(sessionId, timer);
 }
