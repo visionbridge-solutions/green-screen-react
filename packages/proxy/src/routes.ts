@@ -31,6 +31,34 @@ function resolveSession(req: Request): Session | undefined {
   return session;
 }
 
+/** Delay between keystrokes when typing a field char-by-char. */
+const KEYSTROKE_DELAY_MS = 15;
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Type `text` into the current field one character at a time, broadcasting a
+ * screen frame after each keystroke so WS-attached dashboards render genuine
+ * per-keystroke "typing" instead of the whole value snapping in at once.
+ *
+ * The cursor/field is validated per character: `sendText` (→ `insertText`)
+ * returns false at a non-writable position, so a misplaced cursor fails fast
+ * and the caller can abort the batch rather than silently dropping the value.
+ * Keystrokes are KEYSTROKE_DELAY_MS apart with no trailing delay.
+ *
+ * Returns false if a character could not be written (nothing more is typed).
+ */
+async function typeTextAnimated(session: Session, text: string): Promise<boolean> {
+  const chars = [...text];
+  for (let i = 0; i < chars.length; i++) {
+    const ok = session.sendText(chars[i]);
+    if (!ok) return false;
+    broadcastScreenToSession(session.id, session.getScreenData());
+    if (i < chars.length - 1) await delay(KEYSTROKE_DELAY_MS);
+  }
+  return true;
+}
+
 // POST /connect
 router.post('/connect', async (req: Request, res: Response) => {
   try {
@@ -427,10 +455,14 @@ router.post('/batch', async (req: Request, res: Response) => {
           lastRemoteKey = !localKeys.has(op.value);
           break;
 
-        case 'text':
-          session.sendText(op.value);
+        case 'text': {
+          const typed = await typeTextAnimated(session, op.value);
+          if (!typed) {
+            return res.json({ success: false, error: `Cannot type "${op.value}" at current cursor position` });
+          }
           lastRemoteKey = false;
           break;
+        }
 
         case 'setCursor':
           session.setCursor(op.row, op.col);
@@ -468,7 +500,7 @@ router.post('/batch', async (req: Request, res: Response) => {
 });
 
 // POST /send-text
-router.post('/send-text', (req: Request, res: Response) => {
+router.post('/send-text', async (req: Request, res: Response) => {
   const session = resolveSession(req);
   if (!session) {
     return res.status(404).json({ success: false, error: 'No active session' });
@@ -479,10 +511,12 @@ router.post('/send-text', (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'text is required' });
   }
 
-  const ok = session.sendText(text);
+  // Type char-by-char (broadcasting each keystroke) so attached dashboards see
+  // genuine typing; typeTextAnimated emits the per-keystroke frames itself.
+  const ok = await typeTextAnimated(session, text);
   const screenData = session.getScreenData();
 
-  // Broadcast to WebSocket clients so dashboard stays in sync
+  // Final authoritative frame after the last keystroke.
   if (ok) {
     broadcastScreenToSession(session.id, screenData);
   }

@@ -123,10 +123,6 @@ export interface GreenScreenTerminalProps {
   /** Custom header: ReactNode, render prop with terminal state, or false to hide.
    *  When provided, overrides showHeader/embedded/headerRight/statusActions. */
   header?: React.ReactNode | ((state: TerminalHeaderState) => React.ReactNode) | false;
-  /** Enable typing animation (default false) */
-  typingAnimation?: boolean;
-  /** Typing animation budget in ms (default 60) */
-  typingBudgetMs?: number;
 
   /** Auto-create a default WebSocketAdapter when no adapter/baseUrl/workerUrl is provided (default true) */
   autoConnect?: boolean;
@@ -224,8 +220,6 @@ export function GreenScreenTerminal({
   embedded = false,
   showHeader = true,
   header,
-  typingAnimation = false,
-  typingBudgetMs = 60,
   autoConnect = true,
   inlineSignIn = true,
   defaultProtocol: signInDefaultProtocol,
@@ -281,14 +275,11 @@ export function GreenScreenTerminal({
     screenError,
     showBusyOverlay,
     busyElapsedMs: lockElapsedMs,
-    animatedCursorPos,
   } = useTerminalState({
     adapter,
     pollInterval,
     externalScreenData,
     externalStatus,
-    typingAnimation,
-    typingBudgetMs,
     onScreenChange,
   });
 
@@ -859,7 +850,6 @@ export function GreenScreenTerminal({
   // --- Cursor ---
   const termCols = screenData?.cols || profile.defaultCols;
   const getCursorPos = () => {
-    if (animatedCursorPos) return animatedCursorPos;
     let cursorRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
     let cursorCol = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
     while (cursorCol >= termCols) { cursorCol -= termCols; cursorRow += 1; }

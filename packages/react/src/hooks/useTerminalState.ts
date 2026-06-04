@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { TerminalAdapter, ScreenData, ConnectionStatus, SendResult, Field } from '../adapters/types';
 import { useTerminalScreen, useTerminalInput, useTerminalConnection } from './useTerminal';
-import { useTypingAnimation } from './useTypingAnimation';
 
 /**
  * True if the screen content is effectively empty — all spaces, NULs, or
@@ -28,18 +27,14 @@ export interface UseTerminalStateOptions {
   externalScreenData?: ScreenData | null;
   /** Direct connection status injection */
   externalStatus?: ConnectionStatus | null;
-  /** Enable typing animation (default false) */
-  typingAnimation?: boolean;
-  /** Typing animation budget in ms (default 60) */
-  typingBudgetMs?: number;
   /** Callback when screen content changes */
   onScreenChange?: (screen: ScreenData) => void;
 }
 
 export interface UseTerminalStateResult {
-  /** Processed screen data (with typing animation applied) */
+  /** Current screen data */
   screenData: ScreenData | null;
-  /** Raw screen data before typing animation */
+  /** Same as screenData (kept for API compatibility) */
   rawScreenData: ScreenData | null;
   /** Connection status */
   connectionStatus: ConnectionStatus;
@@ -63,8 +58,6 @@ export interface UseTerminalStateResult {
   busyElapsedMs: number;
   /** Whether the busy overlay should be shown (after delay) */
   showBusyOverlay: boolean;
-  /** Animated cursor position (from typing animation) or null */
-  animatedCursorPos: { row: number; col: number } | null;
 }
 
 const BUSY_OVERLAY_DELAY_MS = 600;
@@ -73,8 +66,12 @@ const BUSY_OVERLAY_DELAY_MS = 600;
  * Core terminal state management hook.
  *
  * Bundles screen data polling, blank-screen stashing, busy overlay timing,
- * typing animation, and connection management. Use this hook to build a
- * fully custom terminal UI without the GreenScreenTerminal component.
+ * and connection management. Use this hook to build a fully custom terminal
+ * UI without the GreenScreenTerminal component.
+ *
+ * Received frames render directly — the proxy now types char-by-char and
+ * broadcasts a screen frame per keystroke, so there is no client-side typing
+ * animation here.
  */
 export function useTerminalState(options: UseTerminalStateOptions): UseTerminalStateResult {
   const {
@@ -82,8 +79,6 @@ export function useTerminalState(options: UseTerminalStateOptions): UseTerminalS
     pollInterval = 2000,
     externalScreenData,
     externalStatus,
-    typingAnimation = false,
-    typingBudgetMs = 60,
     onScreenChange,
   } = options;
 
@@ -133,17 +128,9 @@ export function useTerminalState(options: UseTerminalStateOptions): UseTerminalS
   // --- Connection status ---
   const connectionStatus = externalStatus ?? (rawScreenData ? { connected: true, status: 'authenticated' as const } : { connected: false, status: 'disconnected' as const });
 
-  // --- Typing animation ---
-  const { displayedContent, animatedCursorPos } = useTypingAnimation(
-    rawScreenData?.content,
-    typingAnimation,
-    typingBudgetMs,
-  );
-
-  const screenData = useMemo(() => {
-    if (!rawScreenData) return null;
-    return { ...rawScreenData, content: displayedContent };
-  }, [rawScreenData, displayedContent]);
+  // Received frames render directly (the proxy types per-keystroke and
+  // broadcasts a frame each keystroke — no client-side reveal).
+  const screenData = rawScreenData;
 
   // --- Notify parent on screen changes ---
   const prevScreenSigRef = useRef<string | undefined>(undefined);
@@ -171,6 +158,5 @@ export function useTerminalState(options: UseTerminalStateOptions): UseTerminalS
     isBusy: isBlankLocked,
     busyElapsedMs: lockElapsedMs,
     showBusyOverlay,
-    animatedCursorPos,
   };
 }

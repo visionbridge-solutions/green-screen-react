@@ -28,7 +28,6 @@ export type {
 } from './adapters/types';
 
 // Hooks
-export { useTypingAnimation } from './hooks/useTypingAnimation';
 export {
   useTerminalConnection,
   useTerminalScreen,
