@@ -1528,6 +1528,10 @@ export function GreenScreenTerminal({
             value={inputText}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
+            // Visually-hidden keyboard-capture field (opacity:0). It is a focus
+            // target, so it needs an accessible name rather than aria-hidden —
+            // otherwise screen readers announce an unlabelled textbox (WCAG 4.1.2).
+            aria-label="Terminal input"
             style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', fontSize: '13px', lineHeight: '21px', fontFamily: 'var(--gs-font)', padding: 0, border: 'none', height: '21px' }}
             autoComplete="off"
             autoCorrect="off"
