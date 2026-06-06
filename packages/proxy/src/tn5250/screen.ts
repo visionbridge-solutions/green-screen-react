@@ -3,6 +3,7 @@ import { SCREEN } from './constants.js';
 import type { EbcdicCodePage } from './ebcdic.js';
 import type { ScreenData, Field, CellExtAttr } from 'green-screen-types';
 import { computeStructuralSignature } from '../structural-signature.js';
+import { computeScreenId } from './screen-id.js';
 
 /**
  * Per-cell extended attribute set from WEA (Write Extended Attribute, 0x12)
@@ -917,6 +918,18 @@ export class ScreenBuffer {
     // stop re-deriving screen identity from the rendered grid.
     const structural_signature = computeStructuralSignature(fields);
 
+    // Stable semantic screen identity (sid2 / sid1 scheme): sid2 anchors to
+    // DDS field attribute bytes (FFW/FCW) which are protocol-level and stable
+    // across field repositioning; falls back to sid1 text-based for display-only
+    // screens. Always defined. Proxy = single source of truth.
+    const window = this.windowList.length > 0 ? {
+      row: this.windowList[0].row,
+      col: this.windowList[0].col,
+      height: this.windowList[0].height,
+      width: this.windowList[0].width,
+    } : undefined;
+    const screen_id = computeScreenId(content, this.rows, this.cols, fields, window);
+
     // Consume pending alarm (one-shot)
     const alarm = this.pendingAlarm;
     this.pendingAlarm = false;
@@ -953,6 +966,7 @@ export class ScreenBuffer {
       cols: this.cols,
       fields,
       screen_signature: hash,
+      screen_id,
       structural_signature,
       timestamp: new Date().toISOString(),
       keyboard_locked: this.keyboardLocked || undefined,

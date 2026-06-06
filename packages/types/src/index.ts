@@ -197,6 +197,20 @@ export interface ScreenData {
   /** Unique identifier for the current screen state */
   screen_signature: string;
   /**
+   * Stable semantic screen identity — sha256[:16] of the DDS field-attribute
+   * skeleton (scheme `sid2`) with a text-based fallback (scheme `sid1`) for
+   * display-only screens. Stable even when field positions change (no geometry
+   * in hash). Matches the backend DAG node `signature_hash` once
+   * `ScreenSignature.compute_hash()` is updated to the same format. Computed by
+   * `computeScreenId` (proxy `tn5250/screen-id.ts`); the Python mirror is
+   * `ai/services/screen_id.py`. Proxy = single source of truth.
+   *
+   * Optional: the IBM i (TN5250) path always emits it, but the protocol-generic
+   * handlers (TN3270/VT/HP6530) may omit it — the `sid2` scheme anchors to IBM i
+   * DDS attribute bytes that other protocols don't carry.
+   */
+  screen_id?: string;
+  /**
    * Structural screen identity — sha256 of the value- and text-independent
    * input-field skeleton (sorted (row,col,length) of unprotected fields above
    * the status region). Unlike `screen_signature` (an md5 of rendered content
