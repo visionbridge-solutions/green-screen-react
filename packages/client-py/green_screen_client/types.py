@@ -273,21 +273,32 @@ class ConnectConfig:
     terminal_type: Optional[str] = None
     code_page: Optional[Literal["cp37", "cp290"]] = None
     connect_timeout: Optional[int] = None
+    # Opaque per-agent key for idempotent connect-by-key: the proxy keeps AT
+    # MOST ONE live session per key, so a burst of concurrent reconnects for the
+    # same logical terminal coalesces to one session instead of racing to open
+    # many host devices (LMTDEVSSN/CPF1220 contention). None = legacy behaviour.
+    key: Optional[str] = None
+    # Force a brand-new session even if one already exists for ``key`` (e.g. the
+    # caller knows the current one is stale). Ignored when ``key`` is None.
+    force_new: bool = False
 
     def to_wire(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"host": self.host, "protocol": self.protocol}
-        if self.port is not None:
-            out["port"] = self.port
-        if self.username is not None:
-            out["username"] = self.username
-        if self.password is not None:
-            out["password"] = self.password
-        if self.terminal_type is not None:
-            out["terminalType"] = self.terminal_type
-        if self.code_page is not None:
-            out["codePage"] = self.code_page
-        if self.connect_timeout is not None:
-            out["connectTimeout"] = self.connect_timeout
+        # Wire name → value for every optional field; emit only the ones set.
+        optional = {
+            "port": self.port,
+            "username": self.username,
+            "password": self.password,
+            "terminalType": self.terminal_type,
+            "codePage": self.code_page,
+            "connectTimeout": self.connect_timeout,
+            "key": self.key,
+        }
+        for wire_name, value in optional.items():
+            if value is not None:
+                out[wire_name] = value
+        if self.force_new:
+            out["forceNew"] = True
         return out
 
 
@@ -301,6 +312,12 @@ class SendResult:
     content: Optional[str] = None
     screen_signature: Optional[str] = None
     error: Optional[str] = None
+    # connect-by-key signals (present on /connect responses): whether the proxy
+    # handed back a pre-existing session for the key (vs opened a fresh one),
+    # and whether that session is signed on. ``reused and authenticated`` lets a
+    # caller adopt an already-signed-on session instead of re-driving sign-on.
+    reused: Optional[bool] = None
+    authenticated: Optional[bool] = None
 
     @classmethod
     def from_wire(cls, data: Dict[str, Any]) -> "SendResult":
@@ -311,4 +328,6 @@ class SendResult:
             content=data.get("content"),
             screen_signature=data.get("screen_signature"),
             error=data.get("error"),
+            reused=data.get("reused"),
+            authenticated=data.get("authenticated"),
         )

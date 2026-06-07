@@ -151,6 +151,10 @@ class ProxyTerminalClient:
         self.screen = ScreenBuffer()
         self._connected = False
         self._error_message: Optional[str] = None
+        # The most recent connect()/login() result — carries the connect-by-key
+        # signals (``reused`` / ``authenticated``) so callers can adopt an
+        # already-signed-on session instead of re-driving sign-on.
+        self.last_connect_result: Optional[SendResult] = None
 
     @property
     def is_connected(self) -> bool:
@@ -170,7 +174,7 @@ class ProxyTerminalClient:
     async def __aexit__(self, *args: object) -> None:
         await self.disconnect()
 
-    async def connect(self) -> bool:
+    async def connect(self, *, key: Optional[str] = None, force_new: bool = False) -> bool:
         result = await self._rest.connect(
             ConnectConfig(
                 host=self._host,
@@ -178,10 +182,13 @@ class ProxyTerminalClient:
                 protocol=self._protocol,  # type: ignore[arg-type]
                 terminal_type=self._terminal_type,
                 connect_timeout=int(self._rest._timeout * 1000),
+                key=key,
+                force_new=force_new,
             )
         )
         self._connected = result.success
         self._error_message = result.error
+        self.last_connect_result = result
         # Snap an initial screen if one is available
         try:
             self.screen.apply(await self._rest.get_screen())
@@ -189,11 +196,18 @@ class ProxyTerminalClient:
             logger.debug("initial get_screen after connect failed: %s", e)
         return result.success
 
-    async def login(self, username: str, password: str) -> bool:
+    async def login(
+        self, username: str, password: str, *, key: Optional[str] = None, force_new: bool = False
+    ) -> bool:
         """Connect with the proxy's built-in auto-sign-on (sends credentials
         in the /connect body). For multi-step IBM i post-sign-on cascades,
         prefer composing: `connect()` → type credentials → Enter → drive
-        intermediate screens → `mark_authenticated(username)`."""
+        intermediate screens → `mark_authenticated(username)`.
+
+        Pass ``key`` for idempotent connect-by-key: the proxy keeps one live
+        session per key, so this returns the existing signed-on session (see
+        ``last_connect_result.reused`` / ``.authenticated``) instead of opening
+        another host device on a concurrent reconnect."""
         result = await self._rest.connect(
             ConnectConfig(
                 host=self._host,
@@ -203,10 +217,13 @@ class ProxyTerminalClient:
                 username=username,
                 password=password,
                 connect_timeout=int(self._rest._timeout * 1000),
+                key=key,
+                force_new=force_new,
             )
         )
         self._connected = result.success
         self._error_message = result.error
+        self.last_connect_result = result
         try:
             self.screen.apply(await self._rest.get_screen())
         except Exception:

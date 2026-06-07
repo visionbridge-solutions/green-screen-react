@@ -13,7 +13,62 @@ import {
   cancelOrphanReapOnRestActivity,
   destroyWsSession,
 } from './websocket.js';
+import { getKeyedSessionId, bindKey, withKeyLock } from './session-keys.js';
 const router = Router();
+
+/** Build the success payload for a connected session: its id, whether it was
+ *  reused (vs freshly opened), the host's signed-on state, and the current
+ *  screen. ``authenticated`` lets a connect-by-key caller tell "the proxy
+ *  re-handed-me the existing signed-on session" from "I need to drive
+ *  post-sign-on myself". */
+function sessionConnectPayload(session: Session, reused: boolean): Record<string, unknown> {
+  return {
+    success: true,
+    sessionId: session.id,
+    reused,
+    authenticated: session.status.status === 'authenticated',
+    ...session.getScreenData(),
+  };
+}
+
+interface FreshConnectOpts {
+  host: string;
+  port: number;
+  protocol: string;
+  terminalType?: string;
+  screenTimeout?: number;
+  connectTimeout?: number;
+}
+
+/** Create a session and open its TCP connection (no sign-on). */
+async function freshConnectSession(opts: FreshConnectOpts): Promise<Session> {
+  const session = createSession(opts.protocol as any);
+  console.log(`[connect] Created session ${session.id.slice(0, 8)} for ${opts.host}:${opts.port}`);
+  if (typeof opts.screenTimeout === 'number' && opts.screenTimeout > 0) {
+    session.screenTimeout = opts.screenTimeout;
+  }
+  const connectOptions: Record<string, unknown> = {};
+  if (opts.terminalType) connectOptions.terminalType = opts.terminalType;
+  if (typeof opts.connectTimeout === 'number' && opts.connectTimeout > 0) connectOptions.connectTimeout = opts.connectTimeout;
+  await session.connect(opts.host, opts.port, Object.keys(connectOptions).length > 0 ? connectOptions : undefined);
+  return session;
+}
+
+/** Auto-sign-on if credentials were supplied and the session isn't already
+ *  authenticated (the reuse path may hand back an already-signed-on session).
+ *  Mirrors the legacy inline behaviour: failed sign-on leaves status as
+ *  'connected' so the screen (with its CPF error) still reaches the caller. */
+async function ensureSignedOn(session: Session, username?: string, password?: string): Promise<void> {
+  if (!username || !password) {
+    // No creds — give the host a beat to paint the initial screen.
+    await new Promise((r) => setTimeout(r, session.screenTimeout));
+    return;
+  }
+  if (session.status.status === 'authenticated') return;
+  if (!(session.handler instanceof TN5250Handler)) return;
+  const result = await session.handler.performAutoSignIn(username, password);
+  if (result?.authenticated) session.markAuthenticated(username);
+}
 
 /** Resolve session from header, query param, or default. Resets idle
  *  timer on access AND cancels any pending orphan-reap — REST activity
@@ -62,73 +117,58 @@ async function typeTextAnimated(session: Session, text: string): Promise<boolean
 // POST /connect
 router.post('/connect', async (req: Request, res: Response) => {
   try {
-    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, screenTimeout, connectTimeout, username, password } = req.body || {};
+    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, screenTimeout, connectTimeout, username, password, key, forceNew } = req.body || {};
+    const opts: FreshConnectOpts = { host, port, protocol, terminalType, screenTimeout, connectTimeout };
 
-    // Destroy only the caller's previous session (identified by X-Session-Id),
-    // NOT all sessions for the same host:port. Multiple agents may legitimately
-    // maintain concurrent sessions to the same host.
-    const previousSessionId = req.headers['x-session-id'] as string;
-    if (previousSessionId) {
-      const prev = getSession(previousSessionId);
-      if (prev) {
-        console.log(`[connect] Signing off caller's previous session ${previousSessionId.slice(0, 8)} for ${host}:${port} before new connect`);
-        // Graceful SIGNOFF + TCP close (best-effort, non-blocking) rather than
-        // a bare socket drop. A hard destroy leaves the IBM i interactive job
-        // and its QPADEV virtual device hanging until QDEVRCYACN reaps it.
-        // Under a reconnect storm those hung devices accumulate, exhaust
-        // QAUTOVRT, trip QMAXSIGN (which disables them), and the host can no
-        // longer allocate a device for new TN5250 connections — telnet stops
-        // negotiating entirely. Releasing the device on every replace keeps
-        // the host's device pool clean. Fire-and-forget so the new connect
-        // isn't delayed by the ~1.5s sign-off wait.
-        void gracefullyDestroySession(previousSessionId).catch(() => { /* best-effort */ });
-      }
-    }
-
-    const session = createSession(protocol);
-    console.log(`[connect] Created session ${session.id.slice(0, 8)} for ${host}:${port}`);
-    if (typeof screenTimeout === 'number' && screenTimeout > 0) {
-      session.screenTimeout = screenTimeout;
-    }
-
-    // Store session ID in response header
-    res.setHeader('X-Session-Id', session.id);
-
-    const options: Record<string, unknown> = {};
-    if (terminalType) options.terminalType = terminalType;
-    if (typeof connectTimeout === 'number' && connectTimeout > 0) options.connectTimeout = connectTimeout;
-
-    await session.connect(host, port, Object.keys(options).length > 0 ? options : undefined);
-
-    // Auto-sign-in if credentials provided and handler supports it
-    if (username && password && session.handler instanceof TN5250Handler) {
-      const result = await session.handler.performAutoSignIn(username, password);
-      if (result) {
-        if (result.authenticated) {
-          session.markAuthenticated(username);
+    // ── Connect-by-key: at most one live session per key ──
+    // A burst of reconnects for one logical agent serialises on the per-key
+    // mutex; the first opens the session, the rest observe it live and reuse
+    // it. This defeats the "N reconnects → N host devices → LMTDEVSSN/CPF1220
+    // contention" storm structurally, instead of relying on the integrator to
+    // coordinate. The key is opaque — never interpreted here.
+    if (typeof key === 'string' && key.length > 0) {
+      return await withKeyLock(key, async () => {
+        const existingId = forceNew ? undefined : getKeyedSessionId(key);
+        const existing = existingId ? getSession(existingId) : undefined;
+        let session: Session;
+        let reused = false;
+        if (existing && existing.status.connected) {
+          session = existing;
+          reused = true;
+          session.touch();
+        } else {
+          // Release any prior keyed session's device (dead, or forceNew) before
+          // replacing it, so the host's device pool stays clean.
+          const priorId = getKeyedSessionId(key);
+          if (priorId && getSession(priorId)) {
+            void gracefullyDestroySession(priorId).catch(() => { /* best-effort */ });
+          }
+          session = await freshConnectSession(opts);
+          bindKey(key, session.id);
         }
-        // On failed sign-in (host still showing the sign-on screen, e.g.
-        // wrong password or CPF1220 device-session-limit), DO NOT mark
-        // as authenticated. The caller still receives the screen so the
-        // error message is visible to the user, but gracefulDestroy will
-        // not attempt a futile SIGNOFF on the sign-on screen.
-        return res.json({
-          success: true,
-          sessionId: session.id,
-          ...result.screen,
-        });
-      }
+        // Sign on if creds were given and the session isn't already
+        // authenticated — covers both a fresh session and a reused one that
+        // was opened (via connect()) but not yet signed on.
+        await ensureSignedOn(session, username, password);
+        res.setHeader('X-Session-Id', session.id);
+        return res.json(sessionConnectPayload(session, reused));
+      });
     }
 
-    // Wait for initial screen data
-    await new Promise(resolve => setTimeout(resolve, session.screenTimeout));
-
-    const screenData = session.getScreenData();
-    res.json({
-      success: true,
-      sessionId: session.id,
-      ...screenData,
-    });
+    // ── No key: legacy behaviour — sign off the caller's previous session
+    // (by X-Session-Id only; other agents may legitimately hold concurrent
+    // sessions to the same host), then open a fresh one. A graceful SIGNOFF
+    // releases the IBM i QPADEV device; a hard drop would leave it hanging
+    // until QDEVRCYACN reaps it, and under churn those trip QMAXSIGN/QAUTOVRT.
+    const previousSessionId = req.headers['x-session-id'] as string;
+    if (previousSessionId && getSession(previousSessionId)) {
+      console.log(`[connect] Signing off caller's previous session ${previousSessionId.slice(0, 8)} for ${host}:${port} before new connect`);
+      void gracefullyDestroySession(previousSessionId).catch(() => { /* best-effort */ });
+    }
+    const session = await freshConnectSession(opts);
+    res.setHeader('X-Session-Id', session.id);
+    await ensureSignedOn(session, username, password);
+    return res.json(sessionConnectPayload(session, false));
   } catch (err: any) {
     res.status(500).json({
       success: false,
