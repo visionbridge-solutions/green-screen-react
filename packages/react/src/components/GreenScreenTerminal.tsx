@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { createPortal } from 'react-dom';
 import type { TerminalAdapter, ScreenData, ConnectionStatus, Field, TerminalProtocol, ProtocolProfile, ConnectConfig } from '../adapters/types';
 import { RestAdapter } from '../adapters/RestAdapter';
@@ -193,6 +193,24 @@ export interface GreenScreenTerminalProps {
 }
 
 /**
+ * Imperative handle exposed via `ref`. Lets an integrator drive the built-in
+ * keyboard-shortcuts panel from its own chrome (e.g. a button placed in a
+ * custom header rendered outside this component's DOM) without re-hosting the
+ * panel. Protocol-generic — the panel's contents are still derived from the
+ * active protocol profile.
+ */
+export interface GreenScreenTerminalHandle {
+  /** Toggle the keyboard-shortcuts panel open/closed. */
+  toggleShortcuts: () => void;
+  /** Open the keyboard-shortcuts panel. */
+  openShortcuts: () => void;
+  /** Close the keyboard-shortcuts panel. */
+  closeShortcuts: () => void;
+  /** Whether the keyboard-shortcuts panel is currently open. */
+  isShortcutsOpen: () => boolean;
+}
+
+/**
  * GreenScreenTerminal — Multi-protocol legacy terminal emulator component.
  *
  * Renders a terminal screen with:
@@ -205,7 +223,7 @@ export interface GreenScreenTerminalProps {
  *
  * Supports: TN5250 (IBM i), TN3270 (z/OS), VT (OpenVMS/Pick), HP 6530 (NonStop)
  */
-export function GreenScreenTerminal({
+export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenScreenTerminalProps>(function GreenScreenTerminal({
   adapter: externalAdapter,
   baseUrl,
   workerUrl,
@@ -241,7 +259,7 @@ export function GreenScreenTerminal({
   theme = 'modern',
   className,
   style,
-}: GreenScreenTerminalProps) {
+}: GreenScreenTerminalProps, ref: React.ForwardedRef<GreenScreenTerminalHandle>) {
   const profile = customProfile ?? getProtocolProfile(protocol);
 
   // --- Resolve adapter: explicit > baseUrl > workerUrl > default WebSocket > noop ---
@@ -304,6 +322,16 @@ export function GreenScreenTerminal({
   const [isFocused, setIsFocused] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [fkeyPage, setFkeyPage] = useState(0); // 0 = F1-F12, 1 = F13-F24
+
+  // Expose imperative control of the shortcuts panel so integrators can drive
+  // it from a button rendered outside this component (e.g. a host header that
+  // hides the built-in one via `header={false}`).
+  useImperativeHandle(ref, () => ({
+    toggleShortcuts: () => setShowShortcuts(s => !s),
+    openShortcuts: () => setShowShortcuts(true),
+    closeShortcuts: () => setShowShortcuts(false),
+    isShortcutsOpen: () => showShortcuts,
+  }), [showShortcuts]);
   // Draggable shortcuts panel: position is viewport-relative (position: fixed).
   // Null until the panel first opens; then seeded from terminal bottom-right.
   const [shortcutsPos, setShortcutsPos] = useState<{ x: number; y: number } | null>(null);
@@ -1559,4 +1587,4 @@ export function GreenScreenTerminal({
       </div>
     </div>
   );
-}
+});

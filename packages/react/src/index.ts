@@ -1,6 +1,6 @@
 // Components
 export { GreenScreenTerminal } from './components/GreenScreenTerminal';
-export type { GreenScreenTerminalProps, TerminalHeaderState } from './components/GreenScreenTerminal';
+export type { GreenScreenTerminalProps, TerminalHeaderState, GreenScreenTerminalHandle } from './components/GreenScreenTerminal';
 export { TerminalBootLoader } from './components/TerminalBootLoader';
 export type { TerminalBootLoaderProps } from './components/TerminalBootLoader';
 export { InlineSignIn } from './components/InlineSignIn';
