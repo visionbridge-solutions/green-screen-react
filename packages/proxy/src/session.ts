@@ -14,6 +14,7 @@ export class Session extends EventEmitter {
   private _host: string = '';
   private _port: number = 23;
   private _idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private _connectWatchdog: ReturnType<typeof setTimeout> | null = null;
   private _lastActivity: number = Date.now();
 
   /** Timeout (ms) to wait for screen data after connect or key send (default 5000) */
@@ -24,6 +25,20 @@ export class Session extends EventEmitter {
    *  IBM i QINACTITV separately. 30 min is long enough that hot-reload
    *  restarts and slow startup sequences don't race against this timer. */
   static IDLE_TIMEOUT = 30 * 60 * 1000;
+
+  /** Default connect-watchdog deadline (ms) for a session pinned in
+   *  'connecting'. The idle timer only arms AFTER a successful connect, so a
+   *  connect that never completes — a TCP blackhole (SYN with no SYN-ACK/RST),
+   *  or a reject the caller forgot to tear down — would otherwise leave the
+   *  session in the store forever holding a half-open socket. This watchdog is
+   *  the backstop: 30s default socket connectTimeout + the grace below. */
+  static CONNECT_TIMEOUT = 45 * 1000;
+
+  /** Grace (ms) added on top of the socket's own connectTimeout before the
+   *  watchdog reaps. Keeps the watchdog strictly a backstop — the socket-level
+   *  timeout/reject (and the caller's error handling) get first crack at a
+   *  failed connect; the watchdog only fires when that path doesn't. */
+  static CONNECT_WATCHDOG_GRACE = 15 * 1000;
 
   constructor(protocol: ProtocolType = 'tn5250') {
     super();
@@ -80,6 +95,35 @@ export class Session extends EventEmitter {
     }
   }
 
+  /** Arm the connect watchdog. Called when the session enters 'connecting'.
+   *  If it's still 'connecting' when the deadline elapses, the session never
+   *  connected — destroy it so it can't leak in the store. A successful
+   *  connect (or any teardown) clears it first. */
+  private startConnectWatchdog(deadlineMs: number): void {
+    this.stopConnectWatchdog();
+    this._connectWatchdog = setTimeout(() => {
+      this._connectWatchdog = null;
+      // Reap only if the session never left 'connecting'. A successful
+      // connect flips status to 'connected'/'authenticated' (and clears this
+      // timer); a connect that hung — or rejected without the caller tearing
+      // the session down — is still pinned here.
+      if (this._status.status !== 'connecting') return;
+      console.log(`[connect-reap] Session ${this.id.slice(0, 8)} stuck in 'connecting' for ${Math.round(deadlineMs / 1000)}s — destroying (never connected)`);
+      // Bare destroy, not a graceful SIGNOFF: the TCP connect never
+      // completed, so there is no signed-on host job to end. This closes any
+      // half-open socket and drops the store entry.
+      destroySession(this.id);
+    }, deadlineMs);
+  }
+
+  /** Stop the connect watchdog. */
+  private stopConnectWatchdog(): void {
+    if (this._connectWatchdog) {
+      clearTimeout(this._connectWatchdog);
+      this._connectWatchdog = null;
+    }
+  }
+
   get status(): ConnectionStatus {
     return { ...this._status };
   }
@@ -100,8 +144,19 @@ export class Session extends EventEmitter {
     this._status = { connected: false, status: 'connecting', protocol: this.protocol, host };
     this.emit('statusChange', this._status);
 
+    // Arm the connect watchdog before awaiting the handshake. Sit it beyond
+    // the socket's own connectTimeout (default 30s) so it only fires when the
+    // socket-level timeout/reject fails to. If handler.connect() hangs or
+    // rejects without the caller cleaning up, the watchdog reaps the session.
+    const socketConnectTimeout = options?.connectTimeout;
+    const deadlineMs = typeof socketConnectTimeout === 'number' && socketConnectTimeout > 0
+      ? socketConnectTimeout + Session.CONNECT_WATCHDOG_GRACE
+      : Session.CONNECT_TIMEOUT;
+    this.startConnectWatchdog(deadlineMs);
+
     await this.handler.connect(host, port, options);
 
+    this.stopConnectWatchdog();
     this._status = { connected: true, status: 'connected', protocol: this.protocol, host };
     this.touch();
     this.startIdleTimer();
@@ -110,6 +165,7 @@ export class Session extends EventEmitter {
 
   disconnect(): void {
     this.stopIdleTimer();
+    this.stopConnectWatchdog();
     this.handler.disconnect();
     this._status = { connected: false, status: 'disconnected', protocol: this.protocol, host: this._host };
     this.emit('statusChange', this._status);
@@ -193,6 +249,7 @@ export class Session extends EventEmitter {
 
   destroy(): void {
     this.stopIdleTimer();
+    this.stopConnectWatchdog();
     this.handler.destroy();
     this.removeAllListeners();
   }
@@ -208,6 +265,7 @@ export class Session extends EventEmitter {
    */
   async gracefulDestroy(timeoutMs: number = 1500): Promise<void> {
     this.stopIdleTimer();
+    this.stopConnectWatchdog();
     const isAuth = this._status.status === 'authenticated';
     if (isAuth && typeof (this.handler as any).attemptSignOff === 'function') {
       try {
