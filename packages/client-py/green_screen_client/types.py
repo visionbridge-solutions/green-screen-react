@@ -271,7 +271,10 @@ class ConnectConfig:
     username: Optional[str] = None
     password: Optional[str] = None
     terminal_type: Optional[str] = None
-    code_page: Optional[Literal["cp37", "cp290"]] = None
+    # EBCDIC single-byte code page (proxy ``EbcdicCodePage``): cp37 (default),
+    # cp290 (Japan), cp273/cp1141 (Germany), cp500/cp1148 (Intl), cp1140 (US+€).
+    # Left as ``str`` so the proxy stays the single source of truth for the set.
+    code_page: Optional[str] = None
     connect_timeout: Optional[int] = None
     # Opaque per-agent key for idempotent connect-by-key: the proxy keeps AT
     # MOST ONE live session per key, so a burst of concurrent reconnects for the

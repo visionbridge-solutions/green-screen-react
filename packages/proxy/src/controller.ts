@@ -1,5 +1,6 @@
 import { createProtocolHandler, ProtocolHandler, TN5250Handler } from './protocols/index.js';
 import type { ProtocolType, ScreenData } from './protocols/index.js';
+import type { EbcdicCodePage } from './tn5250/ebcdic.js';
 
 /**
  * Shared session controller that handles the WebSocket message protocol
@@ -30,8 +31,8 @@ export class SessionController {
     password?: string;
     sessionId: string;
     terminalType?: string;
-    /** EBCDIC code page override (e.g. 'cp290' for Japanese Katakana). */
-    codePage?: 'cp37' | 'cp290';
+    /** EBCDIC code page override (e.g. 'cp290' Japanese, 'cp1141' Germany+euro). */
+    codePage?: EbcdicCodePage;
   }): Promise<ProtocolHandler> {
     if (this.handler) {
       this.handler.destroy();

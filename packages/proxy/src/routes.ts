@@ -36,6 +36,8 @@ interface FreshConnectOpts {
   port: number;
   protocol: string;
   terminalType?: string;
+  /** EBCDIC code page (proxy EbcdicCodePage). Validated downstream by the handler. */
+  codePage?: string;
   screenTimeout?: number;
   connectTimeout?: number;
 }
@@ -49,6 +51,7 @@ async function freshConnectSession(opts: FreshConnectOpts): Promise<Session> {
   }
   const connectOptions: Record<string, unknown> = {};
   if (opts.terminalType) connectOptions.terminalType = opts.terminalType;
+  if (opts.codePage) connectOptions.codePage = opts.codePage;
   if (typeof opts.connectTimeout === 'number' && opts.connectTimeout > 0) connectOptions.connectTimeout = opts.connectTimeout;
   await session.connect(opts.host, opts.port, Object.keys(connectOptions).length > 0 ? connectOptions : undefined);
   return session;
@@ -117,8 +120,8 @@ async function typeTextAnimated(session: Session, text: string): Promise<boolean
 // POST /connect
 router.post('/connect', async (req: Request, res: Response) => {
   try {
-    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, screenTimeout, connectTimeout, username, password, key, forceNew } = req.body || {};
-    const opts: FreshConnectOpts = { host, port, protocol, terminalType, screenTimeout, connectTimeout };
+    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, codePage, screenTimeout, connectTimeout, username, password, key, forceNew } = req.body || {};
+    const opts: FreshConnectOpts = { host, port, protocol, terminalType, codePage, screenTimeout, connectTimeout };
 
     // ── Connect-by-key: at most one live session per key ──
     // A burst of reconnects for one logical agent serialises on the per-key

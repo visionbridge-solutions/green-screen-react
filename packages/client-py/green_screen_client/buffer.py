@@ -141,6 +141,7 @@ class ProxyTerminalClient:
         port: int = 23,
         protocol: str = "tn5250",
         terminal_type: Optional[str] = None,
+        code_page: Optional[str] = None,
         timeout: float = 30.0,
     ) -> None:
         self._rest = RestClient(proxy_url, timeout=timeout)
@@ -148,6 +149,7 @@ class ProxyTerminalClient:
         self._port = port
         self._protocol = protocol
         self._terminal_type = terminal_type
+        self._code_page = code_page
         self.screen = ScreenBuffer()
         self._connected = False
         self._error_message: Optional[str] = None
@@ -181,6 +183,7 @@ class ProxyTerminalClient:
                 port=self._port,
                 protocol=self._protocol,  # type: ignore[arg-type]
                 terminal_type=self._terminal_type,
+                code_page=self._code_page,
                 connect_timeout=int(self._rest._timeout * 1000),
                 key=key,
                 force_new=force_new,
@@ -214,6 +217,7 @@ class ProxyTerminalClient:
                 port=self._port,
                 protocol=self._protocol,  # type: ignore[arg-type]
                 terminal_type=self._terminal_type,
+                code_page=self._code_page,
                 username=username,
                 password=password,
                 connect_timeout=int(self._rest._timeout * 1000),

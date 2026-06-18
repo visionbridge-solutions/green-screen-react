@@ -7,10 +7,29 @@ import { EBCDIC_CP290_TO_UNICODE } from './ebcdic-jp.js';
 
 /**
  * Supported EBCDIC single-byte character sets.
- * - 'cp37'  — CCSID 37  (US/Canada, Brazil, Australia, NZ)
- * - 'cp290' — CCSID 290 (Japan Katakana) — pair with DBCS for CCSID 930
+ * - 'cp37'   — CCSID 37   (US/Canada, Brazil, Australia, NZ)
+ * - 'cp290'  — CCSID 290  (Japan Katakana) — pair with DBCS for CCSID 930
+ * - 'cp273'  — CCSID 273  (Germany / Austria)
+ * - 'cp500'  — CCSID 500  (International Latin-1)
+ * - 'cp1140' — CCSID 1140 (US/Canada + euro)
+ * - 'cp1141' — CCSID 1141 (Germany / Austria + euro)
+ * - 'cp1148' — CCSID 1148 (International Latin-1 + euro)
+ *
+ * The Latin-1 variants (273/500/1140/1141/1148) are expressed as byte→Unicode
+ * deltas over the CP37 base in ``EBCDIC_VARIANT_DELTAS`` — they share CP37's
+ * invariant positions and differ only at the national-variant / euro bytes.
+ * Deltas were generated from Python's authoritative ``codecs`` tables; add a new
+ * single-byte CCSID by appending its delta map (no full 256-entry table needed).
+ * Keep this protocol-generic — no host-specific logic belongs here.
  */
-export type EbcdicCodePage = 'cp37' | 'cp290';
+export type EbcdicCodePage =
+  | 'cp37'
+  | 'cp290'
+  | 'cp273'
+  | 'cp500'
+  | 'cp1140'
+  | 'cp1141'
+  | 'cp1148';
 
 // EBCDIC byte → Unicode code point (CCSID 37)
 const EBCDIC_TO_UNICODE: number[] = [
@@ -83,12 +102,72 @@ function getUnicodeToCp290(): Map<number, number> {
   return UNICODE_TO_CP290;
 }
 
+// Single-byte Latin-1 EBCDIC variants as byte→Unicode deltas over the CP37
+// base. Base deltas generated from Python's ``codecs`` (authoritative); the
+// euro ("114x") siblings are composed from their base + the euro override so the
+// byte tables are defined exactly once (see the type doc).
+const EURO_AT_9F: Record<number, number> = { 0x9F: 0x20AC }; // ¤ → €
+
+// CCSID 273 — Germany / Austria
+const CP273_DELTA: Record<number, number> = {
+  0x43: 0x007B, 0x4A: 0x00C4, 0x4F: 0x0021, 0x59: 0x007E, 0x5A: 0x00DC,
+  0x5F: 0x005E, 0x63: 0x005B, 0x6A: 0x00F6, 0x7C: 0x00A7, 0xA1: 0x00DF,
+  0xB0: 0x00A2, 0xB5: 0x0040, 0xBA: 0x00AC, 0xBB: 0x007C, 0xBC: 0x203E,
+  0xC0: 0x00E4, 0xCC: 0x00A6, 0xD0: 0x00FC, 0xDC: 0x007D, 0xE0: 0x00D6,
+  0xEC: 0x005C, 0xFC: 0x005D,
+};
+
+// CCSID 500 — International Latin-1
+const CP500_DELTA: Record<number, number> = {
+  0x4A: 0x005B, 0x4F: 0x0021, 0x5A: 0x005D, 0x5F: 0x005E,
+  0xB0: 0x00A2, 0xBA: 0x00AC, 0xBB: 0x007C,
+};
+
+const EBCDIC_VARIANT_DELTAS: Partial<Record<EbcdicCodePage, Record<number, number>>> = {
+  cp273: CP273_DELTA,
+  cp500: CP500_DELTA,
+  cp1140: { ...EURO_AT_9F },                  // CCSID 1140 — CP37 + euro
+  cp1141: { ...CP273_DELTA, ...EURO_AT_9F },  // CCSID 1141 — CP273 + euro
+  cp1148: { ...CP500_DELTA, ...EURO_AT_9F },  // CCSID 1148 — CP500 + euro
+};
+
+// Lazily-built full byte→Unicode tables for the variant code pages.
+const VARIANT_TABLES = new Map<EbcdicCodePage, number[]>();
+function tableFor(codePage: EbcdicCodePage): number[] {
+  if (codePage === 'cp290') return EBCDIC_CP290_TO_UNICODE;
+  if (codePage === 'cp37') return EBCDIC_TO_UNICODE;
+  let table = VARIANT_TABLES.get(codePage);
+  if (!table) {
+    const delta = EBCDIC_VARIANT_DELTAS[codePage];
+    if (!delta) return EBCDIC_TO_UNICODE; // unknown → fall back to CP37
+    table = EBCDIC_TO_UNICODE.slice();
+    for (const [byte, cp] of Object.entries(delta)) table[Number(byte)] = cp;
+    VARIANT_TABLES.set(codePage, table);
+  }
+  return table;
+}
+
+// Lazily-built Unicode→byte reverse maps for the variant code pages.
+const VARIANT_REVERSE = new Map<EbcdicCodePage, Map<number, number>>();
+function reverseFor(codePage: EbcdicCodePage): Map<number, number> {
+  if (codePage === 'cp37') return UNICODE_TO_EBCDIC;
+  if (codePage === 'cp290') return getUnicodeToCp290();
+  let map = VARIANT_REVERSE.get(codePage);
+  if (!map) {
+    map = new Map();
+    const table = tableFor(codePage);
+    for (let i = 0; i < 256; i++) map.set(table[i], i);
+    VARIANT_REVERSE.set(codePage, map);
+  }
+  return map;
+}
+
 /**
  * Convert an EBCDIC byte to a UTF-8 character using the specified code page.
  * Defaults to CCSID 37 for backward compatibility.
  */
 export function ebcdicToChar(byte: number, codePage: EbcdicCodePage = 'cp37'): string {
-  const table = codePage === 'cp290' ? EBCDIC_CP290_TO_UNICODE : EBCDIC_TO_UNICODE;
+  const table = tableFor(codePage);
   const cp = table[byte & 0xFF];
   return cp > 0 ? String.fromCharCode(cp) : ' ';
 }
@@ -122,8 +201,7 @@ export function ebcdicSymbolChar(byte: number): string {
 /** Convert a UTF-8 character to an EBCDIC byte (specified code page). */
 export function charToEbcdic(char: string, codePage: EbcdicCodePage = 'cp37'): number {
   const cp = char.charCodeAt(0);
-  const table = codePage === 'cp290' ? getUnicodeToCp290() : UNICODE_TO_EBCDIC;
-  const eb = table.get(cp);
+  const eb = reverseFor(codePage).get(cp);
   return eb !== undefined ? eb : 0x40; // default to EBCDIC space
 }
 

@@ -5,6 +5,7 @@ export type { ScreenData, ProtocolType, Field, FieldValue } from 'green-screen-t
 
 // Import for use in this file
 import type { ScreenData, ProtocolType, FieldValue } from 'green-screen-types';
+import type { EbcdicCodePage } from '../tn5250/ebcdic.js';
 
 export interface ProtocolOptions {
   /** Terminal type string for negotiation */
@@ -16,10 +17,13 @@ export interface ProtocolOptions {
    * EBCDIC single-byte code page for character translation. For IBM i:
    *   - 'cp37'  — US/Canada/Brazil/AU/NZ (default)
    *   - 'cp290' — Japan Katakana (use with SO/SI DBCS for full Kanji support)
+   *   - 'cp273'/'cp1141' — Germany/Austria (1141 adds euro)
+   *   - 'cp500'/'cp1148' — International Latin-1 (1148 adds euro)
+   *   - 'cp1140' — US/Canada + euro
    * If omitted, the handler derives it from the terminal-type string
    * (e.g. 'IBM-5555-C01' for Japanese) or defaults to 'cp37'.
    */
-  codePage?: 'cp37' | 'cp290';
+  codePage?: EbcdicCodePage;
   /** Protocol-specific options */
   [key: string]: unknown;
 }
