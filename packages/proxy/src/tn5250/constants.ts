@@ -174,13 +174,20 @@ export const KEY_TO_AID: Record<string, number> = {
   'Clear': AID.CLEAR,
   'Help': AID.HELP,
   'Print': AID.PRINT,
-  // 'Heartbeat' aliases to AID.PRINT — encoder.ts already treats PRINT as a
-  // clean cursor+AID-only NO_OP packet (per lib5250 session.c:1246-1262), so
-  // this is the safest "I'm still here, please reset QINACTITV" signal we
-  // can send without risking a program-defined side effect. Naming it
-  // Heartbeat keeps caller intent clear and lets us swap the underlying
-  // AID later without touching every keep-alive site.
-  'Heartbeat': AID.PRINT,
+  // 'Heartbeat' is the semantic keep-alive/liveness key — callers say
+  // "Heartbeat", the proxy picks the AID. It maps to TEST_REQUEST: a
+  // telnet/5250 protocol diagnostic the host answers WITHOUT passing it to the
+  // application, so it resets the host inactivity timer and proves the link is
+  // alive on ANY screen with no side effects and no keyboard lock.
+  //
+  // It previously aliased to AID.PRINT, but Print is an application function
+  // key: idle programs reject it with an on-screen "Function key not allowed."
+  // and lock the keyboard, which (a) littered idle screens with a spurious error
+  // and (b) made the liveness watchdog misread the host-induced lock as a dead
+  // link and reconnect. TEST_REQUEST avoids both. (Naming it Heartbeat is
+  // exactly so the underlying AID can be swapped here without touching every
+  // keep-alive site — which is what this change does.)
+  'Heartbeat': AID.TEST_REQUEST,
   'SysReq': AID.SYS_REQUEST,
   'Attn': AID.ATTN,
   'TestReq': AID.TEST_REQUEST,
