@@ -272,12 +272,23 @@ router.post('/reconnect', async (req: Request, res: Response) => {
 });
 
 // GET /status
+//
+// Two roles, distinguished by whether a session resolves:
+//  - With a session (x-session-id / ?sessionId= / a single default session):
+//    returns that session's ConnectionStatus. Used by the REST adapter and
+//    the Python client.
+//  - With no session resolved (the multi-session case — e.g. the Docker
+//    healthcheck / integrator readiness probe hitting it bare): the proxy
+//    has no single global connection state, so report SERVER liveness plus
+//    the live session count instead of a misleading per-session
+//    'disconnected' stub. Callers wanting per-session state must pass a
+//    session id (or use /sessions).
 router.get('/status', (req: Request, res: Response) => {
   const session = resolveSession(req);
   if (!session) {
     return res.json({
-      connected: false,
-      status: 'disconnected' as const,
+      ok: true,
+      sessions: getAllSessions().length,
     });
   }
   res.json(session.status);
