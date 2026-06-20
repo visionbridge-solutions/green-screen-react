@@ -147,6 +147,19 @@ function ensureLifecycleSubscribed(): void {
       }
     }
   });
+  // Proxy-driven auto-reconnect re-established the TCP after an unexpected host
+  // drop. Notify watchers so a driving integrator (e.g. LegacyBridge) re-runs
+  // ONLY its sign-on cascade (the proxy holds no credentials), and observers can
+  // clear any "reconnecting" UI. ``needsSignOn`` is currently always true.
+  sessionLifecycle.on('session.reconnected', (sessionId: string, info: { needsSignOn?: boolean }) => {
+    const message = JSON.stringify({ type: 'session.reconnected', sessionId, needsSignOn: info?.needsSignOn !== false });
+    const targets = sessionClients.get(sessionId);
+    if (targets) {
+      for (const client of targets) {
+        if (client.ws.readyState === WebSocket.OPEN) client.ws.send(message);
+      }
+    }
+  });
 }
 
 export function setupWebSocket(server: HttpServer): WebSocketServer {
@@ -182,6 +195,20 @@ export function setupWebSocket(server: HttpServer): WebSocketServer {
   });
 
   return wss;
+}
+
+/** Server-side single-writer guard. Returns true (and sends an error) when this
+ *  WS client must NOT drive input because the session is locked to an exclusive
+ *  driver (e.g. an automated agent run holds it). WS clients are observers while
+ *  a driveHolder is set; the REST drive path (the lock owner itself) is exempt.
+ *  Unlocked sessions (driveHolder null) let interactive clients drive freely. */
+function driveBlocked(ws: WebSocket, client: WsClient): boolean {
+  const session = client.sessionId ? getSession(client.sessionId) : undefined;
+  if (session && session.driveHolder) {
+    wsSend(ws, { type: 'error', message: `observe-only: session is driven by ${session.driveHolder}` });
+    return true;
+  }
+  return false;
 }
 
 async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promise<void> {
@@ -237,6 +264,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
     case 'text': {
       const controller = client.controller;
       if (!controller) { wsSend(ws, { type: 'error', message: 'Not connected' }); return; }
+      if (driveBlocked(ws, client)) return;
       controller.handleText(msg.text);
       break;
     }
@@ -244,6 +272,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
     case 'key': {
       const controller = client.controller;
       if (!controller) { wsSend(ws, { type: 'error', message: 'Not connected' }); return; }
+      if (driveBlocked(ws, client)) return;
       await controller.handleKey(msg.key);
       break;
     }
@@ -251,6 +280,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
     case 'setCursor': {
       const controller = client.controller;
       if (!controller) { wsSend(ws, { type: 'error', message: 'Not connected' }); return; }
+      if (driveBlocked(ws, client)) return;
       controller.handleSetCursor(msg.row, msg.col);
       break;
     }
@@ -258,6 +288,7 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
     case 'eraseEOF': {
       const controller = client.controller;
       if (!controller) { wsSend(ws, { type: 'error', message: 'Not connected' }); return; }
+      if (driveBlocked(ws, client)) return;
       controller.handleEraseEOF();
       break;
     }

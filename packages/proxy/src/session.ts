@@ -21,6 +21,23 @@ export class Session extends EventEmitter {
    *  terminal type survive a reconnect — otherwise the host would auto-assign a
    *  fresh QPADEVxxxx and the reattach-by-device-name guarantee would break. */
   private _connectOptions?: ProtocolOptions;
+  /** When true (set via the ``autoReconnect`` connect option), the proxy itself
+   *  re-establishes the TCP on an UNEXPECTED host drop — replaying the stable
+   *  DEVNAME — and emits ``session.reconnected`` so the integrator re-drives only
+   *  sign-on, instead of detecting staleness and opening a fresh session. Off by
+   *  default (legacy: the integrator owns all recovery). */
+  private _autoReconnect = false;
+  /** Set on any caller-initiated teardown so the auto-reconnect path stands
+   *  down — we only auto-recover from drops we did NOT ask for. */
+  private _intentionalClose = false;
+  /** Guards the auto-reconnect loop against re-entrancy. */
+  private _reconnecting = false;
+  /** Server-side single-writer lock. When non-null, an exclusive driver (e.g.
+   *  ``agent:<id>`` set by the integrator for the duration of an automated run)
+   *  owns input — the proxy rejects WS key/text/cursor commands from anyone else,
+   *  so a dashboard operator can't type into a session mid-transaction even if a
+   *  client-side guard fails. Null = unlocked (interactive clients may drive). */
+  private _driveHolder: string | null = null;
 
   /** Timeout (ms) to wait for screen data after connect or key send (default 5000) */
   screenTimeout: number = 5000;
@@ -45,6 +62,12 @@ export class Session extends EventEmitter {
    *  failed connect; the watchdog only fires when that path doesn't. */
   static CONNECT_WATCHDOG_GRACE = 15 * 1000;
 
+  /** Backoff schedule (ms) for proxy-driven auto-reconnect after an unexpected
+   *  host drop. Bounded + capped so a host that's truly down can't be stormed
+   *  (respects IBM i QMAXSIGN); on exhaustion the session reports ``session.lost``
+   *  and the integrator's own reconnect policy takes over. */
+  static RECONNECT_BACKOFF_MS = [2000, 4000, 8000, 15000, 30000];
+
   constructor(protocol: ProtocolType = 'tn5250') {
     super();
     this.id = randomUUID();
@@ -59,12 +82,25 @@ export class Session extends EventEmitter {
       this._status = { connected: false, status: 'disconnected', protocol: this.protocol, host: this._host };
       this.stopIdleTimer();
       this.emit('statusChange', this._status);
+      // Auto-reconnect path: an UNEXPECTED drop on an autoReconnect session is
+      // recovered in place (proxy re-establishes the TCP on the same DEVNAME).
+      // We do NOT emit session.lost here — that would unbind the connect-by-key
+      // mapping and let a fresh session open. session.lost is emitted only if
+      // auto-reconnect exhausts its attempts.
+      if (this._autoReconnect && !this._intentionalClose) {
+        this._attemptAutoReconnect().catch(() => { /* loop is self-contained */ });
+        return;
+      }
       sessionLifecycle.emit('session.lost', this.id, this._status);
     });
     this.handler.on('error', (err: Error) => {
       this._status = { connected: false, status: 'error', protocol: this.protocol, host: this._host, error: err.message };
       this.emit('statusChange', this._status);
-      sessionLifecycle.emit('session.lost', this.id, this._status);
+      // For an autoReconnect session, let the ensuing disconnect drive recovery
+      // (don't unbind the key via session.lost first).
+      if (!(this._autoReconnect && !this._intentionalClose)) {
+        sessionLifecycle.emit('session.lost', this.id, this._status);
+      }
       // Close the upstream TCP socket on unrecoverable protocol errors.
       // Without this, a parser exception would leak the half-open 5250
       // session on the host until the 5-min idle timeout — and on IBM i
@@ -133,6 +169,28 @@ export class Session extends EventEmitter {
     return { ...this._status };
   }
 
+  /** The current exclusive input owner, or null when unlocked. */
+  get driveHolder(): string | null {
+    return this._driveHolder;
+  }
+
+  /** Claim exclusive input for ``holder``. Idempotent for the same holder;
+   *  refused (returns false) if a different holder already owns it. */
+  acquireDrive(holder: string): boolean {
+    if (this._driveHolder && this._driveHolder !== holder) return false;
+    this._driveHolder = holder;
+    return true;
+  }
+
+  /** Release the input lock. A ``holder`` mismatch is ignored (returns false)
+   *  so a stale releaser can't free a lock it doesn't own; pass no holder to
+   *  force-release (teardown). */
+  releaseDrive(holder?: string): boolean {
+    if (holder !== undefined && this._driveHolder && this._driveHolder !== holder) return false;
+    this._driveHolder = null;
+    return true;
+  }
+
   /** Mark this session as authenticated after a successful auto-sign-in */
   markAuthenticated(username: string): void {
     this._status = {
@@ -148,6 +206,10 @@ export class Session extends EventEmitter {
     this._port = port;
     // Remember the options so reconnect() can replay them (esp. DEVNAME).
     this._connectOptions = options;
+    // Opt-in proxy-driven recovery: when set, an unexpected host drop is
+    // re-established in place rather than surfaced as a lost session.
+    this._autoReconnect = !!(options as { autoReconnect?: boolean } | undefined)?.autoReconnect;
+    this._intentionalClose = false;
     this._status = { connected: false, status: 'connecting', protocol: this.protocol, host };
     this.emit('statusChange', this._status);
 
@@ -171,6 +233,7 @@ export class Session extends EventEmitter {
   }
 
   disconnect(): void {
+    this._intentionalClose = true;
     this.stopIdleTimer();
     this.stopConnectWatchdog();
     this.handler.disconnect();
@@ -184,6 +247,47 @@ export class Session extends EventEmitter {
     // stable device name / code page / terminal type — without them the host
     // auto-assigns a fresh QPADEVxxxx and the device-reattach guarantee breaks.
     await this.connect(this._host, this._port, this._connectOptions);
+  }
+
+  /**
+   * Proxy-driven recovery from an UNEXPECTED host drop (autoReconnect sessions
+   * only). Re-establishes the TCP with the original connect options (so the
+   * stable DEVNAME makes IBM i reattach the disconnected job instead of minting
+   * a fresh QPADEVxxxx), with bounded backoff. On success it emits
+   * ``session.reconnected`` with ``needsSignOn`` so the integrator re-drives only
+   * its sign-on cascade (the proxy holds no credentials). On exhaustion it emits
+   * ``session.lost`` and the integrator's own reconnect policy takes over.
+   */
+  private async _attemptAutoReconnect(): Promise<void> {
+    if (this._reconnecting || this._intentionalClose) return;
+    this._reconnecting = true;
+    const schedule = Session.RECONNECT_BACKOFF_MS;
+    try {
+      for (let attempt = 0; attempt < schedule.length; attempt++) {
+        await new Promise((r) => setTimeout(r, schedule[attempt]));
+        if (this._intentionalClose) return;
+        this._status = { connected: false, status: 'connecting', protocol: this.protocol, host: this._host };
+        this.emit('statusChange', this._status);
+        try {
+          await this.handler.connect(this._host, this._port, this._connectOptions);
+        } catch (err) {
+          console.warn(`[auto-reconnect] Session ${this.id.slice(0, 8)} attempt ${attempt + 1}/${schedule.length} failed: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
+        if (this._intentionalClose) { try { this.handler.disconnect(); } catch { /* ignore */ } return; }
+        this._status = { connected: true, status: 'connected', protocol: this.protocol, host: this._host };
+        this.touch();
+        this.startIdleTimer();
+        this.emit('statusChange', this._status);
+        console.log(`[auto-reconnect] Session ${this.id.slice(0, 8)} re-established TCP on attempt ${attempt + 1} — signalling needsSignOn`);
+        sessionLifecycle.emit('session.reconnected', this.id, { needsSignOn: true });
+        return;
+      }
+      console.warn(`[auto-reconnect] Session ${this.id.slice(0, 8)} exhausted ${schedule.length} attempts — reporting lost`);
+      sessionLifecycle.emit('session.lost', this.id, this._status);
+    } finally {
+      this._reconnecting = false;
+    }
   }
 
   sendText(text: string): boolean {
@@ -258,6 +362,7 @@ export class Session extends EventEmitter {
   }
 
   destroy(): void {
+    this._intentionalClose = true;
     this.stopIdleTimer();
     this.stopConnectWatchdog();
     this.handler.destroy();
@@ -274,6 +379,7 @@ export class Session extends EventEmitter {
    * store entry is not removed here.
    */
   async gracefulDestroy(timeoutMs: number = 1500): Promise<void> {
+    this._intentionalClose = true;
     this.stopIdleTimer();
     this.stopConnectWatchdog();
     const isAuth = this._status.status === 'authenticated';

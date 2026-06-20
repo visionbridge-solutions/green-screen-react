@@ -143,6 +143,7 @@ class ProxyTerminalClient:
         terminal_type: Optional[str] = None,
         code_page: Optional[str] = None,
         device_name: Optional[str] = None,
+        auto_reconnect: Optional[bool] = None,
         timeout: float = 30.0,
     ) -> None:
         self._rest = RestClient(proxy_url, timeout=timeout)
@@ -153,6 +154,8 @@ class ProxyTerminalClient:
         self._code_page = code_page
         # Stable TN5250E DEVNAME for job reattach (see ConnectConfig.device_name).
         self._device_name = device_name
+        # Opt in to proxy-driven recovery (see ConnectConfig.auto_reconnect).
+        self._auto_reconnect = auto_reconnect
         self.screen = ScreenBuffer()
         self._connected = False
         self._error_message: Optional[str] = None
@@ -188,6 +191,7 @@ class ProxyTerminalClient:
                 terminal_type=self._terminal_type,
                 code_page=self._code_page,
                 device_name=self._device_name,
+                auto_reconnect=self._auto_reconnect,
                 connect_timeout=int(self._rest._timeout * 1000),
                 key=key,
                 force_new=force_new,
@@ -222,6 +226,8 @@ class ProxyTerminalClient:
                 protocol=self._protocol,  # type: ignore[arg-type]
                 terminal_type=self._terminal_type,
                 code_page=self._code_page,
+                device_name=self._device_name,
+                auto_reconnect=self._auto_reconnect,
                 username=username,
                 password=password,
                 connect_timeout=int(self._rest._timeout * 1000),

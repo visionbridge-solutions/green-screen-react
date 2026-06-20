@@ -47,6 +47,10 @@ interface FreshConnectOpts {
    *  signing on anew, and the host stops accruing devices/jobs/sign-ons. Opaque
    *  here; the protocol handler applies it. */
   deviceName?: string;
+  /** Opt in to proxy-driven recovery: an unexpected host drop re-establishes the
+   *  TCP in place (replaying the DEVNAME) and emits ``session.reconnected`` with
+   *  ``needsSignOn`` instead of surfacing a lost session. */
+  autoReconnect?: boolean;
 }
 
 /** Create a session and open its TCP connection (no sign-on). */
@@ -61,6 +65,7 @@ async function freshConnectSession(opts: FreshConnectOpts): Promise<Session> {
   if (opts.codePage) connectOptions.codePage = opts.codePage;
   if (typeof opts.connectTimeout === 'number' && opts.connectTimeout > 0) connectOptions.connectTimeout = opts.connectTimeout;
   if (opts.deviceName) connectOptions.deviceName = opts.deviceName;
+  if (opts.autoReconnect) connectOptions.autoReconnect = true;
   await session.connect(opts.host, opts.port, Object.keys(connectOptions).length > 0 ? connectOptions : undefined);
   return session;
 }
@@ -128,8 +133,8 @@ async function typeTextAnimated(session: Session, text: string): Promise<boolean
 // POST /connect
 router.post('/connect', async (req: Request, res: Response) => {
   try {
-    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, codePage, screenTimeout, connectTimeout, username, password, key, forceNew, deviceName } = req.body || {};
-    const opts: FreshConnectOpts = { host, port, protocol, terminalType, codePage, screenTimeout, connectTimeout, deviceName };
+    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, codePage, screenTimeout, connectTimeout, username, password, key, forceNew, deviceName, autoReconnect } = req.body || {};
+    const opts: FreshConnectOpts = { host, port, protocol, terminalType, codePage, screenTimeout, connectTimeout, deviceName, autoReconnect };
 
     // ── Connect-by-key: at most one live session per key ──
     // A burst of reconnects for one logical agent serialises on the per-key
@@ -401,6 +406,43 @@ router.post('/session/authenticated', (req: Request, res: Response) => {
   }
   session.markAuthenticated(username);
   res.json({ success: true, status: session.status });
+});
+
+// POST /session/drive-lock — claim exclusive input for an automated driver.
+//
+// Server-side single-writer: while a holder owns the lock, the proxy rejects WS
+// key/text/cursor commands from interactive clients (they become observe-only),
+// so a dashboard operator cannot type into a session mid-run even if a
+// client-side guard fails. The REST drive path (the lock owner itself) is
+// exempt. Body: { holder: string } — opaque, e.g. "agent:<id>".
+router.post('/session/drive-lock', (req: Request, res: Response) => {
+  const session = resolveSession(req);
+  if (!session) {
+    return res.status(404).json({ success: false, error: 'No active session' });
+  }
+  const { holder } = req.body || {};
+  if (!holder || typeof holder !== 'string') {
+    return res.status(400).json({ success: false, error: 'holder is required' });
+  }
+  const ok = session.acquireDrive(holder);
+  res.json({
+    success: ok,
+    driveHolder: session.driveHolder,
+    error: ok ? undefined : `drive lock already held by ${session.driveHolder}`,
+  });
+});
+
+// POST /session/drive-unlock — release the input lock (interactive clients may
+// drive again). A holder mismatch is a no-op so a stale releaser can't free a
+// lock it doesn't own; omit holder to force-release.
+router.post('/session/drive-unlock', (req: Request, res: Response) => {
+  const session = resolveSession(req);
+  if (!session) {
+    return res.status(404).json({ success: false, error: 'No active session' });
+  }
+  const { holder } = req.body || {};
+  session.releaseDrive(typeof holder === 'string' ? holder : undefined);
+  res.json({ success: true, driveHolder: session.driveHolder });
 });
 
 // POST /wait-for-fields — wait until the current screen has at least N

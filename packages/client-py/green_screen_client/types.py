@@ -290,6 +290,11 @@ class ConnectConfig:
     # instead of auto-assigning a fresh QPADEVxxxx (a new job + a new sign-on).
     # None = host auto-assigns (legacy).
     device_name: Optional[str] = None
+    # Opt in to proxy-driven recovery: an unexpected host drop re-establishes the
+    # TCP in place (replaying the DEVNAME) and emits ``session.reconnected`` with
+    # ``needsSignOn`` instead of surfacing a lost session. None/False = legacy
+    # (the integrator owns all recovery).
+    auto_reconnect: Optional[bool] = None
 
     def to_wire(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"host": self.host, "protocol": self.protocol}
@@ -303,6 +308,7 @@ class ConnectConfig:
             "connectTimeout": self.connect_timeout,
             "key": self.key,
             "deviceName": self.device_name,
+            "autoReconnect": self.auto_reconnect,
         }
         for wire_name, value in optional.items():
             if value is not None:
