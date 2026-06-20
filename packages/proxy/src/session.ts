@@ -14,6 +14,7 @@ export class Session extends EventEmitter {
   private _host: string = '';
   private _port: number = 23;
   private _idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private _keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private _connectWatchdog: ReturnType<typeof setTimeout> | null = null;
   private _lastActivity: number = Date.now();
   /** The options the session was last connected with. Replayed verbatim on
@@ -25,11 +26,24 @@ export class Session extends EventEmitter {
   /** Timeout (ms) to wait for screen data after connect or key send (default 5000) */
   screenTimeout: number = 5000;
 
-  /** Idle timeout (ms) — session auto-destroys if no REST/screen activity.
-   *  Safety net for backend crashes; the backend's own keepalive handles
-   *  IBM i QINACTITV separately. 30 min is long enough that hot-reload
-   *  restarts and slow startup sequences don't race against this timer. */
-  static IDLE_TIMEOUT = 30 * 60 * 1000;
+  /** Absolute idle backstop (ms) — session auto-signs-off after this long with
+   *  NO external (client) activity. This is purely an abandonment safety net:
+   *  the proxy-owned keepalive ({@link startKeepalive}) keeps the host session
+   *  warm independently, and the keepalive deliberately does NOT count as
+   *  activity here — otherwise an abandoned session (backend crashed without an
+   *  explicit /disconnect) would be kept alive forever and leak the host device.
+   *  Hours-long so a merely-idle-but-live agent (no documents for a while) is
+   *  never torn down; only genuine abandonment is. Override via
+   *  GS_SESSION_IDLE_TIMEOUT_MS. */
+  static IDLE_TIMEOUT = Number(process.env.GS_SESSION_IDLE_TIMEOUT_MS) || 4 * 60 * 60 * 1000;
+
+  /** Idle keepalive cadence (ms). When the session has seen no external
+   *  activity for this long, the proxy sends a benign below-app-layer keepalive
+   *  (TN5250 TEST_REQUEST) to reset the host inactivity timer (IBM i QINACTITV),
+   *  so the durable connection survives quiet periods longer than QINACTITV with
+   *  NO dependency on a backend keepalive. Must stay comfortably below the host
+   *  QINACTITV (IBM i default 10 min). Override via GS_KEEPALIVE_INTERVAL_MS. */
+  static KEEPALIVE_INTERVAL = Number(process.env.GS_KEEPALIVE_INTERVAL_MS) || 4 * 60 * 1000;
 
   /** Default connect-watchdog deadline (ms) for a session pinned in
    *  'connecting'. The idle timer only arms AFTER a successful connect, so a
@@ -58,6 +72,7 @@ export class Session extends EventEmitter {
     this.handler.on('disconnected', () => {
       this._status = { connected: false, status: 'disconnected', protocol: this.protocol, host: this._host };
       this.stopIdleTimer();
+      this.stopKeepalive();
       this.emit('statusChange', this._status);
       sessionLifecycle.emit('session.lost', this.id, this._status);
     });
@@ -97,6 +112,38 @@ export class Session extends EventEmitter {
     if (this._idleTimer) {
       clearInterval(this._idleTimer);
       this._idleTimer = null;
+    }
+  }
+
+  /** Start the proxy-owned idle keepalive. Call after a successful connect.
+   *  Fires every KEEPALIVE_INTERVAL; on each tick, if no EXTERNAL activity has
+   *  reset the host inactivity timer within the interval, sends a benign
+   *  below-app-layer keepalive (TN5250 TEST_REQUEST). The idle-gate means the
+   *  keepalive can only land after a full interval of silence — never
+   *  mid-transaction — and it deliberately does NOT touch() the activity clock,
+   *  so the absolute idle backstop still catches a genuinely abandoned session. */
+  startKeepalive(): void {
+    this.stopKeepalive();
+    this._keepaliveTimer = setInterval(() => {
+      if (!this._status.connected) return;
+      // Real client input within the window already reset the host inactivity
+      // timer — skip, so we never add redundant traffic or race a transaction.
+      if (Date.now() - this._lastActivity < Session.KEEPALIVE_INTERVAL) return;
+      try {
+        if (this.handler.sendKeepAlive()) {
+          console.log(`[keepalive] Session ${this.id.slice(0, 8)} idle ${Math.round((Date.now() - this._lastActivity) / 1000)}s — sent host keepalive`);
+        }
+      } catch {
+        // best-effort — a transient send failure must not kill the timer
+      }
+    }, Session.KEEPALIVE_INTERVAL);
+  }
+
+  /** Stop the keepalive timer. */
+  stopKeepalive(): void {
+    if (this._keepaliveTimer) {
+      clearInterval(this._keepaliveTimer);
+      this._keepaliveTimer = null;
     }
   }
 
@@ -167,11 +214,13 @@ export class Session extends EventEmitter {
     this._status = { connected: true, status: 'connected', protocol: this.protocol, host };
     this.touch();
     this.startIdleTimer();
+    this.startKeepalive();
     this.emit('statusChange', this._status);
   }
 
   disconnect(): void {
     this.stopIdleTimer();
+    this.stopKeepalive();
     this.stopConnectWatchdog();
     this.handler.disconnect();
     this._status = { connected: false, status: 'disconnected', protocol: this.protocol, host: this._host };
@@ -259,6 +308,7 @@ export class Session extends EventEmitter {
 
   destroy(): void {
     this.stopIdleTimer();
+    this.stopKeepalive();
     this.stopConnectWatchdog();
     this.handler.destroy();
     this.removeAllListeners();
@@ -275,6 +325,7 @@ export class Session extends EventEmitter {
    */
   async gracefulDestroy(timeoutMs: number = 1500): Promise<void> {
     this.stopIdleTimer();
+    this.stopKeepalive();
     this.stopConnectWatchdog();
     const isAuth = this._status.status === 'authenticated';
     if (isAuth && typeof (this.handler as any).attemptSignOff === 'function') {

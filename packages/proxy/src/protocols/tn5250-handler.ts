@@ -630,6 +630,21 @@ export class TN5250Handler extends ProtocolHandler {
     };
   }
 
+  /**
+   * Idle keepalive: send a 5250 TEST_REQUEST (TRQ record, opcode NO_OP, no
+   * field data). The host answers it at the protocol layer below the
+   * application, so it resets QINACTITV with no screen change, no keyboard
+   * lock, and no "Function key not allowed." — safe even if it lands while the
+   * host is mid-operation (this is why TEST_REQUEST is used and not AID.PRINT).
+   */
+  sendKeepAlive(): boolean {
+    if (!this.connection.isConnected) return false;
+    const response = this.encoder.buildAidResponse('Heartbeat');
+    if (!response) return false;
+    this.connection.sendRaw(response);
+    return true;
+  }
+
   destroy(): void {
     this.disconnect();
     this.removeAllListeners();
