@@ -147,6 +147,19 @@ function ensureLifecycleSubscribed(): void {
       }
     }
   });
+  // Proxy-driven auto-reconnect has STARTED after an unexpected host drop.
+  // Notify watchers so a driving integrator stands its own stale-detection /
+  // watchdog down (the proxy owns recovery until it emits session.reconnected or
+  // session.lost) and observers can show a "reconnecting" state.
+  sessionLifecycle.on('session.reconnecting', (sessionId: string) => {
+    const message = JSON.stringify({ type: 'session.reconnecting', sessionId });
+    const targets = sessionClients.get(sessionId);
+    if (targets) {
+      for (const client of targets) {
+        if (client.ws.readyState === WebSocket.OPEN) client.ws.send(message);
+      }
+    }
+  });
   // Proxy-driven auto-reconnect re-established the TCP after an unexpected host
   // drop. Notify watchers so a driving integrator (e.g. LegacyBridge) re-runs
   // ONLY its sign-on cascade (the proxy holds no credentials), and observers can

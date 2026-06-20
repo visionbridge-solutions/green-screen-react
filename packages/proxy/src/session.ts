@@ -261,6 +261,12 @@ export class Session extends EventEmitter {
   private async _attemptAutoReconnect(): Promise<void> {
     if (this._reconnecting || this._intentionalClose) return;
     this._reconnecting = true;
+    // Tell watchers the proxy has taken ownership of recovery so an integrator
+    // with its own stale-detection/watchdog stands down instead of racing us
+    // into a second reconnect. We always conclude with session.reconnected
+    // (success) or session.lost (exhaustion), so the integrator never defers
+    // forever.
+    sessionLifecycle.emit('session.reconnecting', this.id);
     const schedule = Session.RECONNECT_BACKOFF_MS;
     try {
       for (let attempt = 0; attempt < schedule.length; attempt++) {
