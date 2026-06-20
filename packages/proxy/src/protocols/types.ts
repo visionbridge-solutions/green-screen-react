@@ -104,23 +104,6 @@ export abstract class ProtocolHandler extends EventEmitter {
   abstract sendRaw(data: Buffer): void;
 
   /**
-   * Send a benign idle keepalive that resets the host's inactivity timer
-   * WITHOUT touching the application (no screen change, no keyboard lock, no
-   * field data). The proxy owns the durable connection, so it owns keeping it
-   * warm — an idle-gated caller (e.g. {@link Session}) invokes this when the
-   * session has been quiet, so the host's inactivity timeout (IBM i QINACTITV)
-   * never signs the session off on its own.
-   *
-   * Default is a no-op (returns false) so protocols without a below-app-layer
-   * keepalive don't have to implement one. TN5250 overrides with a 5250
-   * TEST_REQUEST, which the host answers at the protocol layer. Returns true if
-   * a keepalive was sent.
-   */
-  sendKeepAlive(): boolean {
-    return false;
-  }
-
-  /**
    * Liveness signal for the underlying TCP — wall-clock ms timestamps
    * of the most recent byte sent to the host and the most recent byte
    * received from the host. Either can be 0 for a freshly-constructed
