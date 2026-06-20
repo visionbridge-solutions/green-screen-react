@@ -100,8 +100,16 @@ function removeClient(client: WsClient): void {
   clients.delete(client);
   unassignedClients.delete(client);
   if (client.sessionId) {
-    // If this client has a live controller, orphan it for potential reattach
-    if (client.controller && client.controller.connected) {
+    // Orphan-and-reap ONLY a WS-OWNED controller (one that created its own
+    // handler via the `connect` path). An ADOPTED controller merely
+    // observes/drives a REST-created Session whose handler the session store
+    // owns and whose lifecycle is governed independently (idle backstop +
+    // explicit /disconnect). Reaping it on WS absence would bare-close that
+    // shared handler and kill a durable, client-independent connection out
+    // from under its owner — exactly the WS-presence coupling we must NOT have.
+    // So for an adopted controller we simply drop the WS binding and leave the
+    // Session alone; a later reattach re-adopts the still-live Session.
+    if (client.controller && client.controller.connected && !client.controller.adopted) {
       orphanedControllers.set(client.sessionId, client.controller);
       scheduleOrphanReap(client.sessionId);
     }

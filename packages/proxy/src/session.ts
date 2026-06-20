@@ -16,6 +16,11 @@ export class Session extends EventEmitter {
   private _idleTimer: ReturnType<typeof setTimeout> | null = null;
   private _connectWatchdog: ReturnType<typeof setTimeout> | null = null;
   private _lastActivity: number = Date.now();
+  /** The options the session was last connected with. Replayed verbatim on
+   *  reconnect() so a stable display device name (DEVNAME), code page and
+   *  terminal type survive a reconnect — otherwise the host would auto-assign a
+   *  fresh QPADEVxxxx and the reattach-by-device-name guarantee would break. */
+  private _connectOptions?: ProtocolOptions;
 
   /** Timeout (ms) to wait for screen data after connect or key send (default 5000) */
   screenTimeout: number = 5000;
@@ -141,6 +146,8 @@ export class Session extends EventEmitter {
   async connect(host: string, port: number, options?: ProtocolOptions): Promise<void> {
     this._host = host;
     this._port = port;
+    // Remember the options so reconnect() can replay them (esp. DEVNAME).
+    this._connectOptions = options;
     this._status = { connected: false, status: 'connecting', protocol: this.protocol, host };
     this.emit('statusChange', this._status);
 
@@ -173,7 +180,10 @@ export class Session extends EventEmitter {
 
   async reconnect(): Promise<void> {
     this.disconnect();
-    await this.connect(this._host, this._port);
+    // Replay the original connect options so the reconnect keeps the same
+    // stable device name / code page / terminal type — without them the host
+    // auto-assigns a fresh QPADEVxxxx and the device-reattach guarantee breaks.
+    await this.connect(this._host, this._port, this._connectOptions);
   }
 
   sendText(text: string): boolean {

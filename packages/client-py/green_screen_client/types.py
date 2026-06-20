@@ -284,6 +284,12 @@ class ConnectConfig:
     # Force a brand-new session even if one already exists for ``key`` (e.g. the
     # caller knows the current one is stale). Ignored when ``key`` is None.
     force_new: bool = False
+    # Stable TN5250E display device name (NEW_ENVIRON DEVNAME). Sending the SAME
+    # name on every connect for one logical terminal lets the host re-associate a
+    # DISCONNECTED job to that device on reconnect — reattaching the prior job
+    # instead of auto-assigning a fresh QPADEVxxxx (a new job + a new sign-on).
+    # None = host auto-assigns (legacy).
+    device_name: Optional[str] = None
 
     def to_wire(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"host": self.host, "protocol": self.protocol}
@@ -296,6 +302,7 @@ class ConnectConfig:
             "codePage": self.code_page,
             "connectTimeout": self.connect_timeout,
             "key": self.key,
+            "deviceName": self.device_name,
         }
         for wire_name, value in optional.items():
             if value is not None:

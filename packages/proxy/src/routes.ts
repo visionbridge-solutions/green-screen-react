@@ -40,6 +40,13 @@ interface FreshConnectOpts {
   codePage?: string;
   screenTimeout?: number;
   connectTimeout?: number;
+  /** Stable display device name (TN5250E NEW_ENVIRON DEVNAME). When the caller
+   *  passes the SAME name on every connect for one logical agent, IBM i
+   *  re-associates a disconnected job to that device instead of auto-assigning a
+   *  fresh QPADEVxxxx — so a reconnect reattaches the prior job rather than
+   *  signing on anew, and the host stops accruing devices/jobs/sign-ons. Opaque
+   *  here; the protocol handler applies it. */
+  deviceName?: string;
 }
 
 /** Create a session and open its TCP connection (no sign-on). */
@@ -53,6 +60,7 @@ async function freshConnectSession(opts: FreshConnectOpts): Promise<Session> {
   if (opts.terminalType) connectOptions.terminalType = opts.terminalType;
   if (opts.codePage) connectOptions.codePage = opts.codePage;
   if (typeof opts.connectTimeout === 'number' && opts.connectTimeout > 0) connectOptions.connectTimeout = opts.connectTimeout;
+  if (opts.deviceName) connectOptions.deviceName = opts.deviceName;
   await session.connect(opts.host, opts.port, Object.keys(connectOptions).length > 0 ? connectOptions : undefined);
   return session;
 }
@@ -120,8 +128,8 @@ async function typeTextAnimated(session: Session, text: string): Promise<boolean
 // POST /connect
 router.post('/connect', async (req: Request, res: Response) => {
   try {
-    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, codePage, screenTimeout, connectTimeout, username, password, key, forceNew } = req.body || {};
-    const opts: FreshConnectOpts = { host, port, protocol, terminalType, codePage, screenTimeout, connectTimeout };
+    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, codePage, screenTimeout, connectTimeout, username, password, key, forceNew, deviceName } = req.body || {};
+    const opts: FreshConnectOpts = { host, port, protocol, terminalType, codePage, screenTimeout, connectTimeout, deviceName };
 
     // ── Connect-by-key: at most one live session per key ──
     // A burst of reconnects for one logical agent serialises on the per-key

@@ -13,6 +13,16 @@ import type { EbcdicCodePage } from './tn5250/ebcdic.js';
 export class SessionController {
   handler: ProtocolHandler | null = null;
   connected: boolean = false;
+  /**
+   * True when this controller merely ADOPTED an existing handler owned by a
+   * REST-created Session (via {@link adoptHandler}) rather than owning the
+   * handler it created in {@link handleConnect}. An adopted controller is a
+   * pure observer/driver: the owning Session governs the handler lifecycle
+   * (idle backstop + explicit disconnect), so the WebSocket layer must NOT
+   * tear the handler down when this controller's socket drops — doing so would
+   * kill a durable, client-independent connection out from under its owner.
+   */
+  adopted: boolean = false;
   private send: (msg: object) => void;
 
   constructor(send: (msg: object) => void) {
@@ -99,6 +109,7 @@ export class SessionController {
   adoptHandler(handler: ProtocolHandler): void {
     this.handler = handler;
     this.connected = true;
+    this.adopted = true;
   }
 
   handleText(text: string): void {
