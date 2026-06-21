@@ -860,6 +860,10 @@ export class ScreenBuffer {
         else if (adjustBits === 0x07) auto_adjust = 'mandatory_fill';
       }
       const mandatory_entry = isInput && (f.ffw2 & 0x08) !== 0;
+      // FFW2 bit 0x80 = AUTO-ENTER (DDS AUTO(RA/RAB)): the field implicitly sends
+      // ENTER once it fills, so a client that walks fields with explicit TAB must
+      // NOT add a TAB after it (the host already advanced). Protocol-generic.
+      const auto_enter = isInput && (f.ffw2 & 0x80) !== 0;
       return {
         row: f.row,
         col: f.col,
@@ -883,6 +887,7 @@ export class ScreenBuffer {
         monocase: monocase || undefined,
         auto_adjust,
         mandatory_entry: mandatory_entry || undefined,
+        auto_enter: auto_enter || undefined,
         // MDT bit — only meaningful for input fields; leave undefined on
         // protected fields to keep the wire payload minimal.
         modified: isInput && f.modified ? true : undefined,

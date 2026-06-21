@@ -98,6 +98,12 @@ export interface Field {
   /** Mandatory entry (FFW2 bit 0x08) — operator must type at least one character. */
   mandatory_entry?: boolean;
   /**
+   * Auto-enter (FFW2 bit 0x80, DDS AUTO(RA/RAB)) — the field implicitly sends
+   * ENTER once it fills. A client walking fields with explicit TAB must NOT add
+   * a TAB after this field (the host already advanced / submitted).
+   */
+  auto_enter?: boolean;
+  /**
    * Modified Data Tag (MDT) — true when the operator has typed into this
    * input field since the last host read. Mirrors the 5250 per-field MDT bit
    * (set on any keystroke into the field, cleared by CC1 `reset MDT` mask or

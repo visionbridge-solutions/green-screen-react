@@ -64,6 +64,9 @@ class Field:
     # FFW2 ADJUST bits (DDS CHECK(RZ) / CHECK(RB) / mandatory-fill) —
     # tells the client how the host auto-adjusts input on field-exit.
     auto_adjust: Optional[str] = None
+    # FFW2 auto-enter bit (DDS AUTO(RA/RAB)) — the field implicitly sends ENTER
+    # once it fills; a client walking fields with TAB must not add a TAB after it.
+    auto_enter: Optional[bool] = None
 
     @classmethod
     def from_wire(cls, data: Dict[str, Any]) -> "Field":
@@ -91,6 +94,7 @@ class Field:
             modified=data.get("modified"),
             mandatory_entry=data.get("mandatory_entry"),
             auto_adjust=data.get("auto_adjust"),
+            auto_enter=data.get("auto_enter"),
         )
 
 
