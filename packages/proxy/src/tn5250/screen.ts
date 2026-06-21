@@ -4,6 +4,7 @@ import type { EbcdicCodePage } from './ebcdic.js';
 import type { ScreenData, Field, CellExtAttr } from 'green-screen-types';
 import { computeStructuralSignature } from '../structural-signature.js';
 import { computeScreenId } from './screen-id.js';
+import { commandKeysWithoutData } from './command-keys.js';
 
 /**
  * Per-cell extended attribute set from WEA (Write Extended Attribute, 0x12)
@@ -963,6 +964,12 @@ export class ScreenBuffer {
     const screen_stack_depth = this.screenStack.length || undefined;
     const is_popup = this.screenStack.length > 0 || undefined;
 
+    // Command (function) keys the host marked CA (Command Attention) on this
+    // screen — pressing them does NOT transmit typed input (the SOH key mask).
+    // Surfaced so an integrator never commits typed data with a key the host
+    // will silently drop it on.
+    const noTransmitKeys = commandKeysWithoutData(this.headerData);
+
     return {
       content,
       cursor_row: this.cursorRow,
@@ -985,6 +992,7 @@ export class ScreenBuffer {
       ext_attrs,
       dbcs_cont,
       code_page: this.codePage,
+      command_keys_no_transmit: noTransmitKeys.length ? noTransmitKeys : undefined,
     };
   }
 }

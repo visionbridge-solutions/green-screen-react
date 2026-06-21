@@ -1,6 +1,7 @@
 import { ScreenBuffer, FieldDef } from './screen.js';
 import { TELNET, KEY_TO_AID, AID, FFW, CMD, RECORD_H, RECORD_OPCODE } from './constants.js';
 import { charToEbcdic, EBCDIC_SPACE } from './ebcdic.js';
+import { aidTransmitsData } from './command-keys.js';
 
 /**
  * Encodes client responses (aid keys + field data) into 5250 data stream
@@ -278,30 +279,9 @@ export class TN5250Encoder {
    * For non-function-key AIDs (Enter, PageUp, etc.) data is always sent.
    */
   private shouldSendDataForAid(aidByte: number): boolean {
-    const hdr = this.screen.headerData;
-    // No key mask if header is too short (< 7 bytes)
-    if (!hdr || hdr.length <= 6) return true;
-
-    // Map F-key AID bytes to (byteIndex, bit) matching lib5250 exactly.
-    // The C code uses: result = ((header_data[byte] & (0x80 >> bit)) == 0)
-    // F1-F8: byte 6, bits 7..0
-    // F9-F16: byte 5, bits 7..0
-    // F17-F24: byte 4, bits 7..0
-    const aidKeyMap: Record<number, [number, number]> = {
-      [AID.F1]: [6, 7],  [AID.F2]: [6, 6],  [AID.F3]: [6, 5],  [AID.F4]: [6, 4],
-      [AID.F5]: [6, 3],  [AID.F6]: [6, 2],  [AID.F7]: [6, 1],  [AID.F8]: [6, 0],
-      [AID.F9]: [5, 7],  [AID.F10]: [5, 6], [AID.F11]: [5, 5], [AID.F12]: [5, 4],
-      [AID.F13]: [5, 3], [AID.F14]: [5, 2], [AID.F15]: [5, 1], [AID.F16]: [5, 0],
-      [AID.F17]: [4, 7], [AID.F18]: [4, 6], [AID.F19]: [4, 5], [AID.F20]: [4, 4],
-      [AID.F21]: [4, 3], [AID.F22]: [4, 2], [AID.F23]: [4, 1], [AID.F24]: [4, 0],
-    };
-
-    const mapping = aidKeyMap[aidByte];
-    if (!mapping) return true; // Non-F-key AIDs always send data
-
-    const [byteIdx, bit] = mapping;
-    // Per lib5250: bit CLEAR = send data; bit SET = don't send
-    return (hdr[byteIdx] & (0x80 >> bit)) === 0;
+    // Single source of truth for the SOH key-mask decoding — also surfaced to
+    // integrators via ScreenData.command_keys_no_transmit (command-keys.ts).
+    return aidTransmitsData(this.screen.headerData, aidByte);
   }
 
   /** Encode one single field's content to EBCDIC (no continuation walk). */

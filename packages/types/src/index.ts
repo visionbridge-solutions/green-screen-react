@@ -260,6 +260,16 @@ export interface ScreenData {
   dbcs_cont?: number[];
   /** EBCDIC single-byte code page in use (e.g. 'cp37', 'cp290'). */
   code_page?: string;
+  /**
+   * Function-key names (e.g. ``["F6", "F12"]``) the host defined as CA (Command
+   * Attention) on this screen — pressing them returns control to the program
+   * WITHOUT the modified field data, so typed input is silently DISCARDED.
+   * Decoded from the 5250 SOH key mask (the on-the-wire form of the DDS
+   * CAnn/CFnn distinction); absent when no key mask is present, in which case
+   * every key transmits. Lets an integrator avoid committing typed data with a
+   * key the host will drop it on (prefer Enter / a CF key, or flag the loss).
+   */
+  command_keys_no_transmit?: string[];
 }
 
 /**
