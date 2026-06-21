@@ -28,6 +28,22 @@ export class TN5250Parser {
   }
 
   /**
+   * Reset transient parse state on (re)connect. The handler reuses one parser
+   * instance for its whole life, so a window offset, a pending field-clear, or
+   * a pending query-reply left set when the host dropped must not bleed into
+   * the reattached session's first records (e.g. leaving SBA addresses
+   * window-relative, or appending fresh fields onto stale ones).
+   */
+  reset(): void {
+    this.pendingFieldsClear = false;
+    this.pendingQueryReply = false;
+    this.icApplied = false;
+    this.isRestoreScreen = false;
+    this.winRowOff = 0;
+    this.winColOff = 0;
+  }
+
+  /**
    * Parse a complete 5250 record (after Telnet framing is removed).
    * Returns true if the screen was modified.
    */

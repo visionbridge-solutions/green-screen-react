@@ -76,6 +76,17 @@ export class TN5250Handler extends ProtocolHandler {
       this.connection.setEnvVars(envVars);
     }
 
+    // Start every (re)connect from a blank, coherent display. The session
+    // reuses this one handler — and therefore this ScreenBuffer + parser — across
+    // an in-place auto-reconnect (Session._attemptAutoReconnect calls connect()
+    // again). Without this, the pre-drop screen's fields and buffer survive the
+    // reattach and overlay the resumed session: field values render at their old
+    // rows until a full host rewrite, and the stale frame is re-served to every
+    // client that reattaches (a browser refresh shows it too). Real 5250 clients
+    // repaint from the host's reattach write, so clearing here is correct.
+    this.screen.reset();
+    this.parser.reset();
+
     const connectTimeout = options?.connectTimeout as number | undefined;
     await this.connection.connect(host, port, termType, connectTimeout);
   }

@@ -310,6 +310,41 @@ export class ScreenBuffer {
     this.cursorCol = 0;
   }
 
+  /**
+   * Full display-state reset to a blank screen — used on (re)connect.
+   * Unlike `clear()` (a CLEAR_UNIT that keeps window/header/read state per
+   * 5250 semantics), this drops *every* piece of accumulated screen state so
+   * a reattached session can never render the pre-drop screen's fields,
+   * windows, or buffer. Dimensions and the negotiated code page are
+   * preserved — they belong to the connection, not the screen content.
+   */
+  reset(): void {
+    const size = this.size;
+    this.buffer = new Array(size).fill(' ');
+    this.attrBuffer = new Array(size).fill(0x20);
+    this.extAttrBuffer = new Array(size).fill(null);
+    this.dbcsCont = new Array(size).fill(false);
+    this.fields = [];
+    this.cursorRow = 0;
+    this.cursorCol = 0;
+    this.keyboardLocked = false;
+    this.insertMode = false;
+    this.savedCursorBeforeError = null;
+    this.messageWaiting = false;
+    this.pendingAlarm = false;
+    this.screenStack = [];
+    this.windowList = [];
+    this.selectionFields = [];
+    this.scrollbarList = [];
+    this.headerData = [];
+    this.savedMsgLine = null;
+    this.savedMsgLineRow = -1;
+    this.pendingInsert = false;
+    this.pendingInsertRow = 0;
+    this.pendingInsertCol = 0;
+    this.readOpcode = 0;
+  }
+
   /** Clear the error/message line (last row) */
   clearErrorLine(): void {
     const start = this.offset(this.rows - 1, 0);
