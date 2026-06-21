@@ -93,6 +93,7 @@ def test_screen_data_round_trip():
         "ext_attrs": {"42": {"color": 3, "highlight": 1}},
         "dbcs_cont": [80, 82],
         "code_page": "cp290",
+        "command_keys_no_transmit": ["F6", "F12"],
     }
     s = ScreenData.from_wire(wire)
     assert s.rows == 24 and s.cols == 80
@@ -108,6 +109,7 @@ def test_screen_data_round_trip():
     assert s.ext_attrs[42].color == 3
     assert s.dbcs_cont == [80, 82]
     assert s.code_page == "cp290"
+    assert s.command_keys_no_transmit == ["F6", "F12"]
 
 
 def test_connection_status():

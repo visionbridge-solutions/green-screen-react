@@ -212,6 +212,10 @@ class ScreenData:
     ext_attrs: Optional[Dict[int, CellExtAttr]] = None
     dbcs_cont: Optional[List[int]] = None
     code_page: Optional[str] = None
+    # Function-key names (e.g. ["F6", "F12"]) the host marked CA (Command
+    # Attention) on this screen — pressing them does NOT transmit typed input
+    # (the SOH key mask). Absent/None when no key mask is present.
+    command_keys_no_transmit: Optional[List[str]] = None
 
     @classmethod
     def from_wire(cls, data: Dict[str, Any]) -> "ScreenData":
@@ -243,6 +247,7 @@ class ScreenData:
             ext_attrs=ext,
             dbcs_cont=data.get("dbcs_cont"),
             code_page=data.get("code_page"),
+            command_keys_no_transmit=data.get("command_keys_no_transmit"),
         )
 
 
