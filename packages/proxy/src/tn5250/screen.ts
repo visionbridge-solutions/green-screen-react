@@ -633,6 +633,19 @@ export class ScreenBuffer {
     }
     if (nonSpaceCount < 3) return;
 
+    // A synthesized window models a fully-bordered, INSET popup: the consumer
+    // (renderer) blanks the window's border ring — top/bottom rows and
+    // left/right columns — and overlays a styled frame. That only round-trips
+    // when the content box has room for a border on every side. If the box
+    // reaches any screen edge, it is a full-screen application write (e.g. a
+    // panel whose constant text starts at column 0), NOT a UIM prompter popup;
+    // synthesizing a "window" for it makes the renderer blank the screen's own
+    // edge cells — the column-0 clipping overlay where "Process"/"Update"/
+    // "Prior" lose their first character. Leave the host's content intact.
+    const isInsetPopup =
+      minRow > 0 && maxRow < this.rows - 1 && minCol > 0 && maxCol < this.cols - 1;
+    if (!isInsetPopup) return;
+
     // Save the prompted command content and fields
     const contentBuf = [...this.buffer];
     const contentAttr = [...this.attrBuffer];
