@@ -497,8 +497,22 @@ export class TN5250Handler extends ProtocolHandler {
    * Restore saved field values into matching empty fields on the current
    * screen.  Matches by field attribute (e.g. UNDERSCORE, NON_DISPLAY)
    * so it works even if exact positions shift between screens.
+   *
+   * The only values ever saved are sign-on credentials (captured in autoSignIn
+   * before submitting), and the only legitimate restore target is a sign-on
+   * screen the host has re-displayed with its fields cleared (a failed sign-on,
+   * where the host issues CLEAR_UNIT). It must therefore NEVER restore onto a
+   * post-sign-on menu or application screen: a successful sign-on lands on such a
+   * screen, and matching by attribute alone would smear the username/password
+   * into the next screen's input fields — e.g. a menu command line (an UNDERSCORE
+   * input) — leaking credentials into the live host session. Refuse and drop the
+   * saved values unless the current screen is still a confirmed sign-on screen.
    */
   restoreFields(): void {
+    if (!this.isSignOnScreen(this.getScreenData())) {
+      this.savedFields = [];
+      return;
+    }
     for (const saved of this.savedFields) {
       const field = this.screen.fields.find(
         f => this.screen.isInputField(f)

@@ -116,3 +116,50 @@ describe('autoSignIn — live-screen re-confirmation (reattach race)', () => {
     expect(handler.getScreenData().content || '').toContain('KIOSK');
   });
 });
+
+// autoSignIn() saves the credentials before submitting so a FAILED sign-on (the
+// host re-displays the sign-on screen with the fields cleared) can be re-filled.
+// restoreFields() must only ever do that on a sign-on screen — a SUCCESSFUL
+// sign-on lands on a menu/application screen, and restoring by field attribute
+// there smears the username/password into the next input field (e.g. the menu
+// command line), which is the second leak observed live ("DNCL2DEMO" in the
+// command line). These tests pin that guard.
+describe('restoreFields — never restores saved credentials onto a non-sign-on screen', () => {
+  it('refuses to smear saved sign-on fields onto a menu command line', () => {
+    const handler = signOnHandler();
+    vi.spyOn(handler.connection, 'sendRaw').mockImplementation(() => {});
+    // Save the credentials by signing on for real.
+    expect(handler.autoSignIn('DNCL2', 'DNCL2DEMO')).toBe(true);
+
+    // Host authenticates and lands on a MENU with a command line (underscore
+    // input) and no sign-on text — exactly where the leak appeared.
+    handler.screen.reset();
+    writeText(handler, 19, 2, 'Selection or command');
+    writeText(handler, 20, 0, '===>');
+    handler.screen.fields.push(field(20, 6, 60, ATTR_UNDERSCORE)); // command line
+
+    handler.restoreFields();
+
+    // Neither the username nor the password is smeared into the command line.
+    expect(handler.getScreenData().content || '').not.toContain('DNCL2');
+  });
+
+  it('still restores credentials onto a re-displayed sign-on screen (failed sign-on)', () => {
+    const handler = signOnHandler();
+    vi.spyOn(handler.connection, 'sendRaw').mockImplementation(() => {});
+    expect(handler.autoSignIn('KIOSK', 'hunter2')).toBe(true);
+
+    // Failed sign-on: the host re-displays the sign-on screen with cleared fields.
+    handler.screen.reset();
+    writeText(handler, 0, 30, 'Sign On');
+    writeText(handler, 5, 2, 'User');
+    writeText(handler, 6, 2, 'Password');
+    handler.screen.fields.push(field(5, 20, 10, ATTR_UNDERSCORE));
+    handler.screen.fields.push(field(6, 20, 10, ATTR_NON_DISPLAY));
+
+    handler.restoreFields();
+
+    // The user's credentials are refilled so a failed attempt isn't lost.
+    expect(handler.getScreenData().content || '').toContain('KIOSK');
+  });
+});
