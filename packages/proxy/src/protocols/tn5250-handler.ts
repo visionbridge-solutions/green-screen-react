@@ -510,6 +510,28 @@ export class TN5250Handler extends ProtocolHandler {
   }
 
   /**
+   * Whether `s` is a real sign-on screen: BOTH a NON_DISPLAY password input
+   * field AND sign-on screen text. A plain NON_DISPLAY check alone would
+   * mis-flag UIM artifact fields (e.g. the 1-row NON_DISPLAY span at (1,2) on
+   * many post-sign-on screens) — and, critically, application data-entry forms
+   * that happen to define a non-display field. Text matching is broadened
+   * beyond "Sign On" to cover hosts like PUB400 ("Your user name:") and other
+   * custom sign-on displays.
+   *
+   * Used both to confirm a sign-on screen BEFORE typing credentials (the hard
+   * gate against leaking them into a non-sign-on form) and to detect a failed
+   * sign-on AFTER (still on the sign-on screen).
+   */
+  private isSignOnScreen(s: ScreenData): boolean {
+    const hasNonDisplay = (s.fields || []).some(f => f.is_input && f.is_non_display);
+    if (!hasNonDisplay) return false;
+    const text = s.content || '';
+    return /Sign On/i.test(text)
+        || /Your user name/i.test(text)
+        || /Password\s*[\(.:]/i.test(text);
+  }
+
+  /**
    * Full auto-sign-in flow: wait for sign-in fields, fill credentials,
    * submit, wait for confirmation screen, and restore field values.
    * Returns { screen, authenticated } — `authenticated` is true only if
@@ -520,29 +542,27 @@ export class TN5250Handler extends ProtocolHandler {
     username: string,
     password: string,
   ): Promise<{ screen: ScreenData; authenticated: boolean } | null> {
-    await this.waitForScreenWithFields(2, 5000);
+    const preScreen = await this.waitForScreenWithFields(2, 5000);
+
+    // Hard gate: only type credentials once the CURRENT screen is confirmed to
+    // be a real sign-on screen. A reconnect that reattaches to an existing
+    // interactive job (stable DEVNAME → IBM i re-presents the live screen, not
+    // the sign-on) lands us on a data-entry form. autoSignIn() would then
+    // blind-fill the username into the first underscore input and the password
+    // into the first non-display input — leaking credentials into business
+    // data (e.g. a claim form's name fields). Refuse instead; the integrator's
+    // own sign-on cascade re-drives any genuine sign-on the proxy declines.
+    if (!this.isSignOnScreen(preScreen)) {
+      return { screen: preScreen, authenticated: false };
+    }
+
     const ok = this.autoSignIn(username, password);
     if (!ok) return null;
     await this.waitForScreen(10000);
     this.restoreFields();
     let screen = this.getScreenData();
 
-    // Success check: still on sign-on screen? Requires BOTH a NON_DISPLAY
-    // password input field AND sign-on screen text. A plain NON_DISPLAY
-    // check alone would mis-flag UIM artifact fields (e.g. the 1-row
-    // NON_DISPLAY span at (1,2) on many post-sign-on screens).
-    // Text matching is broadened beyond "Sign On" to cover hosts like
-    // PUB400 ("Your user name:") and other custom sign-on displays.
-    const isSignOnScreen = (s: ScreenData) => {
-      const hasNonDisplay = (s.fields || []).some(f => f.is_input && f.is_non_display);
-      if (!hasNonDisplay) return false;
-      const text = s.content || '';
-      return /Sign On/i.test(text)
-          || /Your user name/i.test(text)
-          || /Password\s*[\(.:]/i.test(text);
-    };
-
-    if (isSignOnScreen(screen)) {
+    if (this.isSignOnScreen(screen)) {
       return { screen, authenticated: false };
     }
 
@@ -569,7 +589,7 @@ export class TN5250Handler extends ProtocolHandler {
       // answer). Don't press Enter into an unknown state.
       if ((next.content || '') === (screen.content || '')) break;
       screen = next;
-      if (isSignOnScreen(screen)) {
+      if (this.isSignOnScreen(screen)) {
         return { screen, authenticated: false };
       }
     }
