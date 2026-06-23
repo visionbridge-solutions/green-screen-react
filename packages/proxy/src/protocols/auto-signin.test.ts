@@ -81,3 +81,38 @@ describe('performAutoSignIn — sign-on confirmation before typing credentials',
     expect(autoSignIn).toHaveBeenCalledWith('KIOSK', 'hunter2');
   });
 });
+
+// The performAutoSignIn() gate above checks a snapshot taken before typing. But
+// autoSignIn() resolves its target fields from the LIVE screen, and a job-reattach
+// reconnect can swap the sign-on screen for the resumed application screen between
+// the gate and the keystrokes. autoSignIn() must therefore re-confirm the live
+// screen itself — these tests pin that second, atomic gate directly.
+describe('autoSignIn — live-screen re-confirmation (reattach race)', () => {
+  it('refuses to type when the live screen is not a sign-on (entry form swapped in)', () => {
+    const handler = claimEntryHandler();
+    const sendRaw = vi.spyOn(handler.connection, 'sendRaw').mockImplementation(() => {});
+
+    // Stands in for the race end-state: the snapshot gate already passed on the
+    // sign-on frame, but the resumed claim form is what's live when we type.
+    const typed = handler.autoSignIn('DNCL', 'LEGACY202640040');
+
+    expect(typed).toBe(false);
+    expect(sendRaw).not.toHaveBeenCalled();
+    const content = handler.getScreenData().content || '';
+    expect(content).not.toContain('DNCL');
+    expect(content).not.toContain('LEGACY202640');
+  });
+
+  it('types credentials when the live screen really is a sign-on', () => {
+    const handler = signOnHandler();
+    const sendRaw = vi.spyOn(handler.connection, 'sendRaw').mockImplementation(() => {});
+
+    const typed = handler.autoSignIn('KIOSK', 'hunter2');
+
+    expect(typed).toBe(true);
+    expect(sendRaw).toHaveBeenCalledTimes(1);
+    // Username lands in the visible user field; the password is wiped from the
+    // buffer once the AID is built, so it never lingers as plaintext.
+    expect(handler.getScreenData().content || '').toContain('KIOSK');
+  });
+});

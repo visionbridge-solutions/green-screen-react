@@ -402,6 +402,18 @@ export class TN5250Handler extends ProtocolHandler {
    * insertText(password), buildAidResponse('Enter'), sendRaw.
    */
   autoSignIn(username: string, password: string): boolean {
+    // Atomic safety gate: re-confirm the LIVE screen is a real sign-on screen at
+    // the instant we type. performAutoSignIn() gates on an earlier snapshot, but
+    // a reconnect that reattaches an existing interactive job (stable DEVNAME)
+    // can swap the sign-on screen for the resumed application screen between that
+    // snapshot and this call — and we resolve the target fields from this.screen
+    // (live), not the snapshot. Without re-checking here the credentials get
+    // typed into whatever input fields the application screen exposes (e.g. a
+    // claim form's name + a hidden field), leaking them into business data. This
+    // check and the field resolution + send below run in one synchronous block,
+    // so no screen change can slip between confirming and typing.
+    if (!this.isSignOnScreen(this.getScreenData())) return false;
+
     // Find the username field (UNDERSCORE attribute = visible input) and
     // password field (NON_DISPLAY attribute = hidden input). This avoids
     // picking up non-visible input fields (ffw1=0x40, attr=NORMAL) that
@@ -542,7 +554,13 @@ export class TN5250Handler extends ProtocolHandler {
     username: string,
     password: string,
   ): Promise<{ screen: ScreenData; authenticated: boolean } | null> {
-    const preScreen = await this.waitForScreenWithFields(2, 5000);
+    await this.waitForScreenWithFields(2, 5000);
+    // Let the display settle before deciding. A reconnect that reattaches an
+    // existing interactive job (stable DEVNAME) can deliver the sign-on frame
+    // first and overwrite it with the resumed application screen a beat later;
+    // waitForScreenWithFields resolves on that first frame. Gate on the settled
+    // screen so a transient sign-on frame can't wave the credentials through.
+    const preScreen = await this.settleScreen(300, 1500);
 
     // Hard gate: only type credentials once the CURRENT screen is confirmed to
     // be a real sign-on screen. A reconnect that reattaches to an existing
@@ -552,6 +570,8 @@ export class TN5250Handler extends ProtocolHandler {
     // into the first non-display input — leaking credentials into business
     // data (e.g. a claim form's name fields). Refuse instead; the integrator's
     // own sign-on cascade re-drives any genuine sign-on the proxy declines.
+    // autoSignIn() re-checks this against the live screen too — this snapshot can
+    // still be overtaken by a screen swap before the keystrokes are sent.
     if (!this.isSignOnScreen(preScreen)) {
       return { screen: preScreen, authenticated: false };
     }
@@ -629,6 +649,32 @@ export class TN5250Handler extends ProtocolHandler {
         return;
       }
       this.on('screenChange', check);
+    });
+  }
+
+  /**
+   * Resolve once the screen has stayed unchanged for `quietMs` (no further
+   * `screenChange`), or after `maxMs` as a hard cap — whichever comes first.
+   * Absorbs the brief sign-on → application frame swap an IBM i performs when a
+   * reconnect reattaches an existing interactive job, so a credential decision
+   * is made against the settled screen rather than a transient first frame.
+   */
+  private settleScreen(quietMs: number, maxMs: number): Promise<ScreenData> {
+    return new Promise((resolve) => {
+      let quietTimer: ReturnType<typeof setTimeout>;
+      const onChange = () => {
+        clearTimeout(quietTimer);
+        quietTimer = setTimeout(finish, quietMs);
+      };
+      const finish = () => {
+        clearTimeout(quietTimer);
+        clearTimeout(hardTimer);
+        this.removeListener('screenChange', onChange);
+        resolve(this.getScreenData());
+      };
+      quietTimer = setTimeout(finish, quietMs);
+      const hardTimer = setTimeout(finish, maxMs);
+      this.on('screenChange', onChange);
     });
   }
 
