@@ -49,6 +49,7 @@ class ScreenBuffer:
         self.ext_attrs: dict = {}
         self.dbcs_cont: List[int] = []
         self.code_page: str = "cp37"
+        self.command_keys_no_transmit: Optional[List[str]] = None
 
     def apply(self, screen: Optional[ScreenData]) -> None:
         if screen is None:
@@ -80,6 +81,11 @@ class ScreenBuffer:
         self.ext_attrs = {k: vars(v) for k, v in (screen.ext_attrs or {}).items()}
         self.dbcs_cont = list(screen.dbcs_cont or [])
         self.code_page = screen.code_page or "cp37"
+        self.command_keys_no_transmit = (
+            list(screen.command_keys_no_transmit)
+            if screen.command_keys_no_transmit
+            else None
+        )
 
     @staticmethod
     def _field_to_dict(field) -> dict:  # type: ignore[no-untyped-def]
@@ -99,9 +105,6 @@ class ScreenBuffer:
             "is_reverse": bool(field.is_reverse),
             "is_underscored": bool(field.is_underscored),
             "is_non_display": bool(field.is_non_display),
-            # PATCH-LOADED-CHECK: this line proves the patched buffer.py
-            # is being executed by the worker. Remove with the
-            # [MANDATORY-DEBUG] log after verification.
             "is_mandatory": bool(getattr(field, "mandatory_entry", None) or False),
             "color": field.color,
             "shift_type": field.shift_type,
