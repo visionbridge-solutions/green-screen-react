@@ -62,6 +62,7 @@ class WsClient:
         base_url: str,
         *,
         session_id: Optional[str] = None,
+        auth_token: Optional[str] = None,
     ) -> None:
         ws_url = base_url.rstrip("/")
         ws_url = ws_url.replace("https://", "wss://").replace("http://", "ws://")
@@ -69,6 +70,9 @@ class WsClient:
             ws_url = f"ws://{ws_url}"
         self._ws_url = f"{ws_url}/ws"
         self._session_id: Optional[str] = session_id
+        # Bearer token for a proxy with GS_PROXY_AUTH_TOKEN enabled; sent as an
+        # Authorization header on the WS upgrade. None ⇒ unauthenticated (legacy).
+        self._auth_token = auth_token or None
         self._ws: Optional[WebSocketClientProtocol] = None
         self._screen: Optional[ScreenData] = None
         self._status: ConnectionStatus = ConnectionStatus(connected=False, status="disconnected")
@@ -165,7 +169,10 @@ class WsClient:
     async def _ensure_ws(self) -> WebSocketClientProtocol:
         if self._ws is not None and not self._ws.closed:
             return self._ws
-        self._ws = await websockets.connect(self._ws_url)
+        extra_headers = (
+            [("Authorization", f"Bearer {self._auth_token}")] if self._auth_token else None
+        )
+        self._ws = await websockets.connect(self._ws_url, extra_headers=extra_headers)
         self._reader_task = asyncio.create_task(self._reader_loop())
         return self._ws
 

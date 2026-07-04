@@ -781,7 +781,13 @@ export class TN5250Parser {
           if (pos + 2 >= data.length) return data.length;
           pos++;
           const wdsfLen = (data[pos] << 8) | data[pos + 1];
-          const wdsfEnd = pos + Math.max(2, wdsfLen);
+          // Clamp the host-supplied length to the actual record BEFORE the
+          // sub-parsers run. Their internal reads (window title/footer, selection
+          // fields, scrollbars) are all guarded relative to `wdsfEnd`, so a host
+          // sending wdsfLen larger than the record would otherwise read past the
+          // buffer (undefined → garbage title/field text). Clamping here is the
+          // single choke point that bounds every WDSF sub-parser.
+          const wdsfEnd = Math.min(pos + Math.max(2, wdsfLen), data.length);
           pos += 2; // past length bytes
 
           if (pos + 1 < data.length) {

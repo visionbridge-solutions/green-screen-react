@@ -75,9 +75,15 @@ export class TN3270Handler extends ProtocolHandler {
   }
 
   private onRecord(record: Buffer): void {
-    const modified = this.parser.parseRecord(record);
-    if (modified) {
-      this.emit('screenChange', this.screen.toScreenData());
+    try {
+      const modified = this.parser.parseRecord(record);
+      if (modified) {
+        this.emit('screenChange', this.screen.toScreenData());
+      }
+    } catch (err) {
+      // A crafted/corrupt host record must not throw out of the socket 'data'
+      // handler and drop the connection — log and skip it.
+      console.error(`[tn3270] dropped unparseable record (len=${record.length}): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }

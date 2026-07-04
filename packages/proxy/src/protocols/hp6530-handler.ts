@@ -69,9 +69,15 @@ export class HP6530Handler extends ProtocolHandler {
   }
 
   private onData(data: Buffer): void {
-    const modified = this.parser.parse(data);
-    if (modified) {
-      this.emit('screenChange', this.screen.toScreenData());
+    try {
+      const modified = this.parser.parse(data);
+      if (modified) {
+        this.emit('screenChange', this.screen.toScreenData());
+      }
+    } catch (err) {
+      // Corrupt host data must not throw out of the socket 'data' handler and
+      // drop the connection — log and skip it.
+      console.error(`[hp6530] dropped unparseable data (len=${data.length}): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }

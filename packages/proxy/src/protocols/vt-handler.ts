@@ -72,9 +72,15 @@ export class VTHandler extends ProtocolHandler {
   }
 
   private onData(data: Buffer): void {
-    const modified = this.parser.feed(data);
-    if (modified) {
-      this.emit('screenChange', this.screen.toScreenData());
+    try {
+      const modified = this.parser.feed(data);
+      if (modified) {
+        this.emit('screenChange', this.screen.toScreenData());
+      }
+    } catch (err) {
+      // Corrupt host data must not throw out of the socket 'data' handler and
+      // drop the connection — log and skip it.
+      console.error(`[vt] dropped unparseable data (len=${data.length}): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }

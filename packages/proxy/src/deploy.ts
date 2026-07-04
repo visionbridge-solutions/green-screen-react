@@ -142,6 +142,10 @@ export function deploy(args: string[]): void {
 
   console.log(`Worker name: ${options.name}`);
   console.log(`CORS origins: ${options.origins}\n`);
+  if (options.origins === '*') {
+    console.warn('WARNING: deploying with CORS origins "*" — any website can drive this');
+    console.warn('         browser-to-host bridge. Pass --origins https://yourapp.com to lock it down.\n');
+  }
 
   // Step 5: Deploy
   console.log('Deploying to Cloudflare...\n');

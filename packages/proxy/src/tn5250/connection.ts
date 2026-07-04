@@ -130,6 +130,10 @@ export class TN5250Connection extends EventEmitter {
 
         this.socket!.on('timeout', () => {
           this.emit('error', new Error('Connection timeout'));
+          // A socket timeout does NOT close the socket — Node just fires the
+          // event. Destroy it so the half-open connection can't dangle (and so
+          // the 'close' handler runs cleanup + emits 'disconnected').
+          this.socket?.destroy();
         });
 
         this.socket!.on('data', (data: Buffer) => this.onData(data));

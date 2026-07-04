@@ -47,12 +47,16 @@ class RestClient:
         session_id: Optional[str] = None,
         timeout: float = 30.0,
         http: Optional[httpx.AsyncClient] = None,
+        auth_token: Optional[str] = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._session_id: Optional[str] = session_id
         self._timeout = timeout
         self._http = http
         self._owns_http = http is None
+        # Bearer token for a proxy running with GS_PROXY_AUTH_TOKEN. None ⇒ no
+        # Authorization header (unauthenticated proxy — the legacy default).
+        self._auth_token = auth_token or None
 
     # ------------------------------------------------------------------
     # Session management
@@ -87,6 +91,8 @@ class RestClient:
         headers = {"Content-Type": "application/json"}
         if self._session_id:
             headers["X-Session-Id"] = self._session_id
+        if self._auth_token:
+            headers["Authorization"] = f"Bearer {self._auth_token}"
         return headers
 
     def _capture_session(self, resp: httpx.Response) -> None:

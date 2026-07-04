@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer, Server as HttpServer } from 'http';
+import { authEnabled, checkBearer, corsOrigins, bindAddress } from './security.js';
 
 // Re-export session store primitives so integrators can swap the default
 // in-memory store for a custom implementation (e.g. Redis routing for
@@ -47,8 +48,32 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
   const { port = 3001 } = options;
 
   const app = express();
-  app.use(cors());
+
+  // CORS is opt-in. Default (GS_PROXY_CORS_ORIGINS unset) emits NO CORS headers
+  // — the proxy is same-origin only. Shipping wildcard CORS on a service that
+  // opens raw TCP to arbitrary hosts is not a safe default.
+  const origins = corsOrigins();
+  if (origins === '*') {
+    app.use(cors());
+  } else if (origins !== null) {
+    app.use(cors({ origin: origins }));
+  }
+
   app.use(express.json());
+
+  // Bearer auth is opt-in (GS_PROXY_AUTH_TOKEN). When enabled, every route
+  // requires the token EXCEPT the bare healthcheck (`GET /status` with no
+  // session id), which orchestrators poll without credentials.
+  if (authEnabled()) {
+    app.use((req, res, next) => {
+      const isBareHealthcheck =
+        req.method === 'GET' && req.path === '/status' &&
+        !req.headers['x-session-id'] && !req.query.sessionId;
+      if (isBareHealthcheck) return next();
+      if (checkBearer(req.headers.authorization)) return next();
+      res.status(401).json({ success: false, error: 'unauthorized' });
+    });
+  }
 
   const [{ default: routes }, { setupWebSocket, shutdownAllWsControllers }] = await Promise.all([
     import('./routes.js'),
@@ -60,6 +85,7 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
 
   let resolvedPort = port;
   const maxPort = port + 20;
+  const host = bindAddress();
 
   return new Promise<ProxyServer>((resolve, reject) => {
     server.on('error', (err: NodeJS.ErrnoException) => {
@@ -69,13 +95,13 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
           reject(new Error(`All ports ${port}–${maxPort} are in use`));
           return;
         }
-        server.listen(resolvedPort);
+        server.listen(resolvedPort, host);
       } else {
         reject(err);
       }
     });
 
-    server.listen(resolvedPort, () => {
+    server.listen(resolvedPort, host, () => {
       // Attach WebSocket after successful listen to avoid EADDRINUSE
       // being re-emitted as an unhandled error on the WebSocketServer
       setupWebSocket(server);

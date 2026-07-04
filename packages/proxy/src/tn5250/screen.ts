@@ -558,10 +558,21 @@ export class ScreenBuffer {
     }
   }
 
+  /** Upper bound on SAVE_SCREEN nesting. Real host flows nest a handful deep;
+   *  the cap only exists so a host spamming SAVE_SCREEN (each entry is a full
+   *  deep copy of buffer + attrs + fields) can't grow the stack unbounded and
+   *  exhaust memory. RESTORE pops LIFO, so when the cap is hit we drop the
+   *  OLDEST entry — realistic nesting is preserved, only a pathological flood
+   *  loses its deepest-buried frames. */
+  static MAX_SCREEN_STACK = 16;
+
   /** Save current screen state to the stack.
    *  Per lib5250 session.c:1377-1404: saves display buffer, fields, cursor,
    *  and read state so they can be restored later. */
   saveState(): void {
+    if (this.screenStack.length >= ScreenBuffer.MAX_SCREEN_STACK) {
+      this.screenStack.shift();
+    }
     this.screenStack.push({
       buffer: [...this.buffer],
       attrBuffer: [...this.attrBuffer],

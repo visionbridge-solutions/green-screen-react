@@ -148,8 +148,12 @@ class ProxyTerminalClient:
         device_name: Optional[str] = None,
         auto_reconnect: Optional[bool] = None,
         timeout: float = 30.0,
+        auth_token: Optional[str] = None,
     ) -> None:
-        self._rest = RestClient(proxy_url, timeout=timeout)
+        # Bearer token forwarded to REST + WS when the proxy runs with
+        # GS_PROXY_AUTH_TOKEN. None ⇒ unauthenticated proxy (legacy default).
+        self._auth_token = auth_token or None
+        self._rest = RestClient(proxy_url, timeout=timeout, auth_token=self._auth_token)
         self._host = host
         self._port = port
         self._protocol = protocol

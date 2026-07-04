@@ -727,6 +727,18 @@ export class TN5250Handler extends ProtocolHandler {
   }
 
   private onRecord(record: Buffer): void {
+    try {
+      this.parseRecordGuarded(record);
+    } catch (err) {
+      // A crafted/corrupt host record must not throw out of the socket 'data'
+      // handler (that would surface as an unhandled exception and drop the
+      // connection). Log and drop the offending record; the session stays up
+      // and the next well-formed record recovers the screen.
+      console.error(`[tn5250] dropped unparseable record (len=${record.length}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private parseRecordGuarded(record: Buffer): void {
     const klBefore = this.screen.keyboardLocked;
     const modified = this.parser.parseRecord(record);
 

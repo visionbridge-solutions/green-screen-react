@@ -14,6 +14,8 @@ import {
   destroyWsSession,
 } from './websocket.js';
 import { getKeyedSessionId, bindKey, withKeyLock } from './session-keys.js';
+import { validateEgressTarget } from './security.js';
+import { LOCAL_KEYS } from './local-keys.js';
 const router = Router();
 
 /** Build the success payload for a connected session: its id, whether it was
@@ -134,6 +136,15 @@ async function typeTextAnimated(session: Session, text: string): Promise<boolean
 router.post('/connect', async (req: Request, res: Response) => {
   try {
     const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, codePage, screenTimeout, connectTimeout, username, password, key, forceNew, deviceName, autoReconnect } = req.body || {};
+
+    // Egress (SSRF) validation BEFORE any socket opens. No-op unless the
+    // integrator enabled GS_PROXY_BLOCK_PRIVATE / GS_PROXY_HOST_ALLOWLIST; always
+    // enforces host is a non-empty string and port is an integer in range.
+    const egress = validateEgressTarget(host, port);
+    if (!egress.ok) {
+      return res.status(400).json({ success: false, error: egress.reason });
+    }
+
     const opts: FreshConnectOpts = { host, port, protocol, terminalType, codePage, screenTimeout, connectTimeout, deviceName, autoReconnect };
 
     // ── Connect-by-key: at most one live session per key ──
@@ -530,18 +541,6 @@ router.post('/batch', async (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'operations array is required' });
   }
 
-  // Local-only keys that don't trigger a host roundtrip
-  const localKeys = new Set([
-    'Tab', 'Backtab', 'TAB', 'BACKTAB',
-    'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
-    'LEFT', 'RIGHT', 'UP', 'DOWN',
-    'Home', 'HOME', 'End', 'END',
-    'Backspace', 'BACKSPACE', 'Delete', 'DELETE',
-    'Insert', 'INSERT',
-    'Reset', 'RESET',
-    'FieldExit', 'FIELD_EXIT', 'FIELDEXIT',
-  ]);
-
   let lastRemoteKey = false;
 
   try {
@@ -556,7 +555,7 @@ router.post('/batch', async (req: Request, res: Response) => {
               return res.json({ success: false, error: `Unknown key: ${op.value}` });
             }
           }
-          lastRemoteKey = !localKeys.has(op.value);
+          lastRemoteKey = !LOCAL_KEYS.has(op.value);
           break;
 
         case 'text': {
@@ -631,19 +630,6 @@ router.post('/send-text', async (req: Request, res: Response) => {
     error: ok ? undefined : 'Cannot type at current cursor position',
   });
 });
-
-// Keys that are handled locally in the screen buffer (no host roundtrip needed).
-// Must match the set in controller.ts handleKey() for consistent behavior.
-const LOCAL_KEYS = new Set([
-  'Tab', 'Backtab', 'TAB', 'BACKTAB',
-  'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
-  'LEFT', 'RIGHT', 'UP', 'DOWN',
-  'Home', 'HOME', 'End', 'END',
-  'Backspace', 'BACKSPACE', 'Delete', 'DELETE',
-  'Insert', 'INSERT',
-  'Reset', 'RESET',
-  'FieldExit', 'FIELD_EXIT', 'FIELDEXIT',
-]);
 
 // POST /send-key
 router.post('/send-key', async (req: Request, res: Response) => {

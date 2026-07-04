@@ -9,6 +9,7 @@ import {
 } from './session.js';
 import { sessionLifecycle, getSessionStore } from './session-store.js';
 import { SessionController } from './controller.js';
+import { authEnabled, checkBearer, validateEgressTarget } from './security.js';
 import type { ProtocolType } from './protocols/index.js';
 import type { ConnectionStatus } from 'green-screen-types';
 
@@ -177,7 +178,24 @@ function ensureLifecycleSubscribed(): void {
 
 export function setupWebSocket(server: HttpServer): WebSocketServer {
   ensureLifecycleSubscribed();
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({
+    server,
+    path: '/ws',
+    // Opt-in bearer auth on the WS upgrade (GS_PROXY_AUTH_TOKEN). Server-side
+    // clients send `Authorization: Bearer <token>`; browser clients that can't
+    // set upgrade headers may pass `?token=<token>`. No-op when auth is disabled.
+    verifyClient: authEnabled()
+      ? (info, done) => {
+          const auth =
+            info.req.headers.authorization ||
+            (() => {
+              const q = new URL(info.req.url || '/', `http://${info.req.headers.host || 'localhost'}`).searchParams.get('token');
+              return q ? `Bearer ${q}` : undefined;
+            })();
+          done(checkBearer(auth));
+        }
+      : undefined,
+  });
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -228,6 +246,14 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
   switch (msg.type) {
     case 'connect': {
       const { host = 'pub400.com', port = 23, protocol = 'tn5250', username, password, terminalType, codePage } = msg;
+
+      // Egress (SSRF) validation before opening any socket — same gate as the
+      // REST /connect path. No-op unless the integrator opted in.
+      const egress = validateEgressTarget(host, port);
+      if (!egress.ok) {
+        wsSend(ws, { type: 'status', data: { connected: false, status: 'error', protocol, host, error: egress.reason } });
+        return;
+      }
 
       // Destroy previous session if this client had one
       const oldSessionId = client.sessionId;

@@ -1,6 +1,7 @@
 import { createProtocolHandler, ProtocolHandler, TN5250Handler } from './protocols/index.js';
 import type { ProtocolType, ScreenData } from './protocols/index.js';
 import type { EbcdicCodePage } from './tn5250/ebcdic.js';
+import { LOCAL_KEYS } from './local-keys.js';
 
 /**
  * Shared session controller that handles the WebSocket message protocol
@@ -134,17 +135,7 @@ export class SessionController {
     }
 
     // Local operations — respond immediately without waiting for host
-    const localKeys = [
-      'Tab', 'Backtab', 'TAB', 'BACKTAB',
-      'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
-      'LEFT', 'RIGHT', 'UP', 'DOWN',
-      'Home', 'HOME', 'End', 'END',
-      'Backspace', 'BACKSPACE', 'Delete', 'DELETE',
-      'Insert', 'INSERT',
-      'Reset', 'RESET',
-      'FieldExit', 'FIELD_EXIT', 'FIELDEXIT',
-    ];
-    if (localKeys.includes(key)) {
+    if (LOCAL_KEYS.has(key)) {
       // Local buffer-modifying ops need full screen; cursor-only ops don't
       const bufferOps = ['Backspace', 'BACKSPACE', 'Delete', 'DELETE',
         'Insert', 'INSERT',
