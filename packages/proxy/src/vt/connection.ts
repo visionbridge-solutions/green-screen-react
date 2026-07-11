@@ -6,6 +6,7 @@ export interface VTConnectionOptions {
   terminalType?: string;
   rows?: number;
   cols?: number;
+  connectTimeout?: number;
 }
 
 /**
@@ -25,6 +26,13 @@ export class VTConnection extends EventEmitter {
   private rows: number = DEFAULT_ROWS;
   private cols: number = DEFAULT_COLS;
 
+  /** True once the server negotiated WILL ECHO (it owns the echo). */
+  private serverEchoes: boolean = false;
+
+  /** Liveness timestamps — same contract as the TN5250 connection. */
+  private lastRecvAtMs: number = 0;
+  private lastSendAtMs: number = 0;
+
   get isConnected(): boolean {
     return this.connected;
   }
@@ -37,6 +45,19 @@ export class VTConnection extends EventEmitter {
     return this.port;
   }
 
+  /** Whether the server negotiated WILL ECHO (no local echo needed). */
+  get remoteEcho(): boolean {
+    return this.serverEchoes;
+  }
+
+  get lastReceivedAtMs(): number {
+    return this.lastRecvAtMs;
+  }
+
+  get lastSentAtMs(): number {
+    return this.lastSendAtMs;
+  }
+
   connect(host: string, port: number, options?: VTConnectionOptions): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.socket) {
@@ -46,13 +67,14 @@ export class VTConnection extends EventEmitter {
       this.host = host;
       this.port = port;
       this.recvBuffer = Buffer.alloc(0);
+      this.serverEchoes = false;
 
       if (options?.terminalType) this.terminalType = options.terminalType;
       if (options?.rows) this.rows = options.rows;
       if (options?.cols) this.cols = options.cols;
 
       this.socket = new net.Socket();
-      this.socket.setTimeout(30000);
+      this.socket.setTimeout(options?.connectTimeout ?? 30000);
 
       const onError = (err: Error) => {
         this.cleanup();
@@ -63,7 +85,9 @@ export class VTConnection extends EventEmitter {
 
       this.socket.connect(port, host, () => {
         this.connected = true;
+        this.lastRecvAtMs = Date.now();
         this.socket!.removeListener('error', onError);
+        try { this.socket!.setKeepAlive(true, 30_000); } catch { /* ignore */ }
 
         this.socket!.on('error', (err) => {
           this.emit('error', err);
@@ -100,6 +124,7 @@ export class VTConnection extends EventEmitter {
   /** Send raw bytes over the socket */
   sendRaw(data: Buffer): void {
     if (this.socket && this.connected) {
+      this.lastSendAtMs = Date.now();
       this.socket.write(data);
     }
   }
@@ -114,6 +139,7 @@ export class VTConnection extends EventEmitter {
   }
 
   private onData(data: Buffer): void {
+    this.lastRecvAtMs = Date.now();
     this.recvBuffer = Buffer.concat([this.recvBuffer, data]);
     this.processBuffer();
   }
@@ -217,6 +243,7 @@ export class VTConnection extends EventEmitter {
           option === TELNET.OPT_SGA ||
           option === TELNET.OPT_BINARY
         ) {
+          if (option === TELNET.OPT_ECHO) this.serverEchoes = true;
           this.sendTelnet(TELNET.DO, option);
         } else {
           this.sendTelnet(TELNET.DONT, option);
@@ -228,6 +255,7 @@ export class VTConnection extends EventEmitter {
         break;
 
       case TELNET.WONT:
+        if (option === TELNET.OPT_ECHO) this.serverEchoes = false;
         this.sendTelnet(TELNET.DONT, option);
         break;
     }

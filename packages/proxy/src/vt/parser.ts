@@ -1,7 +1,7 @@
 import { VTScreenBuffer, defaultAttrs } from './screen.js';
 import { ESC, CSI_CHAR, BS, HT, LF, VT, FF, CR, SO, SI, BEL, SGR } from './constants.js';
 
-const State = { NORMAL: 0, ESC: 1, CSI_PARAM: 2, CSI_INTER: 3, OSC: 4, DCS: 5, SS2: 6, SS3: 7 } as const;
+const State = { NORMAL: 0, ESC: 1, CSI_PARAM: 2, CSI_INTER: 3, OSC: 4, DCS: 5, SS2: 6, SS3: 7, CHARSET: 8 } as const;
 type State = (typeof State)[keyof typeof State];
 
 /**
@@ -10,9 +10,42 @@ type State = (typeof State)[keyof typeof State];
  * Processes a stream of bytes from the host, interpreting control characters
  * and ANSI/VT escape sequences, and updating the screen buffer accordingly.
  */
+/** DEC Special Graphics (ESC ( 0) — bytes 0x60-0x7E render as line drawing. */
+const DEC_GRAPHICS: Record<number, string> = {
+  0x60: '◆', 0x61: '▒', 0x62: '␉', 0x63: '␌', 0x64: '␍', 0x65: '␊',
+  0x66: '°', 0x67: '±', 0x68: '␤', 0x69: '␋', 0x6a: '┘', 0x6b: '┐',
+  0x6c: '┌', 0x6d: '└', 0x6e: '┼', 0x6f: '⎺', 0x70: '⎻', 0x71: '─',
+  0x72: '⎼', 0x73: '⎽', 0x74: '├', 0x75: '┤', 0x76: '┴', 0x77: '┬',
+  0x78: '│', 0x79: '≤', 0x7a: '≥', 0x7b: 'π', 0x7c: '≠', 0x7d: '£',
+  0x7e: '·',
+};
+
+export type VTEncoding = 'latin1' | 'utf8';
+
 export class VTParser {
   private screen: VTScreenBuffer;
   private state: State = State.NORMAL;
+
+  /**
+   * Replies the host is waiting for (DA, DSR/CPR, DECID). The parser never
+   * writes to the socket — the handler flushes these after feed() (the same
+   * pending pattern as the block-mode protocols). Without CPR, cursor-probing
+   * full-screen apps (vim, less) hang or misdraw.
+   */
+  readonly pendingResponses: Buffer[] = [];
+
+  /** Byte→char decoding of printable data (default latin1 = old behavior). */
+  encoding: VTEncoding = 'latin1';
+  /** Partial UTF-8 sequence carried across feed() chunks. */
+  private utf8Pending: number[] = [];
+
+  /** G0/G1 charset designators ('B' ASCII, '0' DEC graphics, ...). */
+  private g0 = 'B';
+  private g1 = 'B';
+  /** Which of G0/G1 is active in GL (SI selects G0, SO selects G1). */
+  private glIsG1 = false;
+  /** Which G-set the pending ESC ( / ) designation targets. */
+  private designating: 'g0' | 'g1' | 'other' = 'g0';
 
   /** Accumulated CSI parameter string */
   private params: string = '';
@@ -65,6 +98,12 @@ export class VTParser {
         case State.SS2:
           this.state = State.NORMAL;
           break;
+        case State.CHARSET:
+          // Exactly one designator byte follows ESC ( / ) / * / +
+          if (this.designating === 'g0') this.g0 = String.fromCharCode(byte);
+          else if (this.designating === 'g1') this.g1 = String.fromCharCode(byte);
+          this.state = State.NORMAL;
+          break;
       }
     }
 
@@ -78,16 +117,47 @@ export class VTParser {
   private handleNormal(byte: number): boolean {
     // Control characters
     if (byte === ESC) {
+      this.utf8Pending.length = 0; // a control aborts any partial sequence
       this.state = State.ESC;
       return false;
     }
 
     if (byte < 0x20 || byte === 0x7f) {
+      this.utf8Pending.length = 0;
       return this.handleControlChar(byte);
+    }
+
+    // UTF-8 mode: assemble multi-byte sequences across feed() chunks.
+    if (this.encoding === 'utf8' && (byte >= 0x80 || this.utf8Pending.length > 0)) {
+      return this.handleUtf8Byte(byte);
+    }
+
+    // Active DEC Special Graphics set: 0x60-0x7E render as line drawing.
+    const active = this.glIsG1 ? this.g1 : this.g0;
+    if (active === '0' && byte >= 0x60 && byte <= 0x7e) {
+      this.screen.writeChar(DEC_GRAPHICS[byte] ?? String.fromCharCode(byte));
+      return true;
     }
 
     // Printable character — write to screen
     this.screen.writeChar(String.fromCharCode(byte));
+    return true;
+  }
+
+  private handleUtf8Byte(byte: number): boolean {
+    this.utf8Pending.push(byte);
+    const lead = this.utf8Pending[0];
+    const expected = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+    if (expected === 1) {
+      // Continuation byte with no lead (or raw high byte) — render replacement.
+      this.utf8Pending.length = 0;
+      this.screen.writeChar('\ufffd');
+      return true;
+    }
+    if (this.utf8Pending.length < expected) return false; // wait for more
+    const decoded = Buffer.from(this.utf8Pending).toString('utf8');
+    this.utf8Pending.length = 0;
+    for (const ch of decoded) this.screen.writeChar(ch);
     return true;
   }
 
@@ -111,9 +181,11 @@ export class VTParser {
         this.screen.cursorCol = 0;
         this.screen.pendingWrap = false;
         return false;
-      case SO: // Shift Out — select G1 charset (simplified: ignore)
+      case SO: // Shift Out — G1 becomes the active GL set
+        this.glIsG1 = true;
         return false;
-      case SI: // Shift In — select G0 charset (simplified: ignore)
+      case SI: // Shift In — back to G0
+        this.glIsG1 = false;
         return false;
       case BEL: // Bell
         return false;
@@ -191,19 +263,23 @@ export class VTParser {
         this.state = State.NORMAL;
         return false;
 
-      case 0x28: // '(' — Designate G0 character set — consume next byte
-      case 0x29: // ')' — Designate G1 character set — consume next byte
-      case 0x2a: // '*' — Designate G2 character set
-      case 0x2b: // '+' — Designate G3 character set
-        // Next byte is the charset designator (B, 0, etc.) — ignore it
-        // We stay in a pseudo-state; simplification: just consume one more byte
-        // by not changing state. Actually we need to consume the next byte.
-        // Use a trick: stay in ESC state for one more byte? No — just go NORMAL
-        // and accept that we may misinterpret one character. For correctness,
-        // we handle it by noting this is a 3-byte sequence.
-        this.state = State.NORMAL; // next byte will be consumed as normal char
-        // This is a slight inaccuracy but charset switching is rarely
-        // semantically important for screen scraping.
+      case 0x28: // '(' — Designate G0 character set
+        this.designating = 'g0';
+        this.state = State.CHARSET;
+        return false;
+      case 0x29: // ')' — Designate G1 character set
+        this.designating = 'g1';
+        this.state = State.CHARSET;
+        return false;
+      case 0x2a: // '*' — Designate G2 (tracked but unused)
+      case 0x2b: // '+' — Designate G3
+        this.designating = 'other';
+        this.state = State.CHARSET;
+        return false;
+
+      case 0x5a: // 'Z' — DECID: answer like DA (VT220)
+        this.pendingResponses.push(Buffer.from('\x1b[?62;1;2;6;7;8;9c', 'latin1'));
+        this.state = State.NORMAL;
         return false;
 
       default:
@@ -276,12 +352,12 @@ export class VTParser {
 
     switch (finalChar) {
       // ------- Cursor movement -------
-      case 'A': // CUU — Cursor Up
-        this.screen.setCursor(this.screen.cursorRow - Math.max(p1, 1), this.screen.cursorCol);
+      case 'A': // CUU — Cursor Up (stops at the scroll region's top margin)
+        this.screen.cursorUp(Math.max(p1, 1));
         return false;
 
-      case 'B': // CUD — Cursor Down
-        this.screen.setCursor(this.screen.cursorRow + Math.max(p1, 1), this.screen.cursorCol);
+      case 'B': // CUD — Cursor Down (stops at the bottom margin)
+        this.screen.cursorDown(Math.max(p1, 1));
         return false;
 
       case 'C': // CUF — Cursor Forward
@@ -383,12 +459,21 @@ export class VTParser {
 
       // ------- Device status -------
       case 'n': // DSR — Device Status Report
-        // 6 = CPR (Cursor Position Report) — we'd need to send response
-        // For now, ignore
+        if (p1 === 5) {
+          this.pendingResponses.push(Buffer.from('\x1b[0n', 'latin1')); // "OK"
+        } else if (p1 === 6) {
+          // CPR — report the cursor position (1-based; origin-mode relative)
+          const row = this.screen.originMode
+            ? this.screen.cursorRow - this.screen.scrollTop + 1
+            : this.screen.cursorRow + 1;
+          this.pendingResponses.push(
+            Buffer.from(`\x1b[${row};${this.screen.cursorCol + 1}R`, 'latin1'),
+          );
+        }
         return false;
 
-      case 'c': // DA — Device Attributes
-        // Ignore — we'd need to send a response
+      case 'c': // DA — Device Attributes: VT220 with common capability set
+        this.pendingResponses.push(Buffer.from('\x1b[?62;1;2;6;7;8;9c', 'latin1'));
         return false;
 
       // ------- Tab -------
@@ -415,8 +500,8 @@ export class VTParser {
     switch (finalChar) {
       case 'h': // DECSET — Set DEC private mode
         switch (mode) {
-          case 1: // DECCKM — Application cursor keys (affects what arrow keys send)
-            // Tracked but no screen effect
+          case 1: // DECCKM — Application cursor keys (arrows send SS3)
+            this.screen.applicationCursorKeys = true;
             return false;
           case 6: // DECOM — Origin mode
             this.screen.originMode = true;
@@ -427,13 +512,13 @@ export class VTParser {
             return false;
           case 25: // DECTCEM — Show cursor (no visual effect in our buffer)
             return false;
-          case 1049: // Save cursor + switch to alternate screen buffer
+          case 1049: // Save cursor + switch to alternate screen buffer (clear)
             this.screen.saveCursor();
-            this.screen.eraseInDisplay(2);
+            this.screen.enterAlternateScreen();
             return true;
           case 47:
           case 1047: // Alternate screen buffer
-            this.screen.eraseInDisplay(2);
+            this.screen.enterAlternateScreen();
             return true;
         }
         return false;
@@ -441,6 +526,7 @@ export class VTParser {
       case 'l': // DECRST — Reset DEC private mode
         switch (mode) {
           case 1: // DECCKM — Normal cursor keys
+            this.screen.applicationCursorKeys = false;
             return false;
           case 6: // DECOM — Origin mode off
             this.screen.originMode = false;
@@ -451,11 +537,13 @@ export class VTParser {
             return false;
           case 25: // DECTCEM — Hide cursor
             return false;
-          case 1049: // Restore cursor + switch from alternate screen
+          case 1049: // Leave alternate screen + restore cursor
+            this.screen.exitAlternateScreen();
             this.screen.restoreCursor();
             return true;
           case 47:
           case 1047:
+            this.screen.exitAlternateScreen();
             return true;
         }
         return false;

@@ -46,8 +46,24 @@ export class VTHandler extends ProtocolHandler {
     return this.connection.isConnected;
   }
 
-  async connect(host: string, port: number, _options?: ProtocolOptions): Promise<void> {
-    await this.connection.connect(host, port);
+  async connect(host: string, port: number, options?: ProtocolOptions): Promise<void> {
+    // Drop prior-session state (same reconnect-reset rationale as 5250/3270).
+    this.screen.reset();
+    this.parser.pendingResponses.length = 0;
+
+    const rows = (options?.rows as number) || this.screen.rows;
+    const cols = (options?.cols as number) || this.screen.cols;
+    if (rows !== this.screen.rows || cols !== this.screen.cols) {
+      this.screen.resize(rows, cols);
+    }
+    this.parser.encoding = options?.encoding === 'utf8' ? 'utf8' : 'latin1';
+
+    await this.connection.connect(host, port, {
+      terminalType: options?.terminalType as string | undefined,
+      rows,
+      cols,
+      connectTimeout: options?.connectTimeout as number | undefined,
+    });
   }
 
   disconnect(): void {
@@ -61,6 +77,12 @@ export class VTHandler extends ProtocolHandler {
   sendText(text: string): boolean {
     const encoded = this.encoder.encodeText(text);
     this.connection.sendRaw(encoded);
+    // Line-mode servers (no WILL ECHO) expect the terminal to echo locally —
+    // without this, typed text is invisible until the host redraws.
+    if (!this.connection.remoteEcho) {
+      this.parser.feed(encoded);
+      this.emit('screenChange', this.screen.toScreenData());
+    }
     return true;
   }
 
@@ -68,11 +90,22 @@ export class VTHandler extends ProtocolHandler {
     const encoded = this.encoder.encodeKey(keyName);
     if (!encoded) return false;
     this.connection.sendRaw(encoded);
+    if (!this.connection.remoteEcho && keyName.toUpperCase() === 'ENTER') {
+      this.parser.feed(Buffer.from('\r\n', 'latin1'));
+      this.emit('screenChange', this.screen.toScreenData());
+    }
     return true;
   }
 
   sendRaw(data: Buffer): void {
     this.connection.sendRaw(data);
+  }
+
+  override getLiveness(): { lastReceivedAtMs: number; lastSentAtMs: number } {
+    return {
+      lastReceivedAtMs: this.connection.lastReceivedAtMs,
+      lastSentAtMs: this.connection.lastSentAtMs,
+    };
   }
 
   destroy(): void {
@@ -83,6 +116,11 @@ export class VTHandler extends ProtocolHandler {
   private onData(data: Buffer): void {
     try {
       const modified = this.parser.feed(data);
+      // Answer host probes (DA/DSR/CPR/DECID) — vim/less-style apps hang
+      // without a Cursor Position Report.
+      while (this.parser.pendingResponses.length > 0) {
+        this.connection.sendRaw(this.parser.pendingResponses.shift()!);
+      }
       if (modified) {
         this.emit('screenChange', this.screen.toScreenData());
       }

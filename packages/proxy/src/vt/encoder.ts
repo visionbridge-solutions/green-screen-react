@@ -26,6 +26,16 @@ export class VTEncoder {
    */
   encodeKey(keyName: string): Buffer | null {
     const upper = keyName.toUpperCase();
+
+    // DECCKM: application cursor keys send SS3 (ESC O x) instead of CSI.
+    if (this.screen.applicationCursorKeys) {
+      const app: Record<string, string> = {
+        UP: '\x1bOA', DOWN: '\x1bOB', RIGHT: '\x1bOC', LEFT: '\x1bOD',
+        ARROWUP: '\x1bOA', ARROWDOWN: '\x1bOB', ARROWRIGHT: '\x1bOC', ARROWLEFT: '\x1bOD',
+      };
+      if (app[upper]) return Buffer.from(app[upper], 'binary');
+    }
+
     const seq = VT_KEYS[upper];
     if (seq) {
       return Buffer.from(seq, 'binary');

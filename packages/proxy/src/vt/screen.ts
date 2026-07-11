@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash } from 'node:crypto';
 import { DEFAULT_ROWS, DEFAULT_COLS } from './constants.js';
 import type { ScreenData } from '../protocols/types.js';
 
@@ -78,8 +78,18 @@ export class VTScreenBuffer {
   /** Origin mode (DECOM) — cursor addressing relative to scroll region */
   originMode: boolean = false;
 
+  /** DECCKM — application cursor keys (arrows send SS3 instead of CSI) */
+  applicationCursorKeys: boolean = false;
+
   /** Pending wrap — the next printable char wraps to next line */
   pendingWrap: boolean = false;
+
+  /** Alternate-screen state: saved primary buffer while the alt is live. */
+  private savedPrimary: { buffer: string[]; attrs: CellAttrs[]; cursorRow: number; cursorCol: number } | null = null;
+
+  get inAlternateScreen(): boolean {
+    return this.savedPrimary !== null;
+  }
 
   constructor(rows = DEFAULT_ROWS, cols = DEFAULT_COLS) {
     this.rows = rows;
@@ -148,9 +158,33 @@ export class VTScreenBuffer {
   // Cursor movement
   // ---------------------------------------------------------------------------
 
+  /**
+   * Absolute cursor addressing (CUP/HVP/VPA...). With origin mode (DECOM)
+   * `row` is relative to the scroll region's top and the cursor is clamped
+   * inside the region.
+   */
   setCursor(row: number, col: number): void {
-    this.cursorRow = this.clampRow(row);
+    if (this.originMode) {
+      const r = this.scrollTop + Math.max(0, row);
+      this.cursorRow = Math.max(this.scrollTop, Math.min(this.scrollBottom, r));
+    } else {
+      this.cursorRow = this.clampRow(row);
+    }
     this.cursorCol = this.clampCol(col);
+    this.pendingWrap = false;
+  }
+
+  /** CUU — cursor up n, stopping at the scroll region's top margin. */
+  cursorUp(n: number): void {
+    const limit = this.cursorRow >= this.scrollTop ? this.scrollTop : 0;
+    this.cursorRow = Math.max(limit, this.cursorRow - n);
+    this.pendingWrap = false;
+  }
+
+  /** CUD — cursor down n, stopping at the scroll region's bottom margin. */
+  cursorDown(n: number): void {
+    const limit = this.cursorRow <= this.scrollBottom ? this.scrollBottom : this.rows - 1;
+    this.cursorRow = Math.min(limit, this.cursorRow + n);
     this.pendingWrap = false;
   }
 
@@ -344,6 +378,50 @@ export class VTScreenBuffer {
   }
 
   // ---------------------------------------------------------------------------
+  // Alternate screen (DECSET/DECRST 47 / 1047 / 1049)
+  // ---------------------------------------------------------------------------
+
+  /** Switch to the alternate screen: primary content saved, alt starts blank. */
+  enterAlternateScreen(): void {
+    if (this.savedPrimary) return; // already in alt
+    this.savedPrimary = {
+      buffer: this.buffer.slice(),
+      attrs: this.attrs.map((a) => ({ ...a })),
+      cursorRow: this.cursorRow,
+      cursorCol: this.cursorCol,
+    };
+    this.buffer.fill(' ');
+    for (let i = 0; i < this.size; i++) this.attrs[i] = defaultAttrs();
+  }
+
+  /** Leave the alternate screen: primary content and cursor restored. */
+  exitAlternateScreen(): void {
+    if (!this.savedPrimary) return;
+    this.buffer = this.savedPrimary.buffer;
+    this.attrs = this.savedPrimary.attrs;
+    this.cursorRow = this.savedPrimary.cursorRow;
+    this.cursorCol = this.savedPrimary.cursorCol;
+    this.savedPrimary = null;
+    this.pendingWrap = false;
+  }
+
+  /** Reallocate to new dimensions (session-negotiated size, not runtime). */
+  resize(rows: number, cols: number): void {
+    this.rows = rows;
+    this.cols = cols;
+    this.scrollTop = 0;
+    this.scrollBottom = rows - 1;
+    const size = rows * cols;
+    this.buffer = new Array(size).fill(' ');
+    this.attrs = new Array(size);
+    for (let i = 0; i < size; i++) this.attrs[i] = defaultAttrs();
+    this.cursorRow = 0;
+    this.cursorCol = 0;
+    this.pendingWrap = false;
+    this.savedPrimary = null;
+  }
+
+  // ---------------------------------------------------------------------------
   // Full reset
   // ---------------------------------------------------------------------------
 
@@ -359,8 +437,10 @@ export class VTScreenBuffer {
     this.currentAttrs = defaultAttrs();
     this.autoWrap = true;
     this.originMode = false;
+    this.applicationCursorKeys = false;
     this.pendingWrap = false;
     this.savedCursor = null;
+    this.savedPrimary = null;
   }
 
   // ---------------------------------------------------------------------------

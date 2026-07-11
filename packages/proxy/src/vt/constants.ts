@@ -73,11 +73,15 @@ export const VT_KEYS: Record<string, string> = {
   F19: '\x1b[33~',
   F20: '\x1b[34~',
 
-  // Arrow keys
+  // Arrow keys (+ frontend ArrowX aliases, uppercased by encodeKey)
   UP: '\x1b[A',
   DOWN: '\x1b[B',
   RIGHT: '\x1b[C',
   LEFT: '\x1b[D',
+  ARROWUP: '\x1b[A',
+  ARROWDOWN: '\x1b[B',
+  ARROWRIGHT: '\x1b[C',
+  ARROWLEFT: '\x1b[D',
 
   // Editing keys
   HOME: '\x1b[1~',
