@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { TN3270Handler } from '../protocols/tn3270-handler.js';
 import { ScreenBuffer3270 } from './screen.js';
 import { TN3270Parser } from './parser.js';
@@ -57,7 +57,7 @@ describe('host-initiated reads are answered (the host no longer waits forever)',
     sent.length = 0;
 
     feed([CMD.READ_MODIFIED]);
-    expect(sent[0].length).toBe(3); // AID + IAC EOR
+    expect(sent[0].length).toBe(3); // AID + IAC EOR framing
     expect(sent[0][0]).toBe(AID.PA1);
 
     feed([CMD.READ_MODIFIED_ALL]);
@@ -129,9 +129,9 @@ describe('Read Modified field data comes from raw bytes (NUL omission)', () => {
     // Type 2 chars into a field whose remaining cells are erased NULs
     screen.cursorAddr = 10;
     encoder.insertText('AB');
-    const wire = encoder.buildAidResponse('Enter')!;
-    const sbaIdx = wire.indexOf(ORDER.SBA);
-    const dataBytes = [...wire.subarray(sbaIdx + 3, wire.length - 2)];
+    const record = encoder.buildAidResponse('Enter')!;
+    const sbaIdx = record.indexOf(ORDER.SBA);
+    const dataBytes = [...record.subarray(sbaIdx + 3)];
     expect(dataBytes).toEqual(eb('AB')); // no padding spaces, no NULs
     expect(dataBytes).not.toContain(EBCDIC_SPACE);
   });

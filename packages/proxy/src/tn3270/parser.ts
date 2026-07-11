@@ -54,8 +54,14 @@ export class TN3270Parser {
 
       case CMD.ERASE_WRITE:
       case SNA_CMD.ERASE_WRITE:
+        this.screen.useAlternate(false);
+        this.screen.clear();
+        modified = this.parseWrite(record, 1, false);
+        break;
+
       case CMD.ERASE_WRITE_ALTERNATE:
       case SNA_CMD.ERASE_WRITE_ALTERNATE:
+        this.screen.useAlternate(true);
         this.screen.clear();
         modified = this.parseWrite(record, 1, false);
         break;
@@ -255,7 +261,7 @@ export class TN3270Parser {
     if (charByte === ORDER.GE && pos < data.length) {
       charByte = data[pos++]; // graphic escape — next byte is the char
     }
-    const repeatChar = charByte === 0x00 ? ' ' : ebcdicToChar(charByte);
+    const repeatChar = charByte === 0x00 ? ' ' : ebcdicToChar(charByte, this.screen.codePage);
 
     const target = targetAddr % this.screen.size;
     let addr = this.screen.currentAddr;
@@ -310,7 +316,7 @@ export class TN3270Parser {
     pos++;
     if (pos < data.length) {
       const geByte = data[pos++];
-      this.writeData(this.screen.currentAddr, ebcdicToChar(geByte), geByte);
+      this.writeData(this.screen.currentAddr, ebcdicToChar(geByte, this.screen.codePage), geByte);
       this.screen.currentAddr = (this.screen.currentAddr + 1) % this.screen.size;
       this.writeModified = true;
     }
@@ -320,7 +326,7 @@ export class TN3270Parser {
   /** Regular EBCDIC data byte (0x00 = NUL position: blank but not space). */
   private dataByte(data: Buffer, pos: number): number {
     const byte = data[pos];
-    const ch = byte === 0x00 ? ' ' : ebcdicToChar(byte);
+    const ch = byte === 0x00 ? ' ' : ebcdicToChar(byte, this.screen.codePage);
     this.writeData(this.screen.currentAddr, ch, byte);
     this.screen.currentAddr = (this.screen.currentAddr + 1) % this.screen.size;
     this.writeModified = true;

@@ -260,11 +260,10 @@ describe('TN3270Encoder', () => {
   it('short-read AIDs (PA1/PA2/PA3/Clear) transmit the AID byte only', () => {
     const { encoder } = setup();
     for (const key of ['PA1', 'PA2', 'PA3', 'Clear']) {
-      const wire = encoder.buildAidResponse(key)!;
-      // AID byte + IAC EOR framing and nothing else
-      expect(wire.length, key).toBe(3);
-      expect(wire[1]).toBe(0xff);
-      expect(wire[2]).toBe(0xef);
+      const record = encoder.buildAidResponse(key)!;
+      // the raw record is the AID byte and nothing else (framing is the
+      // connection's job)
+      expect(record.length, key).toBe(1);
     }
   });
 

@@ -1,5 +1,4 @@
 import { ScreenBuffer3270 } from './screen.js';
-import { TELNET } from '../net/telnet.js';
 import { KEY_TO_AID, AID, ORDER, encodeAddress } from './constants.js';
 import { charToEbcdic, EBCDIC_SPACE } from '../encoding/ebcdic.js';
 
@@ -16,7 +15,7 @@ export class TN3270Encoder {
 
   /**
    * Build a 3270 Read Modified response for an AID key press.
-   * Format: AID + cursor_addr(2) + [SBA(1) + addr(2) + field_data]... + IAC EOR
+   * Format: AID + cursor_addr(2) + [SBA(1) + addr(2) + field_data]...\n   * Returns the RAW record — the connection adds TN3270E header + EOR framing.
    */
   buildAidResponse(keyName: string): Buffer | null {
     const aidByte = KEY_TO_AID[keyName];
@@ -51,7 +50,7 @@ export class TN3270Encoder {
         body.push(this.screen.rawBuffer[addr]);
       }
     }
-    return this.wrapWithEOR(Buffer.from(body));
+    return Buffer.from(body);
   }
 
   private static isShortReadAid(aid: number): boolean {
@@ -63,7 +62,7 @@ export class TN3270Encoder {
     // cursor address, no field data (GA23-0059 "short read") — unless the
     // host explicitly asked for Read Modified All.
     if (!forceFields && TN3270Encoder.isShortReadAid(aidByte)) {
-      return this.wrapWithEOR(Buffer.from([aidByte]));
+      return Buffer.from([aidByte]);
     }
 
     // AID byte + cursor address (2 bytes)
@@ -101,7 +100,7 @@ export class TN3270Encoder {
       }
     }
 
-    return this.wrapWithEOR(Buffer.concat(parts));
+    return Buffer.concat(parts);
   }
 
   /**
@@ -155,28 +154,10 @@ export class TN3270Encoder {
       (w >> 8) & 0xff, w & 0xff, (h >> 8) & 0xff, h & 0xff, // alternate size
     ]);
 
-    return this.wrapWithEOR(
-      Buffer.from([
-        AID.STRUCTURED_FIELD,
-        ...summary, ...usableArea, ...color, ...highlighting, ...replyModes, ...implicitPartition,
-      ]),
-    );
-  }
-
-  /**
-   * Wrap data with Telnet IAC EOR framing.
-   * Escapes any 0xFF bytes in the data.
-   */
-  private wrapWithEOR(data: Buffer): Buffer {
-    const escaped: number[] = [];
-    for (const byte of data) {
-      escaped.push(byte);
-      if (byte === TELNET.IAC) {
-        escaped.push(TELNET.IAC); // escape 0xFF in data
-      }
-    }
-    escaped.push(TELNET.IAC, TELNET.EOR);
-    return Buffer.from(escaped);
+    return Buffer.from([
+      AID.STRUCTURED_FIELD,
+      ...summary, ...usableArea, ...color, ...highlighting, ...replyModes, ...implicitPartition,
+    ]);
   }
 
   /**
@@ -192,7 +173,7 @@ export class TN3270Encoder {
 
     for (const ch of text) {
       if (cursorAddr === fieldEnd) break;
-      this.screen.setCharAt(cursorAddr, ch, charToEbcdic(ch));
+      this.screen.setCharAt(cursorAddr, ch, charToEbcdic(ch, this.screen.codePage));
       cursorAddr = (cursorAddr + 1) % this.screen.size;
     }
 

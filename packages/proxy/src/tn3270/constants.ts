@@ -202,6 +202,21 @@ export const SCREEN3270 = {
   MODEL5_COLS: 132,
 } as const;
 
+/**
+ * Screen dimensions for a 3278/3279 terminal-type string. The model digit
+ * (2-5) selects the ALTERNATE size (Erase/Write Alternate); the default
+ * size is always Model 2's 24x80.
+ */
+export function dimensionsFor3270Type(terminalType: string): { rows: number; cols: number } {
+  const m = /^IBM-327[89]-([2-5])(?:-E)?$/i.exec(terminalType.trim());
+  switch (m?.[1]) {
+    case '3': return { rows: SCREEN3270.MODEL3_ROWS, cols: SCREEN3270.MODEL3_COLS };
+    case '4': return { rows: SCREEN3270.MODEL4_ROWS, cols: SCREEN3270.MODEL4_COLS };
+    case '5': return { rows: SCREEN3270.MODEL5_ROWS, cols: SCREEN3270.MODEL5_COLS };
+    default:  return { rows: SCREEN3270.MODEL2_ROWS, cols: SCREEN3270.MODEL2_COLS };
+  }
+}
+
 // Terminal type strings
 export const TERMINAL_TYPE_3270 = 'IBM-3278-2';          // Model 2 (24x80)
 export const TERMINAL_TYPE_3270_M3 = 'IBM-3278-3';       // Model 3 (32x80)
@@ -237,7 +252,13 @@ export const FA = {
 } as const;
 export const EXT_ATTR = EXTENDED_ATTR;
 export const decodeAddress = decodeBufferAddress;
-export function encodeAddress(addr: number, _screenSize: number): Buffer {
+export function encodeAddress(addr: number, screenSize: number): Buffer {
+  // 12-bit encoding addresses at most 4096 positions; larger screens
+  // (none of the standard models, but future partitions) need 14-bit.
+  if (addr > 0x0FFF || screenSize > 0x1000) {
+    const [b1, b2] = encodeBufferAddress14(addr);
+    return Buffer.from([b1, b2]);
+  }
   const [b1, b2] = encodeBufferAddress12(addr);
   return Buffer.from([b1, b2]);
 }

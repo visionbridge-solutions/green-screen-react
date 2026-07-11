@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { AID, COLOR, FA, HIGHLIGHT, SCREEN } from './constants.js';
+import type { EbcdicCodePage } from '../encoding/ebcdic.js';
 import { computeStructuralSignature } from '../structural-signature.js';
 import type { Field, FieldColor } from 'green-screen-types';
 
@@ -65,6 +66,16 @@ export class ScreenBuffer3270 {
   /** AID of the last attention the client sent (for host-initiated reads). */
   lastAid: number = AID.NO_AID;
 
+  /** EBCDIC code page negotiated for this session (cp37 / cp1047 / ...). */
+  codePage: EbcdicCodePage = 'cp37';
+
+  /** Default (Erase/Write) dimensions — always Model 2's 24x80. */
+  defaultRows: number = SCREEN.MODEL_2_ROWS;
+  defaultCols: number = SCREEN.MODEL_2_COLS;
+  /** Alternate (Erase/Write Alternate) dimensions from the terminal model. */
+  altRows: number = SCREEN.MODEL_2_ROWS;
+  altCols: number = SCREEN.MODEL_2_COLS;
+
   constructor(rows = SCREEN.MODEL_2_ROWS, cols = SCREEN.MODEL_2_COLS) {
     this.rows = rows;
     this.cols = cols;
@@ -74,6 +85,36 @@ export class ScreenBuffer3270 {
     this.attrBuffer = new Array(size).fill(0);
     this.highlightBuffer = new Array(size).fill(0);
     this.colorBuffer = new Array(size).fill(0);
+  }
+
+  /** Configure default + alternate screen sizes (from the terminal model). */
+  configureSizes(altRows: number, altCols: number): void {
+    this.defaultRows = SCREEN.MODEL_2_ROWS;
+    this.defaultCols = SCREEN.MODEL_2_COLS;
+    this.altRows = altRows;
+    this.altCols = altCols;
+  }
+
+  /**
+   * Switch between default (Erase/Write) and alternate (EWA) screen sizes.
+   * Reallocates the buffers when dimensions change; callers always clear()
+   * right after (both erase commands imply it).
+   */
+  useAlternate(alt: boolean): void {
+    const rows = alt ? this.altRows : this.defaultRows;
+    const cols = alt ? this.altCols : this.defaultCols;
+    if (rows === this.rows && cols === this.cols) return;
+    this.rows = rows;
+    this.cols = cols;
+    const size = rows * cols;
+    this.buffer = new Array(size).fill(' ');
+    this.rawBuffer = new Uint8Array(size);
+    this.attrBuffer = new Array(size).fill(0);
+    this.highlightBuffer = new Array(size).fill(0);
+    this.colorBuffer = new Array(size).fill(0);
+    this.fields = [];
+    this.cursorAddr = 0;
+    this.currentAddr = 0;
   }
 
   get size(): number {

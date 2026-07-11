@@ -4,7 +4,8 @@ import { TN3270Connection } from '../tn3270/connection.js';
 import { ScreenBuffer3270 } from '../tn3270/screen.js';
 import { TN3270Parser } from '../tn3270/parser.js';
 import { TN3270Encoder } from '../tn3270/encoder.js';
-import { KEY_TO_AID } from '../tn3270/constants.js';
+import { KEY_TO_AID, TERMINAL_TYPE, dimensionsFor3270Type } from '../tn3270/constants.js';
+import type { EbcdicCodePage } from '../encoding/ebcdic.js';
 
 /**
  * TN3270 protocol handler — implements the ProtocolHandler interface
@@ -39,8 +40,19 @@ export class TN3270Handler extends ProtocolHandler {
     // in-place reconnect must not render the pre-drop screen (same
     // rationale as the 5250 reconnect-reset).
     this.screen.reset();
-    const connectTimeout = options?.connectTimeout as number | undefined;
-    await this.connection.connect(host, port, connectTimeout);
+
+    const termType = options?.terminalType || TERMINAL_TYPE;
+    // The model digit sets the ALTERNATE size (EWA); default stays 24x80.
+    const dims = dimensionsFor3270Type(termType);
+    this.screen.configureSizes(dims.rows, dims.cols);
+    // z/OS commonly runs cp37 or cp1047; explicit option wins.
+    this.screen.codePage = (options?.codePage as EbcdicCodePage) ?? 'cp37';
+
+    await this.connection.connect(host, port, {
+      terminalType: termType,
+      connectTimeout: options?.connectTimeout as number | undefined,
+      tn3270e: options?.tn3270e as boolean | undefined,
+    });
   }
 
   disconnect(): void {
@@ -56,9 +68,15 @@ export class TN3270Handler extends ProtocolHandler {
   }
 
   sendKey(keyName: string): boolean {
+    // Liveness probe: application-transparent telnet TIMING-MARK round-trip
+    // (PA/PF keys all reach the application — see connection.sendTimingMark).
+    if (keyName === 'Heartbeat' || keyName === 'HEARTBEAT') {
+      this.connection.sendTimingMark();
+      return true;
+    }
     const response = this.encoder.buildAidResponse(keyName);
     if (!response) return false;
-    this.connection.sendRaw(response);
+    this.connection.sendRecord(response);
     // Transmitting an AID inhibits input until the host's WCC keyboard
     // restore; remember the AID for host-initiated Read Modified replies.
     this.screen.keyboardLocked = true;
@@ -78,6 +96,13 @@ export class TN3270Handler extends ProtocolHandler {
     this.connection.sendRaw(data);
   }
 
+  override getLiveness(): { lastReceivedAtMs: number; lastSentAtMs: number } {
+    return {
+      lastReceivedAtMs: this.connection.lastReceivedAtMs,
+      lastSentAtMs: this.connection.lastSentAtMsValue,
+    };
+  }
+
   destroy(): void {
     this.disconnect();
     this.removeAllListeners();
@@ -91,15 +116,15 @@ export class TN3270Handler extends ProtocolHandler {
   private flushHostReplies(): void {
     if (this.parser.pendingQueryReply) {
       this.parser.pendingQueryReply = false;
-      this.connection.sendRaw(this.encoder.buildQueryReply());
+      this.connection.sendRecord(this.encoder.buildQueryReply());
     }
     if (this.parser.pendingRead) {
       const kind = this.parser.pendingRead;
       this.parser.pendingRead = null;
       if (kind === 'buffer') {
-        this.connection.sendRaw(this.encoder.buildReadBufferReply());
+        this.connection.sendRecord(this.encoder.buildReadBufferReply());
       } else {
-        this.connection.sendRaw(this.encoder.buildReadModifiedReply(kind === 'modifiedAll'));
+        this.connection.sendRecord(this.encoder.buildReadModifiedReply(kind === 'modifiedAll'));
       }
     }
   }
