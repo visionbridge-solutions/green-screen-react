@@ -173,16 +173,41 @@ export class TN3270Encoder {
 
     for (const ch of text) {
       if (cursorAddr === fieldEnd) break;
+      if (this.screen.insertMode) {
+        this.shiftRightFrom(field, cursorAddr);
+      }
       this.screen.setCharAt(cursorAddr, ch, charToEbcdic(ch, this.screen.codePage));
       cursorAddr = (cursorAddr + 1) % this.screen.size;
     }
 
     this.screen.cursorAddr = cursorAddr;
-    field.modified = true;
+    this.screen.markModified(field);
 
-    // Set MDT in the attribute
-    this.screen.attrBuffer[field.attrAddr] |= 0x01;
+    // Autoskip: filling the field lands the cursor on the following
+    // attribute byte; when that field is skip (protected+numeric) — or
+    // simply protected — jump to the next unprotected field like a real
+    // terminal, so form typing flows field to field.
+    if (cursorAddr === fieldEnd && this.screen.attrBuffer[cursorAddr % this.screen.size] !== 0) {
+      const nextAttr = this.screen.attrBuffer[cursorAddr % this.screen.size];
+      if ((nextAttr & 0x20 /* FA.PROTECTED */) !== 0) {
+        const ring = this.screen.inputFieldsInOrder();
+        const next = ring.find((f) => f.startAddr > field.startAddr) ?? ring[0];
+        if (next) this.screen.cursorAddr = next.startAddr;
+      }
+    }
 
     return true;
+  }
+
+  /** Shift field content right one cell from `addr` (insert-mode typing). */
+  private shiftRightFrom(field: { startAddr: number; length: number }, addr: number): void {
+    const size = this.screen.size;
+    const idx = (addr - field.startAddr + size) % size;
+    for (let i = field.length - 1; i > idx; i--) {
+      const dst = (field.startAddr + i) % size;
+      const src = (field.startAddr + i - 1) % size;
+      this.screen.buffer[dst] = this.screen.buffer[src];
+      this.screen.rawBuffer[dst] = this.screen.rawBuffer[src];
+    }
   }
 }

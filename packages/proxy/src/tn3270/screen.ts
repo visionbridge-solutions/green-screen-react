@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { AID, COLOR, FA, HIGHLIGHT, SCREEN } from './constants.js';
 import type { EbcdicCodePage } from '../encoding/ebcdic.js';
 import { computeStructuralSignature } from '../structural-signature.js';
-import type { Field, FieldColor } from 'green-screen-types';
+import type { Field, FieldColor, FieldValue } from 'green-screen-types';
 
 export interface FieldDef3270 {
   /** Buffer address where the field attribute byte is */
@@ -68,6 +68,9 @@ export class ScreenBuffer3270 {
 
   /** EBCDIC code page negotiated for this session (cp37 / cp1047 / ...). */
   codePage: EbcdicCodePage = 'cp37';
+
+  /** Insert (vs overwrite) typing mode — client-side toggle, surfaced on the wire. */
+  insertMode: boolean = false;
 
   /** Default (Erase/Write) dimensions — always Model 2's 24x80. */
   defaultRows: number = SCREEN.MODEL_2_ROWS;
@@ -160,6 +163,7 @@ export class ScreenBuffer3270 {
     this.clear();
     this.keyboardLocked = false;
     this.pendingAlarm = false;
+    this.insertMode = false;
     this.lastAid = AID.NO_AID;
   }
 
@@ -237,6 +241,74 @@ export class ScreenBuffer3270 {
   /** Get the field at cursor position */
   getFieldAtCursor(): FieldDef3270 | null {
     return this.getFieldAt(this.cursorAddr);
+  }
+
+  /** 0-based offset of `addr` inside `field`, or -1 when outside it. */
+  offsetInField(field: FieldDef3270, addr: number): number {
+    const rel = (addr - field.startAddr + this.size) % this.size;
+    return rel < field.length ? rel : -1;
+  }
+
+  /** Set the MDT bit on a field (operator edit). */
+  markModified(field: FieldDef3270): void {
+    field.modified = true;
+    this.attrBuffer[field.attrAddr] |= FA.MDT;
+  }
+
+  /**
+   * Delete the character at `addr` inside `field`: shift the rest of the
+   * field left one cell, NUL-fill the last cell (3270 delete semantics).
+   */
+  deleteCharAt(field: FieldDef3270, addr: number): void {
+    const idx = this.offsetInField(field, addr);
+    if (idx < 0) return;
+    for (let i = idx; i < field.length - 1; i++) {
+      const dst = (field.startAddr + i) % this.size;
+      const src = (field.startAddr + i + 1) % this.size;
+      this.buffer[dst] = this.buffer[src];
+      this.rawBuffer[dst] = this.rawBuffer[src];
+    }
+    const last = (field.startAddr + field.length - 1) % this.size;
+    this.buffer[last] = ' ';
+    this.rawBuffer[last] = 0x00;
+    this.markModified(field);
+  }
+
+  /** Erase from `addr` to the end of `field` (Erase EOF): NUL fill + MDT. */
+  eraseToFieldEnd(field: FieldDef3270, addr: number): void {
+    const idx = this.offsetInField(field, addr);
+    if (idx < 0) return;
+    for (let i = idx; i < field.length; i++) {
+      const a = (field.startAddr + i) % this.size;
+      this.buffer[a] = ' ';
+      this.rawBuffer[a] = 0x00;
+    }
+    this.markModified(field);
+  }
+
+  /** Unprotected fields in buffer-address order (the Tab ring). */
+  inputFieldsInOrder(): FieldDef3270[] {
+    return this.fields
+      .filter((f) => !this.isProtected(f))
+      .sort((a, b) => a.startAddr - b.startAddr);
+  }
+
+  /** MDT read primitive — current text of input fields (see 5250 parity). */
+  readFieldValues(modifiedOnly: boolean = true): FieldValue[] {
+    const out: FieldValue[] = [];
+    for (const f of this.fields) {
+      if (this.isProtected(f)) continue;
+      if (modifiedOnly && !f.modified) continue;
+      const { row, col } = this.addrToRowCol(f.startAddr);
+      out.push({
+        row,
+        col,
+        length: f.length,
+        value: this.getFieldValue(f),
+        modified: f.modified,
+      });
+    }
+    return out;
   }
 
   /** Get field value as string */
@@ -339,6 +411,7 @@ export class ScreenBuffer3270 {
       screen_signature: hash,
       structural_signature: computeStructuralSignature(fields),
       keyboard_locked: this.keyboardLocked,
+      insert_mode: this.insertMode || undefined,
       alarm: alarm || undefined,
       timestamp: new Date().toISOString(),
     };
