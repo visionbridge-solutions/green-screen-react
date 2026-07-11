@@ -83,9 +83,31 @@ export class TN3270Handler extends ProtocolHandler {
     this.removeAllListeners();
   }
 
+  /**
+   * Answer host-initiated reads the parser flagged — Read Partition
+   * (Query) and Read Buffer / Read Modified (All). Without these replies
+   * the host waits forever (same flush pattern as the 5250 handler).
+   */
+  private flushHostReplies(): void {
+    if (this.parser.pendingQueryReply) {
+      this.parser.pendingQueryReply = false;
+      this.connection.sendRaw(this.encoder.buildQueryReply());
+    }
+    if (this.parser.pendingRead) {
+      const kind = this.parser.pendingRead;
+      this.parser.pendingRead = null;
+      if (kind === 'buffer') {
+        this.connection.sendRaw(this.encoder.buildReadBufferReply());
+      } else {
+        this.connection.sendRaw(this.encoder.buildReadModifiedReply(kind === 'modifiedAll'));
+      }
+    }
+  }
+
   private onRecord(record: Buffer): void {
     try {
       const modified = this.parser.parseRecord(record);
+      this.flushHostReplies();
       if (modified) {
         this.emit('screenChange', this.screen.toScreenData());
       }
