@@ -33,6 +33,15 @@ export class VTHandler extends ProtocolHandler {
     this.connection.on('error', (err: Error) => this.emit('error', err));
   }
 
+  override get traits() {
+    return { inputModel: 'stream' as const, hasMdt: false };
+  }
+
+  /** Stream mode: every key round-trips; the host owns the echo. */
+  override isLocalKey(_key: string): boolean {
+    return false;
+  }
+
   get isConnected(): boolean {
     return this.connection.isConnected;
   }

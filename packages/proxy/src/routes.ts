@@ -7,7 +7,6 @@ import {
   getAllSessions,
   gracefullyDestroySession,
 } from './session.js';
-import { TN5250Handler } from './protocols/index.js';
 import {
   broadcastScreenToSession,
   cancelOrphanReapOnRestActivity,
@@ -15,7 +14,6 @@ import {
 } from './websocket.js';
 import { getKeyedSessionId, bindKey, withKeyLock } from './session-keys.js';
 import { validateEgressTarget } from './security.js';
-import { LOCAL_KEYS } from './local-keys.js';
 const router = Router();
 
 /** Build the success payload for a connected session: its id, whether it was
@@ -83,7 +81,7 @@ async function ensureSignedOn(session: Session, username?: string, password?: st
     return;
   }
   if (session.status.status === 'authenticated') return;
-  if (!(session.handler instanceof TN5250Handler)) return;
+  if (!session.handler.performAutoSignIn) return;
   const result = await session.handler.performAutoSignIn(username, password);
   if (result?.authenticated) session.markAuthenticated(username);
 }
@@ -555,7 +553,7 @@ router.post('/batch', async (req: Request, res: Response) => {
               return res.json({ success: false, error: `Unknown key: ${op.value}` });
             }
           }
-          lastRemoteKey = !LOCAL_KEYS.has(op.value);
+          lastRemoteKey = !session.handler.isLocalKey(op.value);
           break;
 
         case 'text': {
@@ -643,9 +641,14 @@ router.post('/send-key', async (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'key is required' });
   }
 
-  if (!LOCAL_KEYS.has(key)) {
-    // Remote key: race-free send + wait (listener set up before sendKey)
-    const { ok, screen } = await session.sendKeyAndWait(key, session.screenTimeout);
+  if (!session.handler.isLocalKey(key)) {
+    // Remote key: race-free send + wait (listener set up before sendKey).
+    // Stream protocols echo per keystroke (or not at all) — cap the wait
+    // so typing stays snappy without an echo.
+    const keyWaitMs = session.handler.traits.inputModel === 'stream'
+      ? Math.min(300, session.screenTimeout)
+      : session.screenTimeout;
+    const { ok, screen } = await session.sendKeyAndWait(key, keyWaitMs);
     if (!ok) {
       return res.json({ success: false, error: `Unknown key: ${key}` });
     }

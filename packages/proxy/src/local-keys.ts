@@ -1,12 +1,13 @@
 /**
- * Keys handled locally in the screen buffer — no host round-trip.
+ * Default BLOCK-MODE local-key table — keys handled in the local screen
+ * buffer with no host round-trip (TN5250/TN3270-style editing).
  *
  * Cursor moves (Tab/arrows/Home/End) and buffer edits (Backspace/Delete/Insert/
  * Reset/FieldExit) mutate local screen state only; every other key is an AID that
- * transmits to the host. This set was previously duplicated in three places
- * (routes.ts `/batch`, routes.ts module scope, controller.ts `handleKey`) with a
- * "must match" comment — a drift hazard where one edit would make REST and WS
- * disagree on whether a key round-trips. It now lives here as the single source.
+ * transmits to the host. Transports (controller/routes) never consult this set
+ * directly — they call `ProtocolHandler.isLocalKey()`, whose base implementation
+ * uses this table; stream protocols (VT) override it to route every key to the
+ * host, which owns the echo.
  */
 export const LOCAL_KEYS: ReadonlySet<string> = new Set([
   'Tab', 'Backtab', 'TAB', 'BACKTAB',

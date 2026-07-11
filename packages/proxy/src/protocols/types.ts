@@ -6,6 +6,26 @@ export type { ScreenData, ProtocolType, Field, FieldValue } from 'green-screen-t
 // Import for use in this file
 import type { ScreenData, ProtocolType, FieldValue } from 'green-screen-types';
 import type { EbcdicCodePage } from '../encoding/ebcdic.js';
+import { LOCAL_KEYS } from '../local-keys.js';
+
+/**
+ * Static, protocol-level traits the transport layers (controller, routes,
+ * session) branch on. Kept deliberately tiny — anything invocable is an
+ * optional method on ProtocolHandler instead (capability = the method
+ * exists), so call sites never need `instanceof` checks.
+ */
+export interface ProtocolTraits {
+  /**
+   * 'block'  — screen-at-a-time protocols (TN5250, TN3270, HP6530 block
+   *            mode): editing keys mutate the local buffer, AID keys
+   *            round-trip to the host.
+   * 'stream' — character-at-a-time protocols (VT): every key goes to the
+   *            host, which echoes; there is no local edit buffer.
+   */
+  inputModel: 'block' | 'stream';
+  /** Protocol has a real per-field modified-data-tag (read-mdt is meaningful). */
+  hasMdt: boolean;
+}
 
 export interface ProtocolOptions {
   /** Terminal type string for negotiation */
@@ -34,6 +54,43 @@ export interface ProtocolOptions {
  */
 export abstract class ProtocolHandler extends EventEmitter {
   abstract readonly protocol: ProtocolType;
+
+  /** Static protocol traits — see ProtocolTraits. Block-mode by default. */
+  get traits(): ProtocolTraits {
+    return { inputModel: 'block', hasMdt: false };
+  }
+
+  /**
+   * Whether a key is resolved locally in the screen buffer with no host
+   * round-trip. Default: the block-mode editing-key set (Tab/arrows/
+   * Backspace/…). Stream protocols (VT) override to false for everything —
+   * the host owns the echo. The transports (controller/routes) MUST route
+   * through this instead of consulting LOCAL_KEYS directly.
+   */
+  isLocalKey(key: string): boolean {
+    return LOCAL_KEYS.has(key);
+  }
+
+  /**
+   * OPTIONAL capability — autonomous sign-on: confirm the current screen
+   * is a credential prompt, fill user/password, submit, and classify the
+   * result. Present only on protocols with a safe, structural way to
+   * confirm a sign-on screen before typing credentials (TN5250). Absent ⇒
+   * the transports fall back to a plain screen wait and the integrator
+   * drives sign-on through the generic primitives.
+   */
+  performAutoSignIn?(
+    username: string,
+    password: string,
+  ): Promise<{ screen: ScreenData; authenticated: boolean } | null>;
+
+  /**
+   * OPTIONAL capability — best-effort host-side sign-off before the TCP
+   * socket is dropped (TN5250 types SIGNOFF so IBM i reaps the interactive
+   * job instead of tripping LMTDEVSSN/CPF1220). Absent ⇒ graceful
+   * disconnect degrades to a plain destroy.
+   */
+  attemptGracefulExit?(timeoutMs?: number): Promise<boolean>;
 
   /** Connect to a remote host */
   abstract connect(host: string, port: number, options?: ProtocolOptions): Promise<void>;

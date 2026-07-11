@@ -108,6 +108,15 @@ export class TN5250Handler extends ProtocolHandler {
    * almost immediately once it sees the host-side SIGNOFF, whereas a bare
    * TCP FIN leaves the job hanging until QDEVRCYACN picks it up.
    */
+  override get traits() {
+    return { inputModel: 'block' as const, hasMdt: true };
+  }
+
+  /** Capability alias — the protocol-agnostic graceful-exit seam. */
+  override attemptGracefulExit(timeoutMs: number = 1500): Promise<boolean> {
+    return this.attemptSignOff(timeoutMs);
+  }
+
   async attemptSignOff(timeoutMs: number = 1500): Promise<boolean> {
     if (!this.connection.isConnected) return false;
 

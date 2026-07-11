@@ -389,9 +389,9 @@ export class Session extends EventEmitter {
     this.stopIdleTimer();
     this.stopConnectWatchdog();
     const isAuth = this._status.status === 'authenticated';
-    if (isAuth && typeof (this.handler as any).attemptSignOff === 'function') {
+    if (isAuth && this.handler.attemptGracefulExit) {
       try {
-        await (this.handler as any).attemptSignOff(timeoutMs);
+        await this.handler.attemptGracefulExit(timeoutMs);
       } catch {
         // best-effort — fall through to hard disconnect
       }
