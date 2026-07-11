@@ -36,8 +36,16 @@ export interface Field {
   is_underscored?: boolean;
   /** Whether the field is non-display (hidden input, e.g. password fields) */
   is_non_display?: boolean;
-  /** 5250 display color derived from the field attribute byte */
+  /** Display color derived from the field attribute byte (5250) or the
+   *  extended color attribute (3270 SFE/SA — COLOR bytes 0xF1–0xF7 map 1:1
+   *  onto this union). */
   color?: FieldColor;
+  /**
+   * Numeric-only input field. 3270: the field-attribute NUMERIC bit.
+   * 5250 exposes the richer `shift_type` instead ('numeric_only' /
+   * 'digits_only' / 'signed_num'); protocols without field typing omit it.
+   */
+  is_numeric?: boolean;
   /**
    * Highlight-on-entry attribute byte (FCW 0x89xx). When the cursor is
    * inside this field, the frontend should apply this attribute instead of

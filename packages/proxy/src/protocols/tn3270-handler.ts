@@ -4,6 +4,7 @@ import { TN3270Connection } from '../tn3270/connection.js';
 import { ScreenBuffer3270 } from '../tn3270/screen.js';
 import { TN3270Parser } from '../tn3270/parser.js';
 import { TN3270Encoder } from '../tn3270/encoder.js';
+import { KEY_TO_AID } from '../tn3270/constants.js';
 
 /**
  * TN3270 protocol handler — implements the ProtocolHandler interface
@@ -34,6 +35,10 @@ export class TN3270Handler extends ProtocolHandler {
   }
 
   async connect(host: string, port: number, options?: ProtocolOptions): Promise<void> {
+    // Drop any state left from a previous session on this handler — an
+    // in-place reconnect must not render the pre-drop screen (same
+    // rationale as the 5250 reconnect-reset).
+    this.screen.reset();
     const connectTimeout = options?.connectTimeout as number | undefined;
     await this.connection.connect(host, port, connectTimeout);
   }
@@ -54,6 +59,10 @@ export class TN3270Handler extends ProtocolHandler {
     const response = this.encoder.buildAidResponse(keyName);
     if (!response) return false;
     this.connection.sendRaw(response);
+    // Transmitting an AID inhibits input until the host's WCC keyboard
+    // restore; remember the AID for host-initiated Read Modified replies.
+    this.screen.keyboardLocked = true;
+    this.screen.lastAid = KEY_TO_AID[keyName] ?? this.screen.lastAid;
     return true;
   }
 

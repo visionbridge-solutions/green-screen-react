@@ -8,7 +8,7 @@ import { charToEbcdic, EBCDIC_SPACE } from '../encoding/ebcdic.js';
  * for sending back to the z/OS host.
  */
 export class TN3270Encoder {
-  private screen: ScreenBuffer3270;
+  private readonly screen: ScreenBuffer3270;
 
   constructor(screen: ScreenBuffer3270) {
     this.screen = screen;
@@ -22,18 +22,17 @@ export class TN3270Encoder {
     const aidByte = KEY_TO_AID[keyName];
     if (aidByte === undefined) return null;
 
-    const parts: Buffer[] = [];
-
-    // AID byte
-    parts.push(Buffer.from([aidByte]));
-
-    // Cursor address (2 bytes)
-    parts.push(encodeAddress(this.screen.cursorAddr, this.screen.size));
-
-    // For short-read AIDs (PA keys, Clear), no field data
+    // Short-read AIDs (PA keys, Clear) transmit the AID byte ONLY — no
+    // cursor address, no field data (GA23-0059 "short read").
     if (aidByte === AID.PA1 || aidByte === AID.PA2 || aidByte === AID.PA3 || aidByte === AID.CLEAR) {
-      return this.wrapWithEOR(Buffer.concat(parts));
+      return this.wrapWithEOR(Buffer.from([aidByte]));
     }
+
+    // AID byte + cursor address (2 bytes)
+    const parts: Buffer[] = [
+      Buffer.from([aidByte]),
+      encodeAddress(this.screen.cursorAddr, this.screen.size),
+    ];
 
     // Collect modified fields
     for (const field of this.screen.fields) {
@@ -75,10 +74,10 @@ export class TN3270Encoder {
    */
   private wrapWithEOR(data: Buffer): Buffer {
     const escaped: number[] = [];
-    for (let i = 0; i < data.length; i++) {
-      escaped.push(data[i]);
-      if (data[i] === TELNET.IAC) {
-        escaped.push(TELNET.IAC);
+    for (const byte of data) {
+      escaped.push(byte);
+      if (byte === TELNET.IAC) {
+        escaped.push(TELNET.IAC); // escape 0xFF in data
       }
     }
     escaped.push(TELNET.IAC, TELNET.EOR);
@@ -98,7 +97,7 @@ export class TN3270Encoder {
 
     for (const ch of text) {
       if (cursorAddr === fieldEnd) break;
-      this.screen.buffer[cursorAddr] = ch;
+      this.screen.setCharAt(cursorAddr, ch, charToEbcdic(ch));
       cursorAddr = (cursorAddr + 1) % this.screen.size;
     }
 

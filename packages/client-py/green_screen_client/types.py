@@ -47,6 +47,9 @@ class Field:
     is_underscored: Optional[bool] = None
     is_non_display: Optional[bool] = None
     color: Optional[FieldColor] = None
+    # Numeric-only input field (3270 field-attribute NUMERIC bit; 5250
+    # exposes the richer shift_type instead).
+    is_numeric: Optional[bool] = None
     highlight_entry_attr: Optional[int] = None
     resequence: Optional[int] = None
     progression_id: Optional[int] = None
@@ -81,6 +84,7 @@ class Field:
             is_underscored=data.get("is_underscored"),
             is_non_display=data.get("is_non_display"),
             color=data.get("color"),
+            is_numeric=data.get("is_numeric"),
             highlight_entry_attr=data.get("highlight_entry_attr"),
             resequence=data.get("resequence"),
             progression_id=data.get("progression_id"),

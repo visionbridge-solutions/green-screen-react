@@ -1,6 +1,5 @@
-// === Telnet Constants (shared with TN5250) ===
+// === Telnet Constants (shared across protocols) ===
 export { TELNET } from '../net/telnet.js';
-import { TELNET } from '../net/telnet.js';
 
 // === 3270 Command Codes ===
 export const CMD3270 = {
@@ -38,12 +37,14 @@ export const ORDER3270 = {
 } as const;
 
 // === WCC (Write Control Character) bits ===
+// Per GA23-0059 (and x3270 ctlr.c): the previous table here had RESET_MDT
+// and the keyboard bit wrong — keyboard restore is 0x02, reset-MDT is 0x01.
 export const WCC = {
-  RESET_MDT: 0x02,           // Reset Modified Data Tags
-  RESET_KEYBOARD: 0x40,      // Reset keyboard lock
-  SOUND_ALARM: 0x04,         // Sound audible alarm
-  RESET_PARTITION: 0x01,     // Reset partition characteristics
+  RESET: 0x40,               // Reset partition characteristics
   START_PRINTER: 0x08,       // Start printer
+  SOUND_ALARM: 0x04,         // Sound audible alarm
+  KEYBOARD_RESTORE: 0x02,    // Unlock keyboard + reset AID
+  RESET_MDT: 0x01,           // Reset Modified Data Tags
 } as const;
 
 // === 3270 AID (Attention Identifier) bytes ===
