@@ -1,7 +1,7 @@
 import { ScreenBuffer, FieldDef, ExtAttr } from './screen.js';
 import { CMD, ORDER, OPCODE, ATTR, WDSF_TYPE, WDSF_CLASS } from './constants.js';
-import { ebcdicToChar, ebcdicSymbolChar, EBCDIC_SPACE } from './ebcdic.js';
-import { SI, SO, decodeDbcsPair } from './ebcdic-jp.js';
+import { ebcdicToChar, ebcdicSymbolChar, EBCDIC_SPACE } from '../encoding/ebcdic.js';
+import { SI, SO, decodeDbcsPair } from '../encoding/ebcdic-jp.js';
 
 /**
  * Parses 5250 data stream records and updates the screen buffer.

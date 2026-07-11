@@ -1,7 +1,7 @@
 import { ScreenBuffer3270 } from './screen.js';
-import { TELNET } from '../tn5250/constants.js';
+import { TELNET } from '../net/telnet.js';
 import { KEY_TO_AID, AID, ORDER, encodeAddress } from './constants.js';
-import { charToEbcdic, EBCDIC_SPACE } from '../tn5250/ebcdic.js';
+import { charToEbcdic, EBCDIC_SPACE } from '../encoding/ebcdic.js';
 
 /**
  * Encodes 3270 client responses (AID key + modified field data)

@@ -1,6 +1,6 @@
 import { ScreenBuffer, FieldDef } from './screen.js';
 import { TELNET, KEY_TO_AID, AID, FFW, CMD, RECORD_H, RECORD_OPCODE } from './constants.js';
-import { charToEbcdic, EBCDIC_SPACE } from './ebcdic.js';
+import { charToEbcdic, EBCDIC_SPACE } from '../encoding/ebcdic.js';
 import { aidTransmitsData } from './command-keys.js';
 
 /**

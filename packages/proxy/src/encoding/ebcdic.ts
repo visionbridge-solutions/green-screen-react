@@ -11,14 +11,16 @@ import { EBCDIC_CP290_TO_UNICODE } from './ebcdic-jp.js';
  * - 'cp290'  — CCSID 290  (Japan Katakana) — pair with DBCS for CCSID 930
  * - 'cp273'  — CCSID 273  (Germany / Austria)
  * - 'cp500'  — CCSID 500  (International Latin-1)
+ * - 'cp1047' — CCSID 1047 (Latin-1 / Open Systems — the common z/OS code page)
  * - 'cp1140' — CCSID 1140 (US/Canada + euro)
  * - 'cp1141' — CCSID 1141 (Germany / Austria + euro)
  * - 'cp1148' — CCSID 1148 (International Latin-1 + euro)
  *
- * The Latin-1 variants (273/500/1140/1141/1148) are expressed as byte→Unicode
- * deltas over the CP37 base in ``EBCDIC_VARIANT_DELTAS`` — they share CP37's
- * invariant positions and differ only at the national-variant / euro bytes.
- * Deltas were generated from Python's authoritative ``codecs`` tables; add a new
+ * The Latin-1 variants (273/500/1047/1140/1141/1148) are expressed as
+ * byte→Unicode deltas over the CP37 base in ``EBCDIC_VARIANT_DELTAS`` — they
+ * share CP37's invariant positions and differ only at the national-variant /
+ * euro bytes. Deltas were generated from Python's authoritative ``codecs``
+ * tables (cp1047 from the ICU-derived ``ebcdic`` package); add a new
  * single-byte CCSID by appending its delta map (no full 256-entry table needed).
  * Keep this protocol-generic — no host-specific logic belongs here.
  */
@@ -27,6 +29,7 @@ export type EbcdicCodePage =
   | 'cp290'
   | 'cp273'
   | 'cp500'
+  | 'cp1047'
   | 'cp1140'
   | 'cp1141'
   | 'cp1148';
@@ -123,9 +126,17 @@ const CP500_DELTA: Record<number, number> = {
   0xB0: 0x00A2, 0xBA: 0x00AC, 0xBB: 0x007C,
 };
 
+// CCSID 1047 — Latin-1 / Open Systems (z/OS). Note the LF/NEL swap at
+// 0x15/0x25 — real 1047, not the z/OS USS "swaplfnl" variant.
+const CP1047_DELTA: Record<number, number> = {
+  0x15: 0x000A, 0x25: 0x0085, 0x5F: 0x005E, 0xAD: 0x005B,
+  0xB0: 0x00AC, 0xBA: 0x00DD, 0xBB: 0x00A8, 0xBD: 0x005D,
+};
+
 const EBCDIC_VARIANT_DELTAS: Partial<Record<EbcdicCodePage, Record<number, number>>> = {
   cp273: CP273_DELTA,
   cp500: CP500_DELTA,
+  cp1047: CP1047_DELTA,
   cp1140: { ...EURO_AT_9F },                  // CCSID 1140 — CP37 + euro
   cp1141: { ...CP273_DELTA, ...EURO_AT_9F },  // CCSID 1141 — CP273 + euro
   cp1148: { ...CP500_DELTA, ...EURO_AT_9F },  // CCSID 1148 — CP500 + euro

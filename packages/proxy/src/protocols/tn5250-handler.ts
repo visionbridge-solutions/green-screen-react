@@ -62,7 +62,7 @@ export class TN5250Handler extends ProtocolHandler {
     // hiragana/katakana/symbols render without further setup. A full
     // Kanji table can be layered on top via `registerDbcsTable(...)`.
     if (this.screen.codePage === 'cp290') {
-      const { registerBuiltinDbcsTable } = await import('../tn5250/ebcdic-jp-builtin.js');
+      const { registerBuiltinDbcsTable } = await import('../encoding/ebcdic-jp-builtin.js');
       registerBuiltinDbcsTable();
     }
 

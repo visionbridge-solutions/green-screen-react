@@ -22,30 +22,9 @@ export const SI = 0x0f; // Shift In (G0 charset)
 export const DEL = 0x7f;
 
 // ---------------------------------------------------------------------------
-// Telnet constants (standard RFC 854 / RFC 855)
+// Telnet constants (standard RFC 854 / RFC 855) — shared across protocols
 // ---------------------------------------------------------------------------
-export const TELNET = {
-  IAC: 0xff,
-  DONT: 0xfe,
-  DO: 0xfd,
-  WONT: 0xfc,
-  WILL: 0xfb,
-  SB: 0xfa,
-  SE: 0xf0,
-  GA: 0xf9,
-  NOP: 0xf1,
-
-  // Options
-  OPT_BINARY: 0x00,
-  OPT_ECHO: 0x01,
-  OPT_SGA: 0x03, // Suppress Go Ahead
-  OPT_TTYPE: 0x18, // Terminal Type
-  OPT_NAWS: 0x1f, // Negotiate About Window Size
-
-  // Subnegotiation
-  TTYPE_IS: 0x00,
-  TTYPE_SEND: 0x01,
-} as const;
+export { TELNET } from '../net/telnet.js';
 
 // ---------------------------------------------------------------------------
 // Screen defaults

@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { SCREEN } from './constants.js';
-import type { EbcdicCodePage } from './ebcdic.js';
+import type { EbcdicCodePage } from '../encoding/ebcdic.js';
 import type { ScreenData, Field, CellExtAttr } from 'green-screen-types';
 import { computeStructuralSignature } from '../structural-signature.js';
 import { computeScreenId } from './screen-id.js';

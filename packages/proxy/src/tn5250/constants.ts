@@ -1,30 +1,5 @@
-// === Telnet Constants ===
-export const TELNET = {
-  IAC: 0xFF,   // Interpret As Command
-  DONT: 0xFE,
-  DO: 0xFD,
-  WONT: 0xFC,
-  WILL: 0xFB,
-  SB: 0xFA,    // Subnegotiation Begin
-  SE: 0xF0,    // Subnegotiation End
-  EOR: 0xEF,   // End of Record
-  NOP: 0xF1,
-
-  // Telnet options
-  OPT_BINARY: 0x00,
-  OPT_ECHO: 0x01,
-  OPT_SGA: 0x03,       // Suppress Go Ahead
-  OPT_TIMING_MARK: 0x06, // Timing Mark (RFC 860) — keep-alive probe
-  OPT_TTYPE: 0x18,     // Terminal Type
-  OPT_EOR: 0x19,       // End of Record
-  OPT_NAWS: 0x1F,      // Negotiate About Window Size
-  OPT_NEW_ENVIRON: 0x27, // New Environment
-  OPT_TN5250E: 0x28,   // TN5250E (40 decimal)
-
-  // Terminal type subneg
-  TTYPE_IS: 0x00,
-  TTYPE_SEND: 0x01,
-} as const;
+// === Telnet Constants (shared across protocols) ===
+export { TELNET } from '../net/telnet.js';
 
 // === 5250 Data Stream Constants ===
 

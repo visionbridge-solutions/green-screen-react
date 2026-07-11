@@ -1,6 +1,6 @@
 import { ScreenBuffer3270 } from './screen.js';
 import { CMD, SNA_CMD, ORDER, FA, EXT_ATTR, decodeAddress } from './constants.js';
-import { ebcdicToChar } from '../tn5250/ebcdic.js';
+import { ebcdicToChar } from '../encoding/ebcdic.js';
 
 /**
  * Parses 3270 data stream records and updates the screen buffer.

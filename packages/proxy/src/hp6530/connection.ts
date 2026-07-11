@@ -1,6 +1,6 @@
 import * as net from 'net';
 import { EventEmitter } from 'events';
-import { TELNET } from '../tn5250/constants.js';
+import { TELNET } from '../net/telnet.js';
 import { TERMINAL_TYPE, CTRL } from './constants.js';
 
 export interface ConnectionEvents {

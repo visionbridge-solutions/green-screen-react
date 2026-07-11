@@ -1,6 +1,6 @@
 import { createProtocolHandler, ProtocolHandler, TN5250Handler } from './protocols/index.js';
 import type { ProtocolType, ScreenData } from './protocols/index.js';
-import type { EbcdicCodePage } from './tn5250/ebcdic.js';
+import type { EbcdicCodePage } from './encoding/ebcdic.js';
 import { LOCAL_KEYS } from './local-keys.js';
 
 /**

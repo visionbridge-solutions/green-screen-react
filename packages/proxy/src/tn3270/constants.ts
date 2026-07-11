@@ -1,6 +1,6 @@
 // === Telnet Constants (shared with TN5250) ===
-export { TELNET } from '../tn5250/constants.js';
-import { TELNET } from '../tn5250/constants.js';
+export { TELNET } from '../net/telnet.js';
+import { TELNET } from '../net/telnet.js';
 
 // === 3270 Command Codes ===
 export const CMD3270 = {

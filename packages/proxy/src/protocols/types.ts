@@ -5,7 +5,7 @@ export type { ScreenData, ProtocolType, Field, FieldValue } from 'green-screen-t
 
 // Import for use in this file
 import type { ScreenData, ProtocolType, FieldValue } from 'green-screen-types';
-import type { EbcdicCodePage } from '../tn5250/ebcdic.js';
+import type { EbcdicCodePage } from '../encoding/ebcdic.js';
 
 export interface ProtocolOptions {
   /** Terminal type string for negotiation */

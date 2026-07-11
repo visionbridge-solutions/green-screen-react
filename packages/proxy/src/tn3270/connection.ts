@@ -1,6 +1,6 @@
 import * as net from 'net';
 import { EventEmitter } from 'events';
-import { TELNET } from '../tn5250/constants.js';
+import { TELNET, TelnetRecordStream } from '../net/telnet.js';
 import { TERMINAL_TYPE } from './constants.js';
 
 /**
@@ -15,7 +15,11 @@ export class TN3270Connection extends EventEmitter {
   private host: string = '';
   private port: number = 23;
   private connected: boolean = false;
-  private recvBuffer: Buffer = Buffer.alloc(0);
+  private readonly stream = new TelnetRecordStream({
+    onNegotiation: (cmd, option) => this.handleNegotiation(cmd, option),
+    onSubnegotiation: (data) => this.handleSubnegotiation(data),
+    onRecord: (record) => this.onRecord(record),
+  });
   private tn3270eMode: boolean = false;
 
   get isConnected(): boolean {
@@ -30,7 +34,7 @@ export class TN3270Connection extends EventEmitter {
 
       this.host = host;
       this.port = port;
-      this.recvBuffer = Buffer.alloc(0);
+      this.stream.reset();
       this.tn3270eMode = false;
 
       this.socket = new net.Socket();
@@ -95,101 +99,20 @@ export class TN3270Connection extends EventEmitter {
   }
 
   private onData(data: Buffer): void {
-    this.recvBuffer = Buffer.concat([this.recvBuffer, data]);
-    this.processBuffer();
+    this.stream.feed(data);
   }
 
-  private processBuffer(): void {
-    while (this.recvBuffer.length > 0) {
-      // Check for Telnet commands
-      if (this.recvBuffer[0] === TELNET.IAC && this.recvBuffer.length >= 2) {
-        const cmd = this.recvBuffer[1];
-
-        if (cmd === TELNET.IAC) {
-          // Escaped 0xFF — part of data stream
-          break;
-        }
-
-        // Subnegotiation
-        if (cmd === TELNET.SB) {
-          const seIdx = this.findSubnegEnd();
-          if (seIdx === -1) return;
-          const subData = this.recvBuffer.subarray(2, seIdx);
-          this.recvBuffer = this.recvBuffer.subarray(seIdx + 2);
-          this.handleSubnegotiation(subData);
-          continue;
-        }
-
-        // DO/DONT/WILL/WONT
-        if (cmd === TELNET.DO || cmd === TELNET.DONT || cmd === TELNET.WILL || cmd === TELNET.WONT) {
-          if (this.recvBuffer.length < 3) return;
-          const option = this.recvBuffer[2];
-          this.recvBuffer = this.recvBuffer.subarray(3);
-          this.handleNegotiation(cmd, option);
-          continue;
-        }
-
-        if (cmd === TELNET.EOR) {
-          this.recvBuffer = this.recvBuffer.subarray(2);
-          continue;
-        }
-
-        // Skip unknown 2-byte commands
-        this.recvBuffer = this.recvBuffer.subarray(2);
-        continue;
+  private onRecord(record: Buffer): void {
+    // In TN3270E mode, strip the 5-byte header (proper RFC 2355 header
+    // handling lands with the TN3270E negotiation rework).
+    if (this.tn3270eMode && record.length > 5) {
+      const dataRecord = record.subarray(5);
+      if (dataRecord.length > 0) {
+        this.emit('data', dataRecord);
       }
-
-      // Extract a 3270 record: data terminated by IAC EOR
-      const recordEnd = this.findRecordEnd();
-      if (recordEnd === -1) return;
-
-      const rawRecord = this.recvBuffer.subarray(0, recordEnd);
-      this.recvBuffer = this.recvBuffer.subarray(recordEnd + 2);
-
-      const record = this.unescapeIAC(rawRecord);
-      if (record.length > 0) {
-        // In TN3270E mode, strip the 5-byte header
-        if (this.tn3270eMode && record.length > 5) {
-          const dataRecord = record.subarray(5);
-          if (dataRecord.length > 0) {
-            this.emit('data', dataRecord);
-          }
-        } else {
-          this.emit('data', record);
-        }
-      }
+    } else {
+      this.emit('data', record);
     }
-  }
-
-  private findSubnegEnd(): number {
-    for (let i = 2; i < this.recvBuffer.length - 1; i++) {
-      if (this.recvBuffer[i] === TELNET.IAC && this.recvBuffer[i + 1] === TELNET.SE) {
-        return i;
-      }
-    }
-    return -1;
-  }
-
-  private findRecordEnd(): number {
-    for (let i = 0; i < this.recvBuffer.length - 1; i++) {
-      if (this.recvBuffer[i] === TELNET.IAC && this.recvBuffer[i + 1] === TELNET.EOR) {
-        return i;
-      }
-    }
-    return -1;
-  }
-
-  private unescapeIAC(data: Buffer): Buffer {
-    const result: number[] = [];
-    for (let i = 0; i < data.length; i++) {
-      if (data[i] === TELNET.IAC && i + 1 < data.length && data[i + 1] === TELNET.IAC) {
-        result.push(TELNET.IAC);
-        i++;
-      } else {
-        result.push(data[i]);
-      }
-    }
-    return Buffer.from(result);
   }
 
   private handleNegotiation(cmd: number, option: number): void {

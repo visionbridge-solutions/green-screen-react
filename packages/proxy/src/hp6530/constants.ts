@@ -1,5 +1,5 @@
 // === Telnet Constants (reuse from TN5250) ===
-export { TELNET } from '../tn5250/constants.js';
+export { TELNET } from '../net/telnet.js';
 
 // === HP 6530 Terminal Constants ===
 
