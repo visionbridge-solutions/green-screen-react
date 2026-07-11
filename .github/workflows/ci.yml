@@ -19,5 +19,20 @@ jobs:
       - run: npm run lint -w packages/react
       - run: npm run test -w packages/react
       - run: npm run build -w packages/react
+      - run: npm run lint -w packages/proxy
+      - run: npm run test -w packages/proxy
       - run: npm run build -w packages/proxy
       - run: npm run build:ui -w packages/standalone
+
+  python-client:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/client-py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e '.[test]'
+      - run: pytest
