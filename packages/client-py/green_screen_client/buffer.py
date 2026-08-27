@@ -149,6 +149,9 @@ class ProxyTerminalClient:
         auto_reconnect: Optional[bool] = None,
         timeout: float = 30.0,
         auth_token: Optional[str] = None,
+        tls: Optional[bool] = None,
+        tls_verify: Optional[bool] = None,
+        ca_cert: Optional[str] = None,
     ) -> None:
         # Bearer token forwarded to REST + WS when the proxy runs with
         # GS_PROXY_AUTH_TOKEN. None ⇒ unauthenticated proxy (legacy default).
@@ -163,6 +166,12 @@ class ProxyTerminalClient:
         self._device_name = device_name
         # Opt in to proxy-driven recovery (see ConnectConfig.auto_reconnect).
         self._auto_reconnect = auto_reconnect
+        # Telnet-over-TLS (see ConnectConfig.tls — capability preflight +
+        # security-echo assertion happen in RestClient.connect; both are hard
+        # errors, never a plaintext degrade).
+        self._tls = tls
+        self._tls_verify = tls_verify
+        self._ca_cert = ca_cert
         self.screen = ScreenBuffer()
         self._connected = False
         self._error_message: Optional[str] = None
@@ -199,6 +208,9 @@ class ProxyTerminalClient:
                 code_page=self._code_page,
                 device_name=self._device_name,
                 auto_reconnect=self._auto_reconnect,
+                tls=self._tls,
+                tls_verify=self._tls_verify,
+                ca_cert=self._ca_cert,
                 connect_timeout=int(self._rest._timeout * 1000),
                 key=key,
                 force_new=force_new,
@@ -235,6 +247,9 @@ class ProxyTerminalClient:
                 code_page=self._code_page,
                 device_name=self._device_name,
                 auto_reconnect=self._auto_reconnect,
+                tls=self._tls,
+                tls_verify=self._tls_verify,
+                ca_cert=self._ca_cert,
                 username=username,
                 password=password,
                 connect_timeout=int(self._rest._timeout * 1000),
