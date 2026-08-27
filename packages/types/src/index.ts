@@ -339,4 +339,17 @@ export interface ConnectConfig {
    * If omitted, the proxy derives it from the terminal type.
    */
   codePage?: 'cp37' | 'cp290';
+  /**
+   * Telnet-over-TLS to the host (IBM i "Telnet SSL", conventionally port
+   * 992). The proxy completes the handshake before any telnet byte flows;
+   * a handshake failure fails the connect — never a plaintext fallback.
+   * Clients that REQUIRE TLS should probe the proxy's `/status`
+   * `capabilities` for 'tls' first and assert the connect response's
+   * `security.tls` echo (actual socket state, never request-echoed).
+   */
+  tls?: boolean;
+  /** Verify the host certificate chain (default true). */
+  tlsVerify?: boolean;
+  /** PEM CA (or the host's self-signed cert) to trust for verification. */
+  caCert?: string;
 }

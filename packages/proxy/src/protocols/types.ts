@@ -44,6 +44,19 @@ export interface ProtocolOptions {
    * (e.g. 'IBM-5555-C01' for Japanese) or defaults to 'cp37'.
    */
   codePage?: EbcdicCodePage;
+  /**
+   * Telnet-over-TLS to the host (IBM i "Telnet SSL", conventionally port
+   * 992; TN3270 hosts use 992/telnets equivalently). The handshake must
+   * complete before any protocol byte flows; a failure rejects the connect —
+   * never a silent fallback to plaintext. Protocols that don't implement it
+   * ignore the flag, which is why integrators must assert the ACTUAL state
+   * via `getSecurity()` rather than trusting the request.
+   */
+  tls?: boolean;
+  /** Verify the host certificate chain (default true). */
+  tlsVerify?: boolean;
+  /** PEM CA (or the host's self-signed cert) to trust for verification. */
+  caCert?: string;
   /** Protocol-specific options */
   [key: string]: unknown;
 }
@@ -159,6 +172,17 @@ export abstract class ProtocolHandler extends EventEmitter {
 
   /** Send raw bytes over the connection */
   abstract sendRaw(data: Buffer): void;
+
+  /**
+   * Actual transport security of the live connection, read from socket
+   * state — NEVER echoed from the requested options. Integrators that
+   * require encryption (e.g. a compliance-gated deployment) assert this
+   * after connect; the default (no TLS support) reports false, so an
+   * older/incapable handler can never masquerade as secured.
+   */
+  getSecurity(): { tls: boolean } {
+    return { tls: false };
+  }
 
   /**
    * Liveness signal for the underlying TCP — wall-clock ms timestamps

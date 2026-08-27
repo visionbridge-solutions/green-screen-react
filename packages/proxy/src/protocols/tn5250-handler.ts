@@ -87,8 +87,19 @@ export class TN5250Handler extends ProtocolHandler {
     this.screen.reset();
     this.parser.reset();
 
-    const connectTimeout = options?.connectTimeout as number | undefined;
-    await this.connection.connect(host, port, termType, connectTimeout);
+    await this.connection.connect(host, port, {
+      terminalType: termType,
+      connectTimeout: options?.connectTimeout as number | undefined,
+      tls: options?.tls === true,
+      tlsVerify: options?.tlsVerify !== false,
+      caCert: typeof options?.caCert === 'string' ? options.caCert : undefined,
+    });
+  }
+
+  /** Actual transport security of the live socket — never echoed from the
+   * requested options (see ProtocolHandler.getSecurity). */
+  getSecurity(): { tls: boolean } {
+    return { tls: this.connection.isTls };
   }
 
   disconnect(): void {

@@ -27,9 +27,19 @@ function sessionConnectPayload(session: Session, reused: boolean): Record<string
     sessionId: session.id,
     reused,
     authenticated: session.status.status === 'authenticated',
+    // Actual socket security state (handler-reported, never request-echoed).
+    // Callers that requested tls MUST assert security.tls here — an older
+    // proxy that doesn't know the flag omits the field entirely, which
+    // clients treat the same as false.
+    security: session.handler.getSecurity(),
     ...session.getScreenData(),
   };
 }
+
+/** Feature flags a client can probe BEFORE sending credentials in /connect.
+ *  A client that needs TLS checks for 'tls' here and refuses to proceed
+ *  against a proxy that predates it (fail-closed against silent plaintext). */
+const PROXY_CAPABILITIES = ['tls'] as const;
 
 interface FreshConnectOpts {
   host: string;
@@ -51,6 +61,13 @@ interface FreshConnectOpts {
    *  TCP in place (replaying the DEVNAME) and emits ``session.reconnected`` with
    *  ``needsSignOn`` instead of surfacing a lost session. */
   autoReconnect?: boolean;
+  /** Telnet-over-TLS (see ProtocolOptions.tls). Handshake failure fails the
+   *  connect — never a plaintext fallback. */
+  tls?: boolean;
+  /** Verify the host certificate chain (default true). */
+  tlsVerify?: boolean;
+  /** PEM CA / self-signed host cert to trust. */
+  caCert?: string;
 }
 
 /** Create a session and open its TCP connection (no sign-on). */
@@ -66,6 +83,9 @@ async function freshConnectSession(opts: FreshConnectOpts): Promise<Session> {
   if (typeof opts.connectTimeout === 'number' && opts.connectTimeout > 0) connectOptions.connectTimeout = opts.connectTimeout;
   if (opts.deviceName) connectOptions.deviceName = opts.deviceName;
   if (opts.autoReconnect) connectOptions.autoReconnect = true;
+  if (opts.tls === true) connectOptions.tls = true;
+  if (opts.tlsVerify === false) connectOptions.tlsVerify = false;
+  if (typeof opts.caCert === 'string' && opts.caCert.length > 0) connectOptions.caCert = opts.caCert;
   await session.connect(opts.host, opts.port, Object.keys(connectOptions).length > 0 ? connectOptions : undefined);
   return session;
 }
@@ -133,7 +153,7 @@ async function typeTextAnimated(session: Session, text: string): Promise<boolean
 // POST /connect
 router.post('/connect', async (req: Request, res: Response) => {
   try {
-    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, codePage, screenTimeout, connectTimeout, username, password, key, forceNew, deviceName, autoReconnect } = req.body || {};
+    const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, codePage, screenTimeout, connectTimeout, username, password, key, forceNew, deviceName, autoReconnect, tls, tlsVerify, caCert } = req.body || {};
 
     // Egress (SSRF) validation BEFORE any socket opens. No-op unless the
     // integrator enabled GS_PROXY_BLOCK_PRIVATE / GS_PROXY_HOST_ALLOWLIST; always
@@ -143,7 +163,7 @@ router.post('/connect', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: egress.reason });
     }
 
-    const opts: FreshConnectOpts = { host, port, protocol, terminalType, codePage, screenTimeout, connectTimeout, deviceName, autoReconnect };
+    const opts: FreshConnectOpts = { host, port, protocol, terminalType, codePage, screenTimeout, connectTimeout, deviceName, autoReconnect, tls, tlsVerify, caCert };
 
     // ── Connect-by-key: at most one live session per key ──
     // A burst of reconnects for one logical agent serialises on the per-key
@@ -314,9 +334,15 @@ router.get('/status', (req: Request, res: Response) => {
     return res.json({
       ok: true,
       sessions: getAllSessions().length,
+      // Probed by clients BEFORE /connect: a client that needs a feature
+      // (e.g. tls) refuses to connect through a proxy that doesn't list it.
+      capabilities: PROXY_CAPABILITIES,
     });
   }
-  res.json(session.status);
+  // capabilities rides BOTH branches: with a single live session, a bare
+  // probe resolves the default session, and a capability-checking client
+  // must still get an answer (not a false "unsupported").
+  res.json({ ...session.status, security: session.handler.getSecurity(), capabilities: PROXY_CAPABILITIES });
 });
 
 // GET /liveness — unambiguous half-open detection.

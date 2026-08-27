@@ -1,4 +1,5 @@
 import * as net from 'net';
+import * as tls from 'tls';
 import { EventEmitter } from 'events';
 import { TELNET, TERMINAL_TYPE as DEFAULT_TERMINAL_TYPE } from './constants.js';
 import { TelnetRecordStream } from '../net/telnet.js';
@@ -10,6 +11,26 @@ export interface ConnectionEvents {
   error: (err: Error) => void;
 }
 
+export interface TN5250ConnectOptions {
+  /** Terminal type for TTYPE negotiation (e.g. 'IBM-3179-2'). */
+  terminalType?: string;
+  connectTimeout?: number;
+  /**
+   * Telnet-over-TLS (IBM i "Telnet SSL", conventionally port 992). The TLS
+   * handshake must complete before any telnet byte flows; a handshake
+   * failure rejects the connect — there is NO fallback to plaintext.
+   */
+  tls?: boolean;
+  /**
+   * Verify the host certificate chain (default true). Set false only for
+   * hosts with self-signed certs that can't be pinned via `caCert` —
+   * traffic is still encrypted, but not MITM-resistant.
+   */
+  tlsVerify?: boolean;
+  /** PEM CA (or self-signed host cert) to trust for verification. */
+  caCert?: string;
+}
+
 /**
  * Manages raw TCP socket to IBM i, handles Telnet negotiation,
  * and extracts 5250 data records (delimited by IAC EOR).
@@ -19,6 +40,10 @@ export class TN5250Connection extends EventEmitter {
   private host: string = '';
   private port: number = 23;
   private connected: boolean = false;
+  /** True iff the CURRENT socket completed a TLS handshake. Read from actual
+   * socket state at connect time, never echoed from the request — integrators
+   * assert this to prove no plaintext leg exists (see routes `security.tls`). */
+  private secured: boolean = false;
   private readonly stream = new TelnetRecordStream({
     onNegotiation: (cmd, option) => this.handleNegotiation(cmd, option),
     onSubnegotiation: (data) => this.handleSubnegotiation(data),
@@ -59,6 +84,11 @@ export class TN5250Connection extends EventEmitter {
     return this.connected;
   }
 
+  /** Whether the live socket is TLS-secured (false when disconnected). */
+  get isTls(): boolean {
+    return this.connected && this.secured;
+  }
+
   get remoteHost(): string {
     return this.host;
   }
@@ -88,7 +118,7 @@ export class TN5250Connection extends EventEmitter {
     this.envVars = { ...vars };
   }
 
-  connect(host: string, port: number, terminalType?: string, connectTimeout?: number): Promise<void> {
+  connect(host: string, port: number, options?: TN5250ConnectOptions): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.socket) {
         this.disconnect();
@@ -98,24 +128,34 @@ export class TN5250Connection extends EventEmitter {
       this.port = port;
       this.stream.reset();
       this.negotiationDone = false;
-      this.terminalType = terminalType || DEFAULT_TERMINAL_TYPE;
-
-      this.socket = new net.Socket();
-      this.socket.setTimeout(connectTimeout ?? 30000);
+      this.terminalType = options?.terminalType || DEFAULT_TERMINAL_TYPE;
+      this.secured = false;
 
       const onError = (err: Error) => {
         this.cleanup();
         reject(err);
       };
 
-      this.socket.once('error', onError);
+      // Pre-connect stall (TCP connect or TLS handshake hanging against a
+      // half-open/wrong-protocol listener): destroy with an error so the
+      // connect promise rejects instead of dangling until a caller-side
+      // watchdog reaps the session.
+      const onConnectTimeout = () => {
+        this.socket?.destroy(new Error('Connection timeout during connect/handshake'));
+      };
 
-      this.socket.connect(port, host, () => {
+      // The connected callback fires on plain TCP connect, or — in TLS mode —
+      // on 'secureConnect', i.e. only after the handshake completed. A failed
+      // handshake surfaces as an 'error' and rejects; telnet negotiation can
+      // therefore never start on an unencrypted socket when TLS was requested.
+      const onConnected = () => {
         this.connected = true;
+        this.secured = this.socket instanceof tls.TLSSocket;
         // Seed the recv timestamp so a brand-new session looks alive
         // even before the first byte arrives from the host.
         this.lastRecvAtMs = Date.now();
         this.socket!.removeListener('error', onError);
+        this.socket!.removeListener('timeout', onConnectTimeout);
 
         // Enable OS-level TCP keepalive. Linux defaults (75s probe
         // interval × 9 probes after the initial-delay window) catch
@@ -146,7 +186,29 @@ export class TN5250Connection extends EventEmitter {
         this.startKeepAlive();
         this.emit('connected');
         resolve();
-      });
+      };
+
+      if (options?.tls) {
+        // tls.connect starts the TCP + TLS handshake immediately; the
+        // callback is the 'secureConnect' event. SNI defaults to `host`
+        // for hostnames (Node omits it for IP literals automatically).
+        this.socket = tls.connect(
+          {
+            host,
+            port,
+            rejectUnauthorized: options.tlsVerify !== false,
+            ca: options.caCert ? [options.caCert] : undefined,
+          },
+          onConnected,
+        );
+      } else {
+        this.socket = new net.Socket();
+        this.socket.connect(port, host, onConnected);
+      }
+
+      this.socket.setTimeout(options?.connectTimeout ?? 30000);
+      this.socket.once('error', onError);
+      this.socket.once('timeout', onConnectTimeout);
     });
   }
 
@@ -211,6 +273,7 @@ export class TN5250Connection extends EventEmitter {
   private cleanup(): void {
     this.stopKeepAlive();
     this.connected = false;
+    this.secured = false;
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.destroy();

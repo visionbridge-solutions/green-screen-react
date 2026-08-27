@@ -324,6 +324,21 @@ class ConnectConfig:
     # ``needsSignOn`` instead of surfacing a lost session. None/False = legacy
     # (the integrator owns all recovery).
     auto_reconnect: Optional[bool] = None
+    # Telnet-over-TLS (IBM i "Telnet SSL", conventionally port 992). The proxy
+    # completes the handshake before any telnet byte flows; a handshake failure
+    # fails the connect — never a plaintext fallback. The client additionally
+    # (a) refuses to send /connect at all through a proxy that doesn't
+    # advertise the 'tls' capability (an older proxy would silently ignore the
+    # flag and open plaintext — with the credentials in the request body), and
+    # (b) asserts the response's ``security.tls`` echo, which the proxy reads
+    # from actual socket state.
+    tls: Optional[bool] = None
+    # Verify the host certificate chain (proxy default: True). False keeps
+    # encryption but drops MITM resistance — for self-signed hosts prefer
+    # pinning the cert via ``ca_cert``.
+    tls_verify: Optional[bool] = None
+    # PEM CA (or the host's self-signed certificate) to trust for verification.
+    ca_cert: Optional[str] = None
 
     def to_wire(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"host": self.host, "protocol": self.protocol}
@@ -338,6 +353,9 @@ class ConnectConfig:
             "key": self.key,
             "deviceName": self.device_name,
             "autoReconnect": self.auto_reconnect,
+            "tls": self.tls,
+            "tlsVerify": self.tls_verify,
+            "caCert": self.ca_cert,
         }
         for wire_name, value in optional.items():
             if value is not None:
@@ -363,6 +381,11 @@ class SendResult:
     # caller adopt an already-signed-on session instead of re-driving sign-on.
     reused: Optional[bool] = None
     authenticated: Optional[bool] = None
+    # Actual transport security of the opened socket as reported by the proxy
+    # (``{"tls": bool}`` on /connect responses) — read from socket state, never
+    # echoed from the request. Absent on proxies that predate the field, which
+    # a TLS-requiring caller must treat as NOT secured.
+    security: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_wire(cls, data: Dict[str, Any]) -> "SendResult":
@@ -375,4 +398,5 @@ class SendResult:
             error=data.get("error"),
             reused=data.get("reused"),
             authenticated=data.get("authenticated"),
+            security=data.get("security"),
         )

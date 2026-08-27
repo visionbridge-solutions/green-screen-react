@@ -57,6 +57,9 @@ class RestClient:
         # Bearer token for a proxy running with GS_PROXY_AUTH_TOKEN. None ⇒ no
         # Authorization header (unauthenticated proxy — the legacy default).
         self._auth_token = auth_token or None
+        # Advertised proxy capabilities, probed lazily from /status and cached
+        # for the client's lifetime (see _proxy_supports_tls). None ⇒ unprobed.
+        self._capabilities: Optional[frozenset] = None
 
     # ------------------------------------------------------------------
     # Session management
@@ -130,11 +133,60 @@ class RestClient:
     # TerminalAdapter contract
     # ------------------------------------------------------------------
 
+    async def _proxy_supports_tls(self) -> bool:
+        """Probe the proxy's advertised capabilities (cached per client).
+
+        Runs BEFORE /connect because the connect body carries credentials: an
+        older proxy that doesn't know the ``tls`` flag would ignore it and
+        open plaintext — the exact silent downgrade this preflight closes.
+        Fails closed on any probe error.
+        """
+        if self._capabilities is None:
+            http = await self._ensure_http()
+            headers = {"Content-Type": "application/json"}
+            if self._auth_token:
+                headers["Authorization"] = f"Bearer {self._auth_token}"
+            try:
+                resp = await http.request("GET", f"{self._base_url}/status", headers=headers)
+            except httpx.HTTPError as e:
+                logger.error("proxy capability probe failed: %s", e)
+                return False
+            caps: Any = ()
+            if resp.status_code < 400:
+                try:
+                    caps = resp.json().get("capabilities") or ()
+                except Exception:
+                    caps = ()
+            self._capabilities = frozenset(str(c) for c in caps)
+        return "tls" in self._capabilities
+
     async def connect(self, config: ConnectConfig) -> SendResult:
+        if config.tls:
+            if not await self._proxy_supports_tls():
+                return SendResult(
+                    success=False,
+                    error=(
+                        "proxy does not advertise the 'tls' capability — refusing to connect: "
+                        "an older proxy would silently open a PLAINTEXT socket for this "
+                        "TLS-required profile (credentials included). Upgrade the proxy."
+                    ),
+                )
         data = await self._request("POST", "/connect", json=config.to_wire())
         if data is None:
             return SendResult(success=False, error="proxy connect failed")
-        return SendResult.from_wire(data)
+        result = SendResult.from_wire(data)
+        if config.tls and result.success:
+            # Belt-and-braces: assert the proxy's socket-state echo, so even a
+            # future middle layer that swallows the option cannot yield a
+            # plaintext session that claims success.
+            if not bool((result.security or {}).get("tls")):
+                logger.error("proxy opened a non-TLS socket for a TLS-required connect — disconnecting")
+                await self.disconnect()
+                return SendResult(
+                    success=False,
+                    error="proxy reported a non-TLS socket for a TLS-required connect (security.tls false/absent)",
+                )
+        return result
 
     async def disconnect(self) -> SendResult:
         data = await self._request("POST", "/disconnect") or {}
