@@ -9,7 +9,7 @@ import {
 } from './session.js';
 import { sessionLifecycle, getSessionStore } from './session-store.js';
 import { SessionController } from './controller.js';
-import { authEnabled, checkBearer, validateEgressTarget } from './security.js';
+import { authEnabled, resolveAuth, validateEgressTarget } from './security.js';
 import type { ProtocolType } from './protocols/index.js';
 import type { ConnectionStatus } from 'green-screen-types';
 
@@ -192,7 +192,11 @@ export function setupWebSocket(server: HttpServer): WebSocketServer {
               const q = new URL(info.req.url || '/', `http://${info.req.headers.host || 'localhost'}`).searchParams.get('token');
               return q ? `Bearer ${q}` : undefined;
             })();
-          done(checkBearer(auth));
+          const result = resolveAuth(auth);
+          // Stash the resolved scope so the connection handler can confine the
+          // client to its own tenant's sessions (null = unscoped/all-access).
+          if (result.ok) (info.req as { gsScope?: string | null }).gsScope = result.scope;
+          done(result.ok);
         }
       : undefined,
   });
@@ -200,6 +204,19 @@ export function setupWebSocket(server: HttpServer): WebSocketServer {
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const sessionId = url.searchParams.get('sessionId');
+    const scope = (req as { gsScope?: string | null }).gsScope ?? null;
+
+    // Multi-tenant guard: a scoped client may attach ONLY to a session created
+    // under its own scope. Refuse (and never index/drive) a foreign session —
+    // this closes the WS-side of cross-tenant observe/drive. An unscoped client
+    // (base token / auth disabled) is unrestricted, as before.
+    if (sessionId && scope !== null) {
+      const target = getSession(sessionId);
+      if (target && target.scope !== scope) {
+        ws.close(1008, 'forbidden');
+        return;
+      }
+    }
 
     const client: WsClient = { ws, sessionId, controller: null };
     clients.add(client);
@@ -217,9 +234,13 @@ export function setupWebSocket(server: HttpServer): WebSocketServer {
       }
     });
 
-    // Send current screen immediately if a session is available
+    // Send current screen immediately if a session is available. The default
+    // (no sessionId) path is store-global, so re-check scope here too — a scoped
+    // client must never receive another tenant's screen.
     const session = sessionId ? getSession(sessionId) : getDefaultSession();
-    if (session && session.status.connected) {
+    if (session && scope !== null && session.scope !== scope) {
+      // foreign default session — leave the client attached to nothing
+    } else if (session && session.status.connected) {
       wsSend(ws, { type: 'screen', data: session.getScreenData() });
       wsSend(ws, { type: 'status', data: session.status });
     }

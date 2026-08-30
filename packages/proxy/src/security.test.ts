@@ -8,6 +8,8 @@ import {
   corsOrigins,
   bindAddress,
   getEgressPolicy,
+  resolveAuth,
+  mintScopedToken,
 } from './security.js';
 
 // The proxy's security controls are all opt-in via env. These tests pin both
@@ -53,6 +55,55 @@ describe('bearer auth (GS_PROXY_AUTH_TOKEN)', () => {
     process.env.GS_PROXY_AUTH_TOKEN = 'abcdef';
     expect(checkBearer('Bearer abc')).toBe(false);
     expect(checkBearer('Bearer abcdefg')).toBe(false);
+  });
+});
+
+describe('scoped tokens (resolveAuth + mintScopedToken)', () => {
+  it('treats auth-disabled as open + unscoped', () => {
+    const r = resolveAuth('Bearer anything');
+    expect(r).toEqual({ ok: true, scope: null });
+  });
+
+  it('accepts the base token as unscoped/all-access', () => {
+    process.env.GS_PROXY_AUTH_TOKEN = 'base-secret';
+    expect(resolveAuth('Bearer base-secret')).toEqual({ ok: true, scope: null });
+  });
+
+  it('accepts a validly-signed scoped token and returns its scope', () => {
+    process.env.GS_PROXY_AUTH_TOKEN = 'base-secret';
+    const tok = mintScopedToken('org-abc');
+    expect(resolveAuth(`Bearer ${tok}`)).toEqual({ ok: true, scope: 'org-abc' });
+  });
+
+  it('rejects a scoped token whose signature does not match the base secret', () => {
+    process.env.GS_PROXY_AUTH_TOKEN = 'base-secret';
+    const forged = mintScopedToken('org-abc', 'a-different-secret');
+    expect(resolveAuth(`Bearer ${forged}`)).toEqual({ ok: false, scope: null });
+  });
+
+  it('rejects a caller who renames the scope while keeping the old signature', () => {
+    process.env.GS_PROXY_AUTH_TOKEN = 'base-secret';
+    const tok = mintScopedToken('org-abc'); // "org-abc.<sig-for-abc>"
+    const sig = tok.slice(tok.lastIndexOf('.') + 1);
+    // Try to pass off org-abc's signature as authorization for org-victim.
+    expect(resolveAuth(`Bearer org-victim.${sig}`)).toEqual({ ok: false, scope: null });
+  });
+
+  it('handles a scope containing dots (splits on the last dot)', () => {
+    process.env.GS_PROXY_AUTH_TOKEN = 'base-secret';
+    const tok = mintScopedToken('org.with.dots');
+    expect(resolveAuth(`Bearer ${tok}`)).toEqual({ ok: true, scope: 'org.with.dots' });
+  });
+
+  it('rejects garbage and missing bearers when auth is on', () => {
+    process.env.GS_PROXY_AUTH_TOKEN = 'base-secret';
+    expect(resolveAuth(undefined)).toEqual({ ok: false, scope: null });
+    expect(resolveAuth('Bearer not-a-scoped-token')).toEqual({ ok: false, scope: null });
+    expect(resolveAuth('Bearer .deadbeef')).toEqual({ ok: false, scope: null });
+  });
+
+  it('mintScopedToken throws without a base secret', () => {
+    expect(() => mintScopedToken('org-abc')).toThrow();
   });
 });
 

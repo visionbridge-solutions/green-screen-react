@@ -68,11 +68,13 @@ interface FreshConnectOpts {
   tlsVerify?: boolean;
   /** PEM CA / self-signed host cert to trust. */
   caCert?: string;
+  /** Auth scope the session is created under (multi-tenant isolation tag). */
+  scope?: string | null;
 }
 
 /** Create a session and open its TCP connection (no sign-on). */
 async function freshConnectSession(opts: FreshConnectOpts): Promise<Session> {
-  const session = createSession(opts.protocol as any);
+  const session = createSession(opts.protocol as any, opts.scope ?? null);
   console.log(`[connect] Created session ${session.id.slice(0, 8)} for ${opts.host}:${opts.port}`);
   if (typeof opts.screenTimeout === 'number' && opts.screenTimeout > 0) {
     session.screenTimeout = opts.screenTimeout;
@@ -106,20 +108,49 @@ async function ensureSignedOn(session: Session, username?: string, password?: st
   if (result?.authenticated) session.markAuthenticated(username);
 }
 
-/** Resolve session from header, query param, or default. Resets idle
- *  timer on access AND cancels any pending orphan-reap — REST activity
- *  proves the client is still around, even if its WebSocket dropped. */
+/** The caller's authenticated scope, stamped by the auth middleware. ``null``
+ *  = unscoped/all-access (base token, or auth disabled) — sees every session. */
+function reqScope(req: Request): string | null {
+  const s = (req as { gsScope?: string | null }).gsScope;
+  return s === undefined ? null : s;
+}
+
+/** Whether a caller at ``scope`` may see/drive ``session``. An unscoped caller
+ *  (null) reaches everything; a scoped caller only its own scope's sessions. */
+function sessionInScope(session: Session, scope: string | null): boolean {
+  return scope === null || session.scope === scope;
+}
+
+/** Resolve session from header, query param, or default — CONFINED to the
+ *  caller's scope. Resets idle timer on access AND cancels any pending
+ *  orphan-reap (REST activity proves the client is still around, even if its
+ *  WebSocket dropped). A session outside the caller's scope resolves to
+ *  undefined — indistinguishable from "not found", so a foreign scope can't
+ *  even confirm a session id exists. */
 function resolveSession(req: Request): Session | undefined {
   const sessionId =
     (req.headers['x-session-id'] as string) ||
     (req.query.sessionId as string);
+  const scope = reqScope(req);
 
-  const session = sessionId ? getSession(sessionId) : getDefaultSession();
+  let session = sessionId ? getSession(sessionId) : defaultSessionForScope(scope);
+  if (session && !sessionInScope(session, scope)) {
+    session = undefined;
+  }
   if (session) {
     session.touch();
     cancelOrphanReapOnRestActivity(session.id);
   }
   return session;
+}
+
+/** The single session belonging to ``scope`` when there is exactly one — the
+ *  scope-aware analogue of getDefaultSession (which is store-global and would
+ *  hand a scoped caller another tenant's lone session). */
+function defaultSessionForScope(scope: string | null): Session | undefined {
+  if (scope === null) return getDefaultSession();
+  const own = getAllSessions().filter(s => s.scope === scope);
+  return own.length === 1 ? own[0] : undefined;
 }
 
 /** Delay between keystrokes when typing a field char-by-char. */
@@ -163,7 +194,8 @@ router.post('/connect', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: egress.reason });
     }
 
-    const opts: FreshConnectOpts = { host, port, protocol, terminalType, codePage, screenTimeout, connectTimeout, deviceName, autoReconnect, tls, tlsVerify, caCert };
+    const scope = reqScope(req);
+    const opts: FreshConnectOpts = { host, port, protocol, terminalType, codePage, screenTimeout, connectTimeout, deviceName, autoReconnect, tls, tlsVerify, caCert, scope };
 
     // ── Connect-by-key: at most one live session per key ──
     // A burst of reconnects for one logical agent serialises on the per-key
@@ -174,7 +206,11 @@ router.post('/connect', async (req: Request, res: Response) => {
     if (typeof key === 'string' && key.length > 0) {
       return await withKeyLock(key, async () => {
         const existingId = forceNew ? undefined : getKeyedSessionId(key);
-        const existing = existingId ? getSession(existingId) : undefined;
+        const existingRaw = existingId ? getSession(existingId) : undefined;
+        // Never re-hand a session created under a different scope, even on a key
+        // collision — the key is integrator-chosen and opaque, so scope is the
+        // authoritative tenant boundary.
+        const existing = existingRaw && sessionInScope(existingRaw, scope) ? existingRaw : undefined;
         let session: Session;
         let reused = false;
         if (existing && existing.status.connected) {
@@ -185,8 +221,9 @@ router.post('/connect', async (req: Request, res: Response) => {
           // Release any prior keyed session's device (dead, or forceNew) before
           // replacing it, so the host's device pool stays clean.
           const priorId = getKeyedSessionId(key);
-          if (priorId && getSession(priorId)) {
-            void gracefullyDestroySession(priorId).catch(() => { /* best-effort */ });
+          const prior = priorId ? getSession(priorId) : undefined;
+          if (prior && sessionInScope(prior, scope)) {
+            void gracefullyDestroySession(priorId!).catch(() => { /* best-effort */ });
           }
           session = await freshConnectSession(opts);
           bindKey(key, session.id);
@@ -206,7 +243,8 @@ router.post('/connect', async (req: Request, res: Response) => {
     // releases the IBM i QPADEV device; a hard drop would leave it hanging
     // until QDEVRCYACN reaps it, and under churn those trip QMAXSIGN/QAUTOVRT.
     const previousSessionId = req.headers['x-session-id'] as string;
-    if (previousSessionId && getSession(previousSessionId)) {
+    const previous = previousSessionId ? getSession(previousSessionId) : undefined;
+    if (previous && sessionInScope(previous, scope)) {
       console.log(`[connect] Signing off caller's previous session ${previousSessionId.slice(0, 8)} for ${host}:${port} before new connect`);
       void gracefullyDestroySession(previousSessionId).catch(() => { /* best-effort */ });
     }
@@ -249,6 +287,14 @@ router.post('/disconnect-beacon', async (req: Request, res: Response) => {
   if (!sessionId) {
     return res.status(400).json({ success: false, error: 'sessionId is required' });
   }
+  // Confine to the caller's scope: a REST-store session outside it is not
+  // theirs to tear down. (WS-created sessions aren't in the REST store, so
+  // scope can't be checked here — destroyWsSession stays best-effort.)
+  const beaconScope = reqScope(req);
+  const beaconRest = getSession(sessionId);
+  if (beaconRest && !sessionInScope(beaconRest, beaconScope)) {
+    return res.status(404).json({ success: false, error: 'Session not found' });
+  }
   console.log(`[disconnect-beacon] Tearing down session ${sessionId.slice(0, 8)}`);
   try {
     // Run both teardown paths — each is a no-op if the session isn't in
@@ -265,19 +311,24 @@ router.post('/disconnect-beacon', async (req: Request, res: Response) => {
 
 // GET /sessions — list all active sessions (used by integrators to detect
 // orphaned sessions on startup and decide whether to sweep them).
-router.get('/sessions', (_req: Request, res: Response) => {
-  const sessions = getAllSessions().map(s => ({
-    id: s.id,
-    status: s.status,
-  }));
+router.get('/sessions', (req: Request, res: Response) => {
+  const scope = reqScope(req);
+  const sessions = getAllSessions()
+    .filter(s => sessionInScope(s, scope))
+    .map(s => ({
+      id: s.id,
+      status: s.status,
+    }));
   res.json({ sessions, count: sessions.length });
 });
 
 // POST /disconnect-all — gracefully tear down every active session (SIGNOFF
 // + TCP close). Used by integrators on startup to clean up orphaned sessions
 // from a previous lifecycle and avoid CPF1220 device-session-limit errors.
-router.post('/disconnect-all', async (_req: Request, res: Response) => {
-  const sessions = getAllSessions();
+router.post('/disconnect-all', async (req: Request, res: Response) => {
+  const scope = reqScope(req);
+  // A scoped caller tears down only its OWN sessions — never another tenant's.
+  const sessions = getAllSessions().filter(s => sessionInScope(s, scope));
   const count = sessions.length;
   if (count === 0) {
     return res.json({ success: true, destroyed: 0 });
@@ -331,9 +382,10 @@ router.post('/reconnect', async (req: Request, res: Response) => {
 router.get('/status', (req: Request, res: Response) => {
   const session = resolveSession(req);
   if (!session) {
+    const scope = reqScope(req);
     return res.json({
       ok: true,
-      sessions: getAllSessions().length,
+      sessions: getAllSessions().filter(s => sessionInScope(s, scope)).length,
       // Probed by clients BEFORE /connect: a client that needs a feature
       // (e.g. tls) refuses to connect through a proxy that doesn't list it.
       capabilities: PROXY_CAPABILITIES,
@@ -408,7 +460,7 @@ router.post('/session/resume', (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: 'sessionId is required' });
   }
   const session = getSession(sessionId);
-  if (!session) {
+  if (!session || !sessionInScope(session, reqScope(req))) {
     return res.status(404).json({ success: false, error: 'Session not found' });
   }
   session.touch();

@@ -28,7 +28,7 @@
  * This module is pure config + validators (no Express/ws imports) so it is unit-
  * testable in isolation and safe to import anywhere.
  */
-import { timingSafeEqual } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { isIP } from 'net';
 
 function envList(name: string): string[] {
@@ -52,23 +52,89 @@ export function authEnabled(): boolean {
   return getAuthToken() !== null;
 }
 
+/** Constant-time compare of two same-purpose strings, length-safe. */
+function constantTimeEquals(a: string, b: string): boolean {
+  const pa = Buffer.from(a);
+  const pb = Buffer.from(b);
+  if (pa.length !== pb.length) {
+    // Spend a compare on a same-length dummy so length isn't a timing oracle.
+    timingSafeEqual(pb, pb);
+    return false;
+  }
+  return timingSafeEqual(pa, pb);
+}
+
+function bearerValue(authorization: string | undefined | null): string | null {
+  if (!authorization) return null;
+  const m = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+  return m ? m[1] : null;
+}
+
 /** Constant-time bearer check. Returns true when auth is disabled (open) or the
- *  presented token matches. `authorization` is the raw header value. */
+ *  presented token matches the base token. `authorization` is the raw header
+ *  value. Scoped tokens (see {@link resolveAuth}) are NOT accepted here — this
+ *  remains the base-token-only primitive. */
 export function checkBearer(authorization: string | undefined | null): boolean {
   const expected = getAuthToken();
   if (expected === null) return true; // auth disabled ⇒ allow
-  if (!authorization) return false;
-  const m = /^Bearer\s+(.+)$/i.exec(authorization.trim());
-  if (!m) return false;
-  const presented = Buffer.from(m[1]);
-  const wanted = Buffer.from(expected);
-  // timingSafeEqual throws on length mismatch — guard it, but still spend the
-  // compare on a same-length dummy so length isn't a timing oracle.
-  if (presented.length !== wanted.length) {
-    timingSafeEqual(wanted, wanted);
-    return false;
+  const presented = bearerValue(authorization);
+  if (presented === null) return false;
+  return constantTimeEquals(presented, expected);
+}
+
+/**
+ * A caller's authenticated **scope** — an opaque tenant label the proxy uses to
+ * keep one caller's sessions invisible and untouchable to another. The proxy
+ * never interprets it (it is not "org id" here — that meaning lives in the
+ * integrator); it only compares it against the scope a session was created
+ * under.
+ *
+ * A scoped token is ``<scope>.<hmac>`` where ``hmac`` is
+ * ``HMAC-SHA256(base-token, scope)`` in lowercase hex. The base token is the
+ * unscoped/all-access credential (the integrator's control plane); a scoped
+ * token proves the holder was issued exactly that scope by someone who knows
+ * the base secret, WITHOUT the holder ever learning the base secret — so a
+ * per-tenant worker handed only its own scoped token cannot forge another
+ * tenant's. Keep this protocol-generic: mint scoped tokens per tenant in the
+ * integrator, hand each worker only its own.
+ */
+export function mintScopedToken(scope: string, baseToken?: string | null): string {
+  const base = baseToken ?? getAuthToken();
+  if (!base) throw new Error('mintScopedToken requires an auth token (GS_PROXY_AUTH_TOKEN)');
+  const sig = createHmac('sha256', base).update(scope, 'utf8').digest('hex');
+  return `${scope}.${sig}`;
+}
+
+export interface AuthResult {
+  /** Whether the presented credential is accepted at all. */
+  ok: boolean;
+  /** The caller's scope: ``null`` means unscoped/all-access (the base token, or
+   *  auth disabled) — such a caller may see and drive any session. A non-null
+   *  scope confines the caller to sessions created under the same scope. */
+  scope: string | null;
+}
+
+/**
+ * Resolve a request's authorization into an {@link AuthResult}. Accepts, in
+ * order: auth-disabled (open, unscoped); the exact base token (unscoped); a
+ * valid ``<scope>.<hmac>`` scoped token (confined to that scope). Anything else
+ * is rejected. All comparisons are constant-time.
+ */
+export function resolveAuth(authorization: string | undefined | null): AuthResult {
+  const base = getAuthToken();
+  if (base === null) return { ok: true, scope: null }; // auth disabled ⇒ open
+  const presented = bearerValue(authorization);
+  if (presented === null) return { ok: false, scope: null };
+  if (constantTimeEquals(presented, base)) return { ok: true, scope: null };
+  // Scoped token: split on the LAST dot so a scope containing dots still works.
+  const dot = presented.lastIndexOf('.');
+  if (dot > 0) {
+    const scope = presented.slice(0, dot);
+    const sig = presented.slice(dot + 1);
+    const expectedSig = createHmac('sha256', base).update(scope, 'utf8').digest('hex');
+    if (constantTimeEquals(sig, expectedSig)) return { ok: true, scope };
   }
-  return timingSafeEqual(presented, wanted);
+  return { ok: false, scope: null };
 }
 
 /** Listen interface for the HTTP/WS server. */
