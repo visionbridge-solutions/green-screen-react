@@ -180,6 +180,10 @@ export interface GreenScreenTerminalProps {
    *  off and let the regular click-to-focus model decide. */
   alwaysFocused?: boolean;
 
+  /** When true, the cursor is rendered on any row — not only inside input fields.
+   *  Mirrors the behaviour of native IBM i clients like ACS. Default: false. */
+  alwaysCursor?: boolean;
+
   /** Built-in visual theme preset. Applied as a `gs-theme-*` class on the
    *  root `.gs-terminal` element so CSS variables resolve to theme-specific
    *  values. Integrators can also override individual CSS variables directly
@@ -256,6 +260,7 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
   onWindowClose,
   persistFocus = true,
   alwaysFocused = false,
+  alwaysCursor = false,
   theme = 'modern',
   className,
   style,
@@ -1223,7 +1228,7 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
     // (ACS, Mocha) show the cursor in password (NON_DISPLAY) fields too —
     // that's the only feedback that a keypress was registered, since the
     // typed characters stay invisible.
-    const cursorInInputField = hasCursor && fields.some(f => {
+    const cursorInInputField = hasCursor && (alwaysCursor || fields.some(f => {
       if (!f.is_input) return false;
       // Handle multi-row wrapping input fields (e.g. IBM i command lines).
       const slice = fieldSliceForRow(f, cursor.row, cols);
@@ -1234,7 +1239,7 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
       // render the cursor there. Without this, the cursor vanishes and users
       // can't tell they're positioned in the field.
       return !!slice && cursor.col >= slice.col && cursor.col <= slice.col + slice.length;
-    });
+    }));
 
     const ROW_H = 21; // matches ROW_HEIGHT above; used for window overlay positioning
     const screenWindows = detectedWindows;
