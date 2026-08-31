@@ -18,6 +18,15 @@ export class TN5250Handler extends ProtocolHandler {
   readonly parser: TN5250Parser;
   readonly encoder: TN5250Encoder;
 
+  /** Held-frame state for the keyboard-locked emission gate — see
+   *  emitScreenGated(). */
+  private pendingScreenEmit = false;
+  private lockedFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Calm cadence for flushing frames while the host keeps the keyboard
+   *  locked, so genuinely progressive locked-screen programs stay visible
+   *  without streaming every half-painted write burst. */
+  static LOCKED_FLUSH_MS = 1500;
+
   constructor() {
     super();
     this.screen = new ScreenBuffer();
@@ -742,8 +751,46 @@ export class TN5250Handler extends ProtocolHandler {
   }
 
   destroy(): void {
+    this.clearLockedFlushTimer();
     this.disconnect();
     this.removeAllListeners();
+  }
+
+  private clearLockedFlushTimer(): void {
+    if (this.lockedFlushTimer) {
+      clearTimeout(this.lockedFlushTimer);
+      this.lockedFlushTimer = null;
+    }
+  }
+
+  /** Emit a screenChange frame, gated on the 5250 keyboard lock.
+
+  A slow host paints one logical screen as several WRITE records over
+  seconds; emitting every record streamed half-painted frames to viewers
+  (old screen fragments under the new one — the "glitchy terminal" report,
+  2026-08-31). The keyboard-restore bit is the host's own "transaction
+  complete" signal, so: while locked, hold the frame and flush at a calm
+  cadence (LOCKED_FLUSH_MS) as a progress fallback; on unlock — or with
+  GS_EMIT_PARTIAL_WRITES=1 restoring the old behaviour — emit immediately.
+  Automation is unaffected either way (REST /screen always serves the live
+  buffer; integrators settle on stability, not frame timing). */
+  private emitScreenGated(): void {
+    if (process.env.GS_EMIT_PARTIAL_WRITES === '1' || !this.screen.keyboardLocked) {
+      this.clearLockedFlushTimer();
+      this.pendingScreenEmit = false;
+      this.emit('screenChange', this.screen.toScreenData());
+      return;
+    }
+    this.pendingScreenEmit = true;
+    if (!this.lockedFlushTimer) {
+      this.lockedFlushTimer = setTimeout(() => {
+        this.lockedFlushTimer = null;
+        if (this.pendingScreenEmit) {
+          this.pendingScreenEmit = false;
+          this.emit('screenChange', this.screen.toScreenData());
+        }
+      }, TN5250Handler.LOCKED_FLUSH_MS);
+    }
   }
 
   private onRecord(record: Buffer): void {
@@ -787,9 +834,16 @@ export class TN5250Handler extends ProtocolHandler {
         );
       }
 
-      this.emit('screenChange', this.screen.toScreenData());
-    } else if (process.env.GS_DIAG_KL === '1') {
-      console.log(`[KL] record NOT modified  recLen=${record.length}  kl=${this.screen.keyboardLocked}`);
+      this.emitScreenGated();
+    } else {
+      // The restore can arrive in a record that modifies nothing visible —
+      // a held frame must still flush the moment the host unlocks.
+      if (klBefore && !this.screen.keyboardLocked && this.pendingScreenEmit) {
+        this.emitScreenGated();
+      }
+      if (process.env.GS_DIAG_KL === '1') {
+        console.log(`[KL] record NOT modified  recLen=${record.length}  kl=${this.screen.keyboardLocked}`);
+      }
     }
   }
 }
