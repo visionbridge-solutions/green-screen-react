@@ -7,6 +7,11 @@ export const tn5250Profile: ProtocolProfile = {
   defaultCols: 80,
   headerLabel: 'TN5250 TERMINAL',
   bootText: 'TN5250',
+  // The proxy infers a width for fields the host sent without an SF length —
+  // a gap measured to the next attribute byte, an upper bound with no wrap
+  // semantics. Only a width the host DECLARED may continue onto the next row
+  // (command lines routinely span 2-3 rows); a guess stays on its own row.
+  fieldWrapsRows: (field) => field.length_source === 'declared',
   colors: {
     getRowColorClass(rowIndex: number, rowContent: string, totalRows: number): string {
       if (rowIndex === 0 && rowContent.trim().length > 0) return 'gs-row-title';

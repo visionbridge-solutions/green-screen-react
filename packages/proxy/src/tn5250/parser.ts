@@ -1669,11 +1669,16 @@ export class TN5250Parser {
         // Last field wraps to first field (5250 screen is circular)
         const firstStart = this.screen.offset(fields[0].row, fields[0].col);
         current.length = Math.max(0, (this.screen.size - currentStart) + firstStart - 1);
-        // Cap at a reasonable maximum
-        if (current.length > this.screen.cols * 2) {
-          current.length = this.screen.cols - current.col;
-        }
       }
+
+      // A gap has no wrap semantics — only an SF-declared width can continue
+      // onto the next row. When the closing attribute sits on a later row (or
+      // the wrap-around lands at the screen start) the raw gap runs past the
+      // end of this row, and a consumer drawing or reading it verbatim paints
+      // over the rows below; worse, the gap depends on how the host happened
+      // to segment that frame, so the same screen decoded two ways on
+      // successive redraws. Bound the guess to the field's own row.
+      current.length = Math.min(current.length, this.screen.cols - current.col);
 
       // Ensure minimum length of 1
       if (current.length <= 0) current.length = 1;

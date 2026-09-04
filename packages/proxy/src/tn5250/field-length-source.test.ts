@@ -42,8 +42,8 @@ function bareAttr(row: number, col: number, attr = 0x24): number[] {
   return [...sba(row, col), attr];
 }
 
-function parse(bytes: number[]) {
-  const screen = new ScreenBuffer();
+function parse(bytes: number[], rows = 24, cols = 80) {
+  const screen = new ScreenBuffer(rows, cols);
   const parser = new TN5250Parser(screen);
   const data = [CMD.WRITE_TO_DISPLAY, 0x00, 0x00, ...bytes];
   const record = [
@@ -117,5 +117,82 @@ describe('SF-declared field width', () => {
     // absent, not 'inferred' — the wire stays minimal and the DEFAULT reading of
     // a bare `length` is "upper bound", which is the safe assumption.
     expect(inferred!.length_source).toBeUndefined();
+  });
+});
+
+// A gap measurement has no wrap semantics. Live 80x24 entry screen, 2026-09-05:
+// three bare-attribute inputs inferred widths that reached the end of their row
+// or beyond — one at row 20 col 0 measured 147 cells (rows 20-21). The viewer
+// drew it verbatim and painted over the host's message/legend rows; and because
+// the gap depends on how the host segmented that particular frame, the same
+// screen decoded two ways on successive redraws. Only an SF-declared width may
+// continue onto the next row.
+describe('inferred width never leaves its row', () => {
+  /** The field at 0-based (row, col), located directly — `fieldAt` cannot
+   *  express an attribute byte sitting on the previous row's last cell. */
+  function at(screen: ScreenBuffer, row: number, col: number) {
+    const f = screen.fields.find(f => f.row === row && f.col === col);
+    expect(f, `field at (${row}, ${col})`).toBeDefined();
+    return f!;
+  }
+
+  it('bounds a gap that runs onto later rows to the end of its own row', () => {
+    const screen = parse([
+      ...bareAttr(20, 80),  // attribute on the last cell of row 19 -> field at (20, 0)
+      ...bareAttr(23, 6),   // next attribute two rows down: the raw gap is 165
+    ]);
+    const f = at(screen, 20, 0);
+    expect(f.lengthSource).toBe('inferred');
+    expect(f.length).toBe(80);
+    expect(f.col + f.length).toBeLessThanOrEqual(screen.cols);
+    // and that is what goes on the wire
+    const wire = screen.toScreenData().fields.find(w => w.row === 20 && w.col === 0);
+    expect(wire!.length).toBe(80);
+  });
+
+  it('keeps a same-row closing attribute as the bound when it is tighter', () => {
+    const screen = parse([
+      ...bareAttr(5, 1),    // field at (4, 1)
+      ...bareAttr(5, 80),   // closing attribute on (4, 79); its own field starts at (5, 0)
+    ]);
+    const f = at(screen, 4, 1);
+    expect(f.lengthSource).toBe('inferred');
+    expect(f.length).toBe(78);  // cols 1..78 — col 79 is the attribute byte
+    expect(f.col + f.length).toBeLessThanOrEqual(screen.cols);
+  });
+
+  it('bounds the wrap-around gap of the last field on the last row', () => {
+    const screen = parse([
+      ...bareAttr(1, 11),   // first field at (0, 11)
+      ...bareAttr(23, 80),  // last field at (23, 0): the wrap-around gap is 90
+    ]);
+    const f = at(screen, 23, 0);
+    expect(f.lengthSource).toBe('inferred');
+    expect(f.length).toBe(80);
+  });
+
+  it("uses the screen's own column count, not a fixed 80", () => {
+    const screen = parse([
+      ...bareAttr(6, 100),  // field at (5, 100) on a 132-column screen
+      ...bareAttr(8, 1),    // next attribute two rows down
+    ], 27, 132);
+    const f = at(screen, 5, 100);
+    expect(f.lengthSource).toBe('inferred');
+    expect(f.length).toBe(32);
+  });
+
+  it('does not bound a declared width that wraps onto the next row', () => {
+    // A host-declared multi-row field (a command line that continues on the
+    // row below) is the host's truth; the wire carries it whole.
+    const screen = parse([
+      ...sba(20, 27), ...sf(153),
+      ...bareAttr(23, 6),
+    ]);
+    const f = at(screen, 19, 27);
+    expect(f.lengthSource).toBe('declared');
+    expect(f.length).toBe(153);
+    const wire = screen.toScreenData().fields.find(w => w.row === 19 && w.col === 27);
+    expect(wire!.length).toBe(153);
+    expect(wire!.length_source).toBe('declared');
   });
 });

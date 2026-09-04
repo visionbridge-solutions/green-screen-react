@@ -73,7 +73,8 @@ export interface FieldDef {
    *
    *  'inferred' — calculateFieldLengths measured the gap to the next field
    *  because no SF length was available. An upper bound, often far larger than
-   *  the real field (a trailing field infers everything to the screen edge).
+   *  the real field (a trailing field infers everything to the end of its row;
+   *  a guess never crosses a row boundary — only a declared width can wrap).
    *
    *  Integrators MUST NOT size input against an inferred length: a host silently
    *  keeps only the first N characters of an over-long write, so an inflated

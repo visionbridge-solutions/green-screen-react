@@ -14,7 +14,7 @@ export type {
 } from 'green-screen-types';
 
 // Import for use in this file
-import type { ScreenData, ConnectionStatus, ConnectConfig, FieldValue } from 'green-screen-types';
+import type { ScreenData, ConnectionStatus, ConnectConfig, Field, FieldValue } from 'green-screen-types';
 
 /**
  * Alias for backward compatibility — consumers may import TerminalProtocol.
@@ -48,6 +48,14 @@ export interface ProtocolProfile {
   headerLabel: string;
   /** Boot loader default text */
   bootText: string;
+  /** Whether this field's `length` may continue onto the following row(s).
+   *  Absent = always: the renderer wraps every field, which is right where the
+   *  wire length IS the host's field extent (TN3270 attribute runs, HP block-
+   *  mode protection runs). A protocol whose proxy infers undeclared widths
+   *  from field spacing answers per field — a measured gap is an upper bound
+   *  with no wrap semantics, so it is confined to its own row and can never
+   *  paint over the rows below it. */
+  fieldWrapsRows?: (field: Field) => boolean;
 }
 
 /**

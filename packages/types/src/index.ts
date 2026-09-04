@@ -28,7 +28,7 @@ export interface Field {
   length: number;
   /** Present (`'declared'`) only when `length` is the width the host sent in its
    *  SF order. Absent means the width was measured from field spacing, which
-   *  routinely over-reports — a trailing field infers to the screen edge. Never
+   *  routinely over-reports — a trailing field infers to the end of its row. Never
    *  size input against an undeclared length: a 5250 host silently keeps only
    *  the first N characters of an over-long write. */
   length_source?: 'declared';

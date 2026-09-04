@@ -11,6 +11,7 @@ import { TerminalIcon, WifiIcon, WifiOffIcon, AlertTriangleIcon, RefreshIcon, Ke
 import { InlineSignIn } from './InlineSignIn';
 import { decodeAttrByte, decodeExtColor, decodeExtHighlight, cssVarForColor, mergeExtAttr, extColorIsReverse } from '../utils/attribute';
 import { validateMod10, validateMod11, filterFieldInput } from '../utils/validation';
+import { fieldSliceForRow } from '../utils/fieldSlice';
 
 /** Format milliseconds as M:SS for the X CLOCK busy indicator. */
 function formatBusyClock(ms: number): string {
@@ -37,32 +38,6 @@ function aidByteToKeyName(aid: number): string | null {
   // F13..F24 → 0xB1..0xBC
   if (aid >= 0xB1 && aid <= 0xBC) return `F${aid - 0xB0 + 12}`;
   return null;
-}
-
-/**
- * Compute the portion of a field that falls on a given row, handling
- * wrap-around for multi-row fields (common on IBM i command lines where a
- * single field spans 2-3 rows). Returns null if the field doesn't touch
- * this row. Otherwise returns { col, length } for the slice on this row.
- *
- * Example: field at (row 19, col 7, length 153) with cols=80:
- *   row 19 → { col: 7, length: 73 }   (73 chars: col 7..79)
- *   row 20 → { col: 0, length: 80 }   (next 80 chars: col 0..79)
- *   row 21 → null (len 73+80=153 exhausted)
- */
-function fieldSliceForRow(
-  field: { row: number; col: number; length: number },
-  rowIndex: number,
-  cols: number,
-): { col: number; length: number } | null {
-  const rowDelta = rowIndex - field.row;
-  if (rowDelta < 0) return null;
-  const offsetFromStart = rowDelta === 0 ? 0 : (cols - field.col) + (rowDelta - 1) * cols;
-  if (offsetFromStart >= field.length) return null;
-  const sliceCol = rowDelta === 0 ? field.col : 0;
-  const sliceLen = Math.min(cols - sliceCol, field.length - offsetFromStart);
-  if (sliceLen <= 0) return null;
-  return { col: sliceCol, length: sliceLen };
 }
 
 /* ── No-op adapter (placeholder before connection) ───────────────── */
@@ -640,7 +615,7 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
     // send it as a key press and skip the normal cursor-move. Per IBM 5250
     // Functions Reference this is the defined "mouse click on field" behavior.
     const clickedField = screenData.fields.find(f => {
-      const slice = fieldSliceForRow(f, clickedRow, screenData.cols || profile.defaultCols);
+      const slice = fieldSliceForRow(f, clickedRow, screenData.cols || profile.defaultCols, profile.fieldWrapsRows);
       return !!slice && clickedCol >= slice.col && clickedCol < slice.col + slice.length;
     });
     const ptrAid = clickedField && (clickedField as any).pointer_aid as number | undefined;
@@ -664,7 +639,7 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
     // with existing content, the clamp keeps the cursor at "click col"
     // so mid-content edits still work.
     if (clickedField && screenData.content) {
-      const slice = fieldSliceForRow(clickedField, clickedRow, screenData.cols || profile.defaultCols);
+      const slice = fieldSliceForRow(clickedField, clickedRow, screenData.cols || profile.defaultCols, profile.fieldWrapsRows);
       if (slice) {
         const lines = screenData.content.split('\n');
         const rowText = lines[clickedRow] ?? '';
@@ -690,7 +665,7 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
     // next render's fallback.
     setSyncedCursor({ row: clickedRow, col: clickedCol });
     adapter.setCursor?.(clickedRow, clickedCol);
-  }, [readOnly, isFocused, screenData, adapter, sendKey]);
+  }, [readOnly, isFocused, screenData, adapter, sendKey, profile.fieldWrapsRows]);
 
   // --- Field helpers ---
   const getCurrentField = useCallback(() => {
@@ -703,13 +678,13 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
     // rows, not just the first row.
     for (const field of fields) {
       if (!field.is_input) continue;
-      const slice = fieldSliceForRow(field, cursorRow, cols);
+      const slice = fieldSliceForRow(field, cursorRow, cols, profile.fieldWrapsRows);
       if (!slice) continue;
       // Inclusive trailing bound — see note in cursorInInputField.
       if (cursorCol >= slice.col && cursorCol <= slice.col + slice.length) return field;
     }
     return null;
-  }, [screenData, syncedCursor, profile.defaultCols]);
+  }, [screenData, syncedCursor, profile.defaultCols, profile.fieldWrapsRows]);
 
   /**
    * Extract the text content of a field from the current screen display.
@@ -997,7 +972,7 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
     const inputFields: Field[] = [];
     for (const f of fields) {
       if (!f.is_input) continue;
-      const slice = fieldSliceForRow(f, rowIndex, cols);
+      const slice = fieldSliceForRow(f, rowIndex, cols, profile.fieldWrapsRows);
       if (!slice) continue;
       inputFields.push({ ...f, row: rowIndex, col: slice.col, length: slice.length });
     }
@@ -1170,7 +1145,7 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
     });
     if (lastEnd < line.length) renderPlainRun(lastEnd, line.length, 'te');
     return <>{segs}</>;
-  }, [renderTextWithUnderlines, screenData, profile.defaultCols]);
+  }, [renderTextWithUnderlines, screenData, profile.defaultCols, profile.fieldWrapsRows]);
 
   // --- Screen rendering ---
   const renderScreen = () => {
@@ -1226,7 +1201,7 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
     const cursorInInputField = hasCursor && fields.some(f => {
       if (!f.is_input) return false;
       // Handle multi-row wrapping input fields (e.g. IBM i command lines).
-      const slice = fieldSliceForRow(f, cursor.row, cols);
+      const slice = fieldSliceForRow(f, cursor.row, cols, profile.fieldWrapsRows);
       // Allow cursor at the trailing "end-marker" position (col === slice.col
       // + slice.length) — after typing into a single-char field (e.g. the
       // Option input on the Exit Interactive SQL UIM popup), the proxy
