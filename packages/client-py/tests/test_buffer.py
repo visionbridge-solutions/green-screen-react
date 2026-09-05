@@ -41,3 +41,17 @@ def test_apply_clears_stale_mask_when_next_screen_has_none():
     # survive, or the integrator would warn about the wrong screen.
     buf.apply(_screen())
     assert buf.command_keys_no_transmit is None
+
+
+def test_apply_projects_the_declared_width_provenance():
+    """``length_source`` is the host's own statement that a width is a fact,
+    not a measurement — dropping it here made every declared width read as an
+    inferred gap downstream (no width constraint was ever enforced)."""
+    buf = ScreenBuffer()
+    buf.apply(_screen(fields=[
+        {"row": 3, "col": 20, "length": 4, "is_input": True, "is_protected": False,
+         "length_source": "declared"},
+        {"row": 5, "col": 20, "length": 43, "is_input": True, "is_protected": False},
+    ]))
+    assert buf.fields[0]["length_source"] == "declared"
+    assert buf.fields[1]["length_source"] is None

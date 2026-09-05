@@ -98,6 +98,7 @@ class ScreenBuffer:
             "row": field.row,
             "col": field.col,
             "length": field.length,
+            "length_source": getattr(field, "length_source", None),
             "attr": attr,
             "is_input": field.is_input,
             "is_protected": field.is_protected,

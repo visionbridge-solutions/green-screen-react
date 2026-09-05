@@ -93,6 +93,11 @@ class Field:
             length=data["length"],
             is_input=data.get("is_input", False),
             is_protected=data.get("is_protected", False),
+            # The proxy stamps ``length_source: "declared"`` when the host's SF
+            # order carried the width; dropping it here made every consumer
+            # treat a declared width as a measurement (no width fact ever
+            # reached the backend's constraint checks).
+            length_source=data.get("length_source"),
             is_highlighted=data.get("is_highlighted"),
             is_reverse=data.get("is_reverse"),
             is_underscored=data.get("is_underscored"),

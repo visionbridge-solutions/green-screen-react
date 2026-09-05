@@ -58,6 +58,18 @@ def test_field_full_v1_2():
     assert f.modified is True
 
 
+def test_field_length_source_round_trips():
+    """The host-declared width provenance must survive the wire → dataclass
+    hop: a backend that cannot tell a declared width from a measured one
+    treats every width as a measurement and never enforces the host's fact."""
+    declared = Field.from_wire({"row": 5, "col": 10, "length": 4, "is_input": True,
+                                "is_protected": False, "length_source": "declared"})
+    assert declared.length_source == "declared"
+    measured = Field.from_wire({"row": 5, "col": 10, "length": 43, "is_input": True,
+                                "is_protected": False})
+    assert measured.length_source is None
+
+
 def test_field_value():
     fv = FieldValue.from_wire({"row": 1, "col": 2, "length": 5, "value": "HELLO", "modified": True})
     assert fv.value == "HELLO"
