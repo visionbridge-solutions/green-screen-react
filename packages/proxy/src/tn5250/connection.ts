@@ -53,6 +53,11 @@ export class TN5250Connection extends EventEmitter {
   private terminalType: string = DEFAULT_TERMINAL_TYPE;
   /** Environment variables to send in NEW_ENVIRON (e.g., DEVNAME for device name). */
   private envVars: Record<string, string> = {};
+  /** NEW_ENVIRON IS replies sent on the CURRENT socket. A host that asks for
+   * DEVNAME again after we already answered is refusing the name (RFC 2877:
+   * the device is in use or cannot be allocated) — re-sending the same name
+   * only earns a closed socket, so that second ask is a fail-fast error. */
+  private envRepliesSent: number = 0;
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   /**
    * Wall-clock ms timestamp of the most recent byte received from the
@@ -128,6 +133,7 @@ export class TN5250Connection extends EventEmitter {
       this.port = port;
       this.stream.reset();
       this.negotiationDone = false;
+      this.envRepliesSent = 0;
       this.terminalType = options?.terminalType || DEFAULT_TERMINAL_TYPE;
       this.secured = false;
 
@@ -341,12 +347,35 @@ export class TN5250Connection extends EventEmitter {
       // Server asks for terminal type — respond with our type
       this.sendTerminalType();
     } else if (option === TELNET.OPT_NEW_ENVIRON) {
-      // Server asks for environment variables — send empty response
+      if (this.envRepliesSent > 0 && this.envVars.DEVNAME && TN5250Connection.isDevnameReask(data)) {
+        // The host answered our DEVNAME with a second SEND naming DEVNAME:
+        // the device is in use or cannot be allocated. Surface it as a fatal
+        // error NOW instead of replaying the name into a close (observed
+        // live 2026-09-05: three silent re-asks per connect, blank screen
+        // upstream, and the integrator told to "reconnect").
+        const err = Object.assign(
+          new Error(`host rejected device name ${this.envVars.DEVNAME}: device not available (in use or cannot be allocated)`),
+          { code: 'DEVICE_NAME_REJECTED', fatal: true },
+        );
+        this.emit('error', err);
+        this.disconnect();
+        return;
+      }
+      // Server asks for environment variables — send what we have (DEVNAME…)
       this.sendEnviron(data);
+      this.envRepliesSent++;
     } else if (option === TELNET.OPT_TN5250E) {
       // TN5250E subnegotiation — handle device name etc.
       this.handleTN5250ESubneg(data);
     }
+  }
+
+  /** True when a NEW_ENVIRON SEND explicitly names DEVNAME — the host's
+   * "give me a different device name" request (as opposed to the initial
+   * generic SEND, which carries IBMRSEED and blanket VAR/USERVAR markers). */
+  static isDevnameReask(data: Buffer): boolean {
+    if (data.length < 2 || data[1] !== 0x01 /* SEND */) return false;
+    return data.subarray(2).toString('latin1').includes('DEVNAME');
   }
 
   private sendTerminalType(): void {

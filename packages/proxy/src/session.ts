@@ -100,6 +100,13 @@ export class Session extends EventEmitter {
       sessionLifecycle.emit('session.lost', this.id, this._status);
     });
     this.handler.on('error', (err: Error) => {
+      // A fatal protocol verdict (the host refused our device name) is not a
+      // drop to recover from: re-establishing TCP would only replay the same
+      // refusal. Treat it as an intentional close so auto-reconnect stands
+      // down and the session reports lost with the error attached.
+      if ((err as Error & { fatal?: boolean }).fatal) {
+        this._intentionalClose = true;
+      }
       this._status = { connected: false, status: 'error', protocol: this.protocol, host: this._host, error: err.message };
       this.emit('statusChange', this._status);
       // For an autoReconnect session, let the ensuing disconnect drive recovery
