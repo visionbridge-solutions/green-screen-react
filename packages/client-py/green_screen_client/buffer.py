@@ -91,6 +91,17 @@ class ScreenBuffer:
     def _field_to_dict(field) -> dict:  # type: ignore[no-untyped-def]
         # Reconstruct a dict shape that legacy code expects, including the
         # conventional 5250 'attr' byte (bit 0x08 = protected).
+        #
+        # This projection is LOSSLESS BY CONTRACT: every attribute ``Field``
+        # carries must appear here, because this dict — not the ``Field`` — is
+        # what integrators consume, and a key omitted here is indistinguishable
+        # from a host that never sent it. Four FFW bits were dropped for
+        # months (auto_enter, field_exit_required, dup_enable, is_numeric),
+        # which silently pinned three typing rungs OFF: the DDS AUTO(RA/RAB)
+        # TAB-suppression, the CHECK(ER) Field-Exit requirement, and the
+        # numeric-shift hint. ``test_buffer.py`` pins the contract structurally
+        # against ``dataclasses.fields(Field)``, so a newly added attribute
+        # fails the suite until it is projected here too.
         attr = 0x28 if field.is_protected else 0x20
         if field.is_highlighted:
             attr |= 0x02
@@ -111,11 +122,24 @@ class ScreenBuffer:
             "shift_type": field.shift_type,
             "monocase": bool(field.monocase),
             "auto_adjust": getattr(field, "auto_adjust", None),
+            # FFW2 AUTO(RA/RAB): the field implicitly ENTERs once it fills, so a
+            # client walking fields with TAB must not add a TAB after it.
+            "auto_enter": bool(getattr(field, "auto_enter", None) or False),
+            # FFW2 CHECK(ER) family: the host refuses a plain data-fill exit —
+            # plan a Field Exit keystroke rather than learn it from a rejection.
+            "field_exit_required": bool(
+                getattr(field, "field_exit_required", None) or False),
+            # FFW1 DUP-enable: the DUP key is permitted in this field.
+            "dup_enable": bool(getattr(field, "dup_enable", None) or False),
+            # 3270 field-attribute NUMERIC bit (5250 sends the richer shift_type).
+            "is_numeric": bool(getattr(field, "is_numeric", None) or False),
             "is_dbcs": bool(field.is_dbcs),
+            "is_dbcs_either": bool(getattr(field, "is_dbcs_either", None) or False),
             "self_check_mod10": bool(field.self_check_mod10),
             "self_check_mod11": bool(field.self_check_mod11),
             "resequence": field.resequence,
             "progression_id": field.progression_id,
+            "pointer_aid": getattr(field, "pointer_aid", None),
             "highlight_entry_attr": field.highlight_entry_attr,
             "modified": bool(field.modified) if field.modified is not None else False,
         }
