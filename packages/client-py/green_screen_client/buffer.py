@@ -95,13 +95,24 @@ class ScreenBuffer:
         # This projection is LOSSLESS BY CONTRACT: every attribute ``Field``
         # carries must appear here, because this dict — not the ``Field`` — is
         # what integrators consume, and a key omitted here is indistinguishable
-        # from a host that never sent it. Four FFW bits were dropped for
-        # months (auto_enter, field_exit_required, dup_enable, is_numeric),
-        # which silently pinned three typing rungs OFF: the DDS AUTO(RA/RAB)
-        # TAB-suppression, the CHECK(ER) Field-Exit requirement, and the
-        # numeric-shift hint. ``test_buffer.py`` pins the contract structurally
-        # against ``dataclasses.fields(Field)``, so a newly added attribute
-        # fails the suite until it is projected here too.
+        # from a host that never sent it.
+        #
+        # Six attributes were dropped for months. The one with teeth is
+        # ``is_numeric``: it is the TN3270 field-attribute NUMERIC bit, and on
+        # 3270 it is the ONLY numeric signal, so a numeric-field predicate had
+        # nothing to read there. (TN5250 was unaffected — it sends the richer
+        # ``shift_type``, which was projected.) ``auto_enter`` and
+        # ``field_exit_required`` are diagnostic metadata by design, NOT
+        # enforcement: AUTO(RA/RAB) and CHECK(ER) are keyboard-device
+        # behaviours, and programmatic buffer writes never fire an AID, so a
+        # client must not act on them — dropping those two lost visibility, not
+        # behaviour. ``dup_enable``, ``is_dbcs_either`` and ``pointer_aid`` had
+        # no consumer at all; they are here because the contract is lossless,
+        # not because something was broken.
+        #
+        # ``test_buffer.py`` pins that contract structurally against
+        # ``dataclasses.fields(Field)``, so a newly added attribute fails the
+        # suite until it is projected here too.
         attr = 0x28 if field.is_protected else 0x20
         if field.is_highlighted:
             attr |= 0x02

@@ -62,13 +62,19 @@ def test_every_field_attribute_reaches_the_projected_dict():
 
     The dict — not the dataclass — is what integrators consume, so an attribute
     the parser fills and this projection omits is indistinguishable from a host
-    that never sent it. Four FFW bits were dropped this way for months
-    (auto_enter, field_exit_required, dup_enable, is_numeric), silently pinning
-    the DDS AUTO(RA/RAB) TAB-suppression, the CHECK(ER) Field-Exit requirement
-    and the numeric-shift hint permanently OFF downstream.
+    that never sent it. Six were dropped this way for months: auto_enter,
+    field_exit_required, dup_enable, is_numeric, is_dbcs_either, pointer_aid.
 
-    Asserting against ``dataclasses.fields`` rather than a hand-written list is
-    the point: a newly parsed attribute fails here until it is projected too.
+    Of those, only ``is_numeric`` had teeth — it is the TN3270 NUMERIC field
+    attribute and on 3270 the only numeric signal (TN5250 sends the richer
+    ``shift_type``, which was projected). ``auto_enter`` and
+    ``field_exit_required`` are diagnostic metadata by design: AUTO(RA/RAB) and
+    CHECK(ER) are keyboard-device behaviours that programmatic writes never
+    trigger, so a client must not act on them. The rest had no consumer. The
+    contract is lossless regardless — that is the point of asserting against
+    ``dataclasses.fields`` rather than a hand-written list: a newly parsed
+    attribute fails here until it is projected too, before anyone has to work
+    out whether it mattered.
     """
     import dataclasses
 
