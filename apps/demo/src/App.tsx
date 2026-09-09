@@ -210,7 +210,6 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
             readOnly={true}
             showHeader={false}
             bootLoader={false}
-            typingAnimation={false}
             onSignIn={handleConnect}
           />
         </div>
@@ -262,7 +261,6 @@ function ConnectPanel({ standalone = false }: { standalone?: boolean }) {
             readOnly={true}
             showHeader={false}
             bootLoader={false}
-            typingAnimation={false}
             onSignIn={handleConnect}
           />
         </div>

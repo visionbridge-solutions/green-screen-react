@@ -163,7 +163,6 @@ The proxy keeps the TCP connection alive across WebSocket drops within its idle 
 | `alwaysFocused` | `boolean` | `false` | **v1.3.0** — aggressively reclaim focus; disables click-outside unfocus. Useful for full-page embeds. |
 | `embedded` | `boolean` | `false` | Compact embedded mode |
 | `showHeader` | `boolean` | `true` | Show header bar |
-| `typingAnimation` | `boolean` | `true` | Enable typing animation |
 | `bootLoader` | `ReactNode \| false` | default | Custom boot loader |
 | `onSignIn` | `(config) => void` | - | Sign-in callback |
 | `onScreenChange` | `(screen) => void` | - | Screen change callback |
