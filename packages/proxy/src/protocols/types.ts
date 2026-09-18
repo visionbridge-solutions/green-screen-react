@@ -203,6 +203,33 @@ export abstract class ProtocolHandler extends EventEmitter {
     return { lastReceivedAtMs: 0, lastSentAtMs: 0 };
   }
 
+  /**
+   * Host-record accounting (`ScreenData.host_records` /
+   * `host_records_at_aid`). A record-framed handler opts in by setting
+   * `countsHostRecords`, calls `noteHostRecord()` for every record the host
+   * sends (before parsing it — an unparseable record is still an answer) and
+   * `noteAidSent()` immediately before writing an AID. Unlike
+   * `lastReceivedAtMs` this counts protocol records only: a telnet
+   * TIMING-MARK reply to the keepalive is not the host answering a key.
+   */
+  protected countsHostRecords = false;
+  protected hostRecords = 0;
+  protected hostRecordsAtAid = 0;
+
+  protected noteHostRecord(): void {
+    this.hostRecords += 1;
+  }
+
+  protected noteAidSent(): void {
+    this.hostRecordsAtAid = this.hostRecords;
+  }
+
+  /** `data` with the host-record counters stamped on, for handlers that count. */
+  protected withHostRecords(data: ScreenData): ScreenData {
+    if (!this.countsHostRecords) return data;
+    return { ...data, host_records: this.hostRecords, host_records_at_aid: this.hostRecordsAtAid };
+  }
+
   /** Clean up resources */
   abstract destroy(): void;
 }

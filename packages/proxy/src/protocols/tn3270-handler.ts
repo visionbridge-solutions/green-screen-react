@@ -19,6 +19,9 @@ export class TN3270Handler extends ProtocolHandler {
   readonly parser: TN3270Parser;
   readonly encoder: TN3270Encoder;
 
+  /** 3270 is record-framed (EOR): every host record is counted. */
+  protected override countsHostRecords = true;
+
   constructor() {
     super();
     this.screen = new ScreenBuffer3270();
@@ -60,7 +63,7 @@ export class TN3270Handler extends ProtocolHandler {
   }
 
   getScreenData(): ScreenData {
-    return this.screen.toScreenData();
+    return this.withHostRecords(this.screen.toScreenData());
   }
 
   sendText(text: string): boolean {
@@ -101,6 +104,7 @@ export class TN3270Handler extends ProtocolHandler {
 
     const response = this.encoder.buildAidResponse(key);
     if (!response) return false;
+    this.noteAidSent();
     this.connection.sendRecord(response);
     // Transmitting an AID inhibits input until the host's WCC keyboard
     // restore; remember the AID for host-initiated Read Modified replies.
@@ -258,11 +262,13 @@ export class TN3270Handler extends ProtocolHandler {
   }
 
   private onRecord(record: Buffer): void {
+    // Every host record is an answer, whatever it paints (ProtocolHandler.noteHostRecord).
+    this.noteHostRecord();
     try {
       const modified = this.parser.parseRecord(record);
       this.flushHostReplies();
       if (modified) {
-        this.emit('screenChange', this.screen.toScreenData());
+        this.emit('screenChange', this.getScreenData());
       }
     } catch (err) {
       // A crafted/corrupt host record must not throw out of the socket 'data'

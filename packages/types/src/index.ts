@@ -258,6 +258,21 @@ export interface ScreenData {
   timestamp: string;
   /** Whether the keyboard is locked by the host (X SYSTEM indicator) */
   keyboard_locked?: boolean;
+  /**
+   * Host data-stream records received on this session — a monotonically
+   * increasing count bumped by EVERY record the host sends, whatever it
+   * contains: a byte-identical repaint, or a record that only restores the
+   * keyboard, is still the host's answer. Absent from handlers whose
+   * transport is not record-framed.
+   */
+  host_records?: number;
+  /**
+   * The value of `host_records` at the moment the last AID (a key that
+   * transmits to the host) was written. `host_records > host_records_at_aid`
+   * means the host has sent something since our last key — an integrator can
+   * wait on that instead of on the screen content changing.
+   */
+  host_records_at_aid?: number;
   /** Whether the message waiting indicator is set */
   message_waiting?: boolean;
   /** Whether the host requested an audible alarm (beep) */

@@ -27,6 +27,10 @@ export class TN5250Handler extends ProtocolHandler {
    *  without streaming every half-painted write burst. */
   static LOCKED_FLUSH_MS = 1500;
 
+  /** 5250 is record-framed (EOR): every host record is counted, see
+   *  ProtocolHandler.noteHostRecord. */
+  protected override countsHostRecords = true;
+
   constructor() {
     super();
     this.screen = new ScreenBuffer();
@@ -188,13 +192,20 @@ export class TN5250Handler extends ProtocolHandler {
       this.once('screenChange', onChange);
     });
 
-    this.connection.sendRaw(enterAid);
+    this.sendAid(enterAid);
     await done;
     return true;
   }
 
   getScreenData(): ScreenData {
-    return this.screen.toScreenData();
+    return this.withHostRecords(this.screen.toScreenData());
+  }
+
+  /** Write an AID, first noting how many host records preceded it — the
+   *  mark `host_records_at_aid` that the host's answer moves past. */
+  private sendAid(aid: Buffer): void {
+    this.noteAidSent();
+    this.connection.sendRaw(aid);
   }
 
   readFieldValues(modifiedOnly: boolean = true): FieldValue[] {
@@ -365,7 +376,7 @@ export class TN5250Handler extends ProtocolHandler {
 
     const response = this.encoder.buildAidResponse(normalizedKey);
     if (!response) return false;
-    this.connection.sendRaw(response);
+    this.sendAid(response);
     return true;
   }
 
@@ -480,7 +491,7 @@ export class TN5250Handler extends ProtocolHandler {
     // exactly what happens during manual sign-in
     const response = this.encoder.buildAidResponse('Enter');
     if (!response) return false;
-    this.connection.sendRaw(response);
+    this.sendAid(response);
 
     // Clear the password from the buffer (the AID already captured it).
     this.screen.setFieldValue(pwField, '');
@@ -644,7 +655,7 @@ export class TN5250Handler extends ProtocolHandler {
     for (let attempt = 0; attempt < 4 && !hasCommandLine(screen); attempt++) {
       const enterAid = this.encoder.buildAidResponse('Enter');
       if (!enterAid) break;
-      this.connection.sendRaw(enterAid);
+      this.sendAid(enterAid);
       await this.waitForScreen(5000);
       const next = this.getScreenData();
       // Bail out if the screen didn't change — we're stuck (likely an
@@ -778,7 +789,7 @@ export class TN5250Handler extends ProtocolHandler {
     if (process.env.GS_EMIT_PARTIAL_WRITES === '1' || !this.screen.keyboardLocked) {
       this.clearLockedFlushTimer();
       this.pendingScreenEmit = false;
-      this.emit('screenChange', this.screen.toScreenData());
+      this.emit('screenChange', this.getScreenData());
       return;
     }
     this.pendingScreenEmit = true;
@@ -787,13 +798,17 @@ export class TN5250Handler extends ProtocolHandler {
         this.lockedFlushTimer = null;
         if (this.pendingScreenEmit) {
           this.pendingScreenEmit = false;
-          this.emit('screenChange', this.screen.toScreenData());
+          this.emit('screenChange', this.getScreenData());
         }
       }, TN5250Handler.LOCKED_FLUSH_MS);
     }
   }
 
   private onRecord(record: Buffer): void {
+    // Counted before parsing: whatever the record holds — an identical
+    // repaint, a bare keyboard restore, even bytes we cannot parse — the host
+    // has answered, and a caller waiting on that must not depend on content.
+    this.noteHostRecord();
     try {
       this.parseRecordGuarded(record);
     } catch (err) {
@@ -837,8 +852,14 @@ export class TN5250Handler extends ProtocolHandler {
       this.emitScreenGated();
     } else {
       // The restore can arrive in a record that modifies nothing visible —
-      // a held frame must still flush the moment the host unlocks.
+      // a held frame must still flush the moment the host unlocks. And a
+      // record that painted nothing is still an answer: with no frame held,
+      // surface it (through the same gate) so a viewer waiting on
+      // `host_records` sees it move. A held frame's pending flush already
+      // carries the new count.
       if (klBefore && !this.screen.keyboardLocked && this.pendingScreenEmit) {
+        this.emitScreenGated();
+      } else if (!this.pendingScreenEmit) {
         this.emitScreenGated();
       }
       if (process.env.GS_DIAG_KL === '1') {
