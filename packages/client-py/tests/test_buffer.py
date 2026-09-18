@@ -128,3 +128,46 @@ def test_an_absent_ffw_bit_projects_false_not_missing():
     assert f["dup_enable"] is False
     assert f["is_numeric"] is False
     assert f["pointer_aid"] is None  # an int attribute, not a flag
+
+
+# --- a strict read says when it failed ---------------------------------------
+# ``get_screen`` replays the buffer when the proxy read fails (the REST layer
+# answers None; ``apply(None)`` is a no-op), which an integrator cannot tell
+# from "nothing changed". A stale MENU frame served as a fresh read let a
+# data-entry run believe its terminal was at a clean start (2026-09-18).
+
+class _Rest:
+    def __init__(self, frames):
+        self._frames = list(frames)
+
+    async def get_screen(self):
+        return self._frames.pop(0)
+
+
+def _client(frames):
+    from green_screen_client.buffer import ProxyTerminalClient
+
+    client = ProxyTerminalClient.__new__(ProxyTerminalClient)
+    client.screen = ScreenBuffer()
+    client._rest = _Rest(frames)
+    return client
+
+
+def test_a_strict_read_returns_the_live_frame_and_updates_the_buffer():
+    import asyncio
+
+    client = _client([_screen(content="LIVE")])
+    assert asyncio.run(client.get_screen_strict()) == "LIVE"
+    assert client.screen.content == "LIVE"
+
+
+def test_a_failed_strict_read_is_none_not_the_previous_frame():
+    import asyncio
+
+    client = _client([_screen(content="MENU"), None, None])
+    assert asyncio.run(client.get_screen_strict()) == "MENU"
+    # The soft read replays the buffer — by design, and unchanged:
+    assert asyncio.run(client.get_screen()) == "MENU"
+    # The strict read says so, and leaves the buffer as it was:
+    assert asyncio.run(client.get_screen_strict()) is None
+    assert client.screen.content == "MENU"

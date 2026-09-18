@@ -314,6 +314,23 @@ class ProxyTerminalClient:
         self.screen.apply(screen)
         return self.screen.content
 
+    async def get_screen_strict(self) -> Optional[str]:
+        """Read the screen and say when the read FAILED.
+
+        ``get_screen`` is deliberately soft: the REST layer answers ``None`` for
+        a transport error, any HTTP >= 400 or an empty frame, ``apply(None)`` is
+        a no-op, and the caller gets the PREVIOUS content back — indistinguishable
+        from "the screen did not change". That is the right behaviour for a
+        renderer and the wrong one for an integrator about to act on what it
+        read. This returns ``None`` instead, and leaves the buffer untouched, so
+        the caller can tell a live frame from a replayed one.
+        """
+        screen = await self._rest.get_screen()
+        if screen is None:
+            return None
+        self.screen.apply(screen)
+        return self.screen.content
+
     async def send_text(self, text: str) -> bool:
         result = await self._rest.send_text(text)
         if result.success:
