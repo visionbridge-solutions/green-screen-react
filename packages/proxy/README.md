@@ -120,7 +120,7 @@ Events the proxy pushes:
 | `connected` | Session established after `connect`/`reattach`. |
 | `cursor` | Lightweight cursor-only update (local ops like Tab/arrows). |
 | `mdt` | Response to a `readMdt` command. |
-| `session.lost` | **v1.2.0** — session died (TCP drop, idle timeout, destroy). |
+| `session.lost` | **v1.2.0** — session died (TCP drop, idle timeout, destroy, or an auto-reconnect that gave up — its status then reads `disconnected` with the reason). A lost session stays readable (`/status`, `/session/resume`) for 60 s, then the proxy removes it. |
 | `session.resumed` | **v1.2.0** — a client successfully reattached to this session. |
 | `error` | Generic error with a `message`. |
 

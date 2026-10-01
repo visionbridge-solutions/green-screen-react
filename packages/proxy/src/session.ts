@@ -38,6 +38,11 @@ export class Session extends EventEmitter {
   private _intentionalClose = false;
   /** Guards the auto-reconnect loop against re-entrancy. */
   private _reconnecting = false;
+  /** Removes the session once it has been lost for LOST_REAP_MS (see
+   *  reportLost). Cleared by a new connect and by any teardown. */
+  private _lostReap: ReturnType<typeof setTimeout> | null = null;
+  /** Set by destroy()/gracefulDestroy(): a torn-down session arms no reaper. */
+  private _destroyed = false;
   /** Server-side single-writer lock. When non-null, an exclusive driver (e.g.
    *  ``agent:<id>`` set by the integrator for the duration of an automated run)
    *  owns input — the proxy rejects WS key/text/cursor commands from anyone else,
@@ -74,6 +79,15 @@ export class Session extends EventEmitter {
    *  and the integrator's own reconnect policy takes over. */
   static RECONNECT_BACKOFF_MS = [2000, 4000, 8000, 15000, 30000];
 
+  /** How long (ms) a LOST session — its host connection gone for good, no
+   *  recovery under way — stays in the store before it is removed. Long
+   *  enough for an integrator to read its final status and error (a host's
+   *  refusal of the device is classified from it right after the connect
+   *  fails); after that nothing asks, and nothing else would ever remove it:
+   *  its idle timer stopped with the connection. Two sessions whose
+   *  auto-reconnect gave up sat in the store as 'connecting' for six days. */
+  static LOST_REAP_MS = 60 * 1000;
+
   constructor(protocol: ProtocolType = 'tn5250') {
     super();
     this.id = randomUUID();
@@ -85,7 +99,13 @@ export class Session extends EventEmitter {
       this.emit('screenChange', screenData);
     });
     this.handler.on('disconnected', () => {
-      this._status = { connected: false, status: 'disconnected', protocol: this.protocol, host: this._host };
+      // The socket's close follows an error verdict (below): keep the error,
+      // or the lost session's final status no longer says why it was lost.
+      const error = this._status.status === 'error' ? this._status.error : undefined;
+      this._status = {
+        connected: false, status: 'disconnected', protocol: this.protocol, host: this._host,
+        ...(error ? { error } : {}),
+      };
       this.stopIdleTimer();
       this.emit('statusChange', this._status);
       // Auto-reconnect path: an UNEXPECTED drop on an autoReconnect session is
@@ -97,7 +117,7 @@ export class Session extends EventEmitter {
         this._attemptAutoReconnect().catch(() => { /* loop is self-contained */ });
         return;
       }
-      sessionLifecycle.emit('session.lost', this.id, this._status);
+      this.reportLost();
     });
     this.handler.on('error', (err: Error) => {
       // A fatal protocol verdict (the host refused our device name) is not a
@@ -112,7 +132,7 @@ export class Session extends EventEmitter {
       // For an autoReconnect session, let the ensuing disconnect drive recovery
       // (don't unbind the key via session.lost first).
       if (!(this._autoReconnect && !this._intentionalClose)) {
-        sessionLifecycle.emit('session.lost', this.id, this._status);
+        this.reportLost();
       }
       // Close the upstream TCP socket on unrecoverable protocol errors.
       // Without this, a parser exception would leak the half-open 5250
@@ -178,6 +198,30 @@ export class Session extends EventEmitter {
     }
   }
 
+  /** The host connection is gone for good and nothing is recovering it: tell
+   *  watchers (``session.lost`` — the integrator's own recovery takes over)
+   *  and remove the session after LOST_REAP_MS, unless it connects again in
+   *  between. A torn-down session is being removed by its destroyer already. */
+  private reportLost(): void {
+    sessionLifecycle.emit('session.lost', this.id, this._status);
+    if (this._destroyed) return;
+    this.stopLostReap();
+    this._lostReap = setTimeout(() => {
+      this._lostReap = null;
+      if (this._status.connected) return;
+      console.log(`[lost-reap] Session ${this.id.slice(0, 8)} lost ${Math.round(Session.LOST_REAP_MS / 1000)}s ago (${this._status.status}${this._status.error ? `: ${this._status.error}` : ''}) — removing`);
+      destroySession(this.id);
+    }, Session.LOST_REAP_MS);
+  }
+
+  /** Stop the lost-session reaper. */
+  private stopLostReap(): void {
+    if (this._lostReap) {
+      clearTimeout(this._lostReap);
+      this._lostReap = null;
+    }
+  }
+
   get status(): ConnectionStatus {
     return { ...this._status };
   }
@@ -223,6 +267,7 @@ export class Session extends EventEmitter {
     // re-established in place rather than surfaced as a lost session.
     this._autoReconnect = !!(options as { autoReconnect?: boolean } | undefined)?.autoReconnect;
     this._intentionalClose = false;
+    this.stopLostReap();
     this._status = { connected: false, status: 'connecting', protocol: this.protocol, host };
     this.emit('statusChange', this._status);
 
@@ -281,6 +326,7 @@ export class Session extends EventEmitter {
     // forever.
     sessionLifecycle.emit('session.reconnecting', this.id);
     const schedule = Session.RECONNECT_BACKOFF_MS;
+    let lastError = '';
     try {
       for (let attempt = 0; attempt < schedule.length; attempt++) {
         await new Promise((r) => setTimeout(r, schedule[attempt]));
@@ -290,11 +336,13 @@ export class Session extends EventEmitter {
         try {
           await this.handler.connect(this._host, this._port, this._connectOptions);
         } catch (err) {
-          console.warn(`[auto-reconnect] Session ${this.id.slice(0, 8)} attempt ${attempt + 1}/${schedule.length} failed: ${err instanceof Error ? err.message : String(err)}`);
+          lastError = err instanceof Error ? err.message : String(err);
+          console.warn(`[auto-reconnect] Session ${this.id.slice(0, 8)} attempt ${attempt + 1}/${schedule.length} failed: ${lastError}`);
           continue;
         }
         if (this._intentionalClose) { try { this.handler.disconnect(); } catch { /* ignore */ } return; }
         this._status = { connected: true, status: 'connected', protocol: this.protocol, host: this._host };
+        this.stopLostReap();
         this.touch();
         this.startIdleTimer();
         this.emit('statusChange', this._status);
@@ -303,7 +351,14 @@ export class Session extends EventEmitter {
         return;
       }
       console.warn(`[auto-reconnect] Session ${this.id.slice(0, 8)} exhausted ${schedule.length} attempts — reporting lost`);
-      sessionLifecycle.emit('session.lost', this.id, this._status);
+      // No longer connecting: it gave up. Without this the status read
+      // 'connecting' for as long as the session lived.
+      this._status = {
+        connected: false, status: 'disconnected', protocol: this.protocol, host: this._host,
+        error: `auto-reconnect gave up after ${schedule.length} attempts${lastError ? `: ${lastError}` : ''}`,
+      };
+      this.emit('statusChange', this._status);
+      this.reportLost();
     } finally {
       this._reconnecting = false;
     }
@@ -382,8 +437,10 @@ export class Session extends EventEmitter {
 
   destroy(): void {
     this._intentionalClose = true;
+    this._destroyed = true;
     this.stopIdleTimer();
     this.stopConnectWatchdog();
+    this.stopLostReap();
     this.handler.destroy();
     this.removeAllListeners();
   }
@@ -399,8 +456,10 @@ export class Session extends EventEmitter {
    */
   async gracefulDestroy(timeoutMs: number = 1500): Promise<void> {
     this._intentionalClose = true;
+    this._destroyed = true;
     this.stopIdleTimer();
     this.stopConnectWatchdog();
+    this.stopLostReap();
     const isAuth = this._status.status === 'authenticated';
     if (isAuth && this.handler.attemptGracefulExit) {
       try {
