@@ -75,8 +75,9 @@ export class RestAdapter implements TerminalAdapter {
     return this.request<ConnectionStatus>('GET', '/status');
   }
 
+  /** Keyboard typing: past a full field the proxy moves on to the next one. */
   async sendText(text: string): Promise<SendResult> {
-    return this.request<SendResult>('POST', '/send-text', { text });
+    return this.request<SendResult>('POST', '/send-text', { text, advance: true });
   }
 
   async sendKey(key: string): Promise<SendResult> {

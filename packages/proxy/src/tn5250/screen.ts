@@ -537,6 +537,41 @@ export class ScreenBuffer {
   }
 
   /**
+   * The input field Tab (direction 1) or Backtab (-1) moves to from the
+   * buffer position `pos`: the non-bypass fields in spatial order, or in
+   * resequence order when the format resequences them (FCW 0x80xx — fields
+   * with a resequence number first, in that order, the rest after them in
+   * spatial order). Wraps at either end. Null when the screen has no input
+   * field. Per lib5250 display.c:2089 (set_cursor_next/prev_logical_field),
+   * which does not filter by display attribute either.
+   */
+  adjacentInputField(pos: number, direction: 1 | -1): FieldDef | null {
+    const inputFields = this.fields.filter(f => this.isInputField(f));
+    if (inputFields.length === 0) return null;
+
+    const hasResequence = inputFields.some(f => f.resequence && f.resequence > 0);
+    const orderOf = (f: FieldDef): number => {
+      if (hasResequence) {
+        const base = f.resequence && f.resequence > 0 ? f.resequence : 10000;
+        return base * 1_000_000 + this.offset(f.row, f.col);
+      }
+      return this.offset(f.row, f.col);
+    };
+    inputFields.sort((a, b) => orderOf(a) - orderOf(b));
+
+    const curIdx = inputFields.findIndex(f => {
+      const start = this.offset(f.row, f.col);
+      return pos >= start && pos < start + f.length;
+    });
+    if (direction === 1) {
+      return curIdx >= 0 && curIdx + 1 < inputFields.length
+        ? inputFields[curIdx + 1]
+        : inputFields[0];
+    }
+    return curIdx > 0 ? inputFields[curIdx - 1] : inputFields[inputFields.length - 1];
+  }
+
+  /**
    * Set cursor to "home" position per lib5250 display.c:614-635:
    *   1) If pending insert (from a prior IC order), go to the IC position
    *   2) Otherwise, first position of the first non-bypass field

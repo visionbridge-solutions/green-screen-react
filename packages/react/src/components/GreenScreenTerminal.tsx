@@ -858,12 +858,22 @@ export const GreenScreenTerminal = forwardRef<GreenScreenTerminalHandle, GreenSc
         // Optimistic: show character immediately at cursor position
         const curRow = syncedCursor?.row ?? screenData?.cursor_row ?? 0;
         const curCol = syncedCursor?.col ?? screenData?.cursor_col ?? 0;
+        // Echo only what fits in the current field. Past its end the proxy
+        // moves the typing on to the next field — possibly a hidden one, such
+        // as the sign-on Password — so a guess here would paint those
+        // characters in clear in the protected cells beside the field.
+        const slice = curField
+          ? fieldSliceForRow(curField, curRow, screenData?.cols || profile.defaultCols, profile.fieldWrapsRows)
+          : null;
+        const room = slice ? Math.max(0, slice.col + slice.length - curCol) : newChars.length;
+        const echoed = Math.min(newChars.length, room);
         const edits: Array<{ row: number; col: number; ch: string }> = [];
-        for (let i = 0; i < newChars.length; i++) {
+        for (let i = 0; i < echoed; i++) {
           edits.push({ row: curRow, col: curCol + i, ch: newChars[i] });
         }
         setOptimisticEdits(prev => [...prev, ...edits]);
-        setSyncedCursor({ row: curRow, col: curCol + newChars.length });
+        if (echoed === newChars.length) setSyncedCursor({ row: curRow, col: curCol + echoed });
+        else setSyncedCursor(null); // the proxy's frame places the cursor
         // Send to proxy in background (cursor-only response)
         sendText(newChars).then(r => {
           if (r.cursor_row !== undefined) setSyncedCursor({ row: r.cursor_row, col: r.cursor_col! });

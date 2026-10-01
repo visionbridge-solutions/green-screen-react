@@ -1,5 +1,5 @@
 import { createProtocolHandler, ProtocolHandler } from './protocols/index.js';
-import type { ProtocolType, ScreenData } from './protocols/index.js';
+import type { ProtocolType, ScreenData, TextEntryOptions } from './protocols/index.js';
 import type { EbcdicCodePage } from './encoding/ebcdic.js';
 
 /**
@@ -112,12 +112,12 @@ export class SessionController {
     this.adopted = true;
   }
 
-  handleText(text: string): void {
+  handleText(text: string, opts?: TextEntryOptions): void {
     if (!this.handler || !this.connected) {
       this.send({ type: 'error', message: 'Not connected' });
       return;
     }
-    this.handler.sendText(text);
+    this.handler.sendText(text, opts);
     this.send({ type: 'screen', data: this.handler.getScreenData() });
   }
 

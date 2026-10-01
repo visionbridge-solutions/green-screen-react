@@ -1,5 +1,5 @@
 import { ProtocolHandler } from './types.js';
-import type { ScreenData, ProtocolOptions, ProtocolType, FieldValue } from './types.js';
+import type { ScreenData, ProtocolOptions, ProtocolType, FieldValue, TextEntryOptions } from './types.js';
 import { TN5250Connection } from '../tn5250/connection.js';
 import { ScreenBuffer, FieldDef } from '../tn5250/screen.js';
 import { TN5250Parser } from '../tn5250/parser.js';
@@ -212,14 +212,17 @@ export class TN5250Handler extends ProtocolHandler {
     return this.screen.readFieldValues(modifiedOnly);
   }
 
-  sendText(text: string): boolean {
-    return this.encoder.insertText(text);
+  sendText(text: string, opts?: TextEntryOptions): boolean {
+    return this.encoder.insertText(text, opts);
   }
 
   sendKey(keyName: string): boolean {
     // Normalize key names: frontend sends uppercase (ENTER, TAB) but
     // KEY_TO_AID uses mixed case (Enter, PageUp). Handle both.
     const normalizedKey = this.normalizeKeyName(keyName);
+    // A key moves the cursor or answers the screen: the next character is
+    // no longer typing on past a field the previous text filled.
+    this.encoder.clearFilledPark();
 
     // Arrow keys: move cursor one cell freely on the screen, with wrap at
     // edges. Matches lib5250 dbuffer.c:591-640 (dbuffer_up/down/left/right)
@@ -310,35 +313,9 @@ export class TN5250Handler extends ProtocolHandler {
     // screens) and decoration fields, so the `isInputField` check alone
     // is sufficient here.
     if (normalizedKey === 'Tab' || normalizedKey === 'Backtab') {
-      const inputFields = this.screen.fields.filter(f => this.screen.isInputField(f));
-      if (inputFields.length === 0) return false;
-
-      const hasResequence = inputFields.some(f => f.resequence && f.resequence > 0);
-      const orderOf = (f: FieldDef): number => {
-        if (hasResequence) {
-          const base = f.resequence && f.resequence > 0 ? f.resequence : 10000;
-          return base * 1_000_000 + this.screen.offset(f.row, f.col);
-        }
-        return this.screen.offset(f.row, f.col);
-      };
-      inputFields.sort((a, b) => orderOf(a) - orderOf(b));
-
       const cursorPos = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
-      const curIdx = inputFields.findIndex(f => {
-        const start = this.screen.offset(f.row, f.col);
-        return cursorPos >= start && cursorPos < start + f.length;
-      });
-
-      let target: FieldDef;
-      if (normalizedKey === 'Tab') {
-        target = curIdx >= 0 && curIdx + 1 < inputFields.length
-          ? inputFields[curIdx + 1]
-          : inputFields[0];
-      } else {
-        target = curIdx > 0
-          ? inputFields[curIdx - 1]
-          : inputFields[inputFields.length - 1];
-      }
+      const target = this.screen.adjacentInputField(cursorPos, normalizedKey === 'Tab' ? 1 : -1);
+      if (!target) return false;
       this.screen.cursorRow = target.row;
       this.screen.cursorCol = target.col;
       return true;
@@ -743,6 +720,7 @@ export class TN5250Handler extends ProtocolHandler {
    * covers the entire list area.
    */
   setCursor(row: number, col: number): boolean {
+    this.encoder.clearFilledPark();
     row = Math.max(0, Math.min(row, this.screen.rows - 1));
     col = Math.max(0, Math.min(col, this.screen.cols - 1));
     this.screen.cursorRow = row;
@@ -832,6 +810,10 @@ export class TN5250Handler extends ProtocolHandler {
     }
 
     if (modified) {
+      // The host rewrote the screen: what the last typing filled may be gone.
+      // A record that painted nothing (a keep-alive answer between two
+      // keystrokes) leaves typing where it was.
+      this.encoder.clearFilledPark();
       this.parser.calculateFieldLengths();
 
       // If we're in a SAVE_SCREEN context but the host didn't send CREATE_WINDOW,

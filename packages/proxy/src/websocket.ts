@@ -325,7 +325,10 @@ async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promi
       const controller = client.controller;
       if (!controller) { wsSend(ws, { type: 'error', message: 'Not connected' }); return; }
       if (driveBlocked(ws, client)) return;
-      controller.handleText(msg.text);
+      // ``advance``: keyboard typing (the package's terminal adapters send
+      // it) moves on to the next field past a full one; a bare text message
+      // stays a field write.
+      controller.handleText(msg.text, { advance: msg.advance === true });
       break;
     }
 

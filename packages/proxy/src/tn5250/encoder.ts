@@ -3,6 +3,7 @@ import { TELNET, KEY_TO_AID, AID, FFW, CMD, RECORD_H, RECORD_OPCODE } from './co
 import { charToEbcdic, EBCDIC_SPACE } from '../encoding/ebcdic.js';
 import { SI, SO, encodeDbcsPair, isDbcsGlyph } from '../encoding/ebcdic-jp.js';
 import { aidTransmitsData } from './command-keys.js';
+import type { TextEntryOptions } from '../protocols/types.js';
 
 /**
  * Encodes client responses (aid keys + field data) into 5250 data stream
@@ -477,25 +478,81 @@ export class TN5250Encoder {
   }
 
   /**
-   * Insert text at the current cursor position in the current field.
-   * Updates the screen buffer and marks the field as modified.
-   * Returns true if text was successfully inserted.
+   * Buffer offset of the last cell of the field the latest ``insertText``
+   * filled — where it left the cursor parked, since a cursor cannot rest
+   * past a field. The next character typed there is past the end of that
+   * field, not a correction of its last cell. The handler clears it on every
+   * key, cursor move and host record that rewrites the screen
+   * (``clearFilledPark``); a direct cursor write elsewhere invalidates it by
+   * position.
    */
-  insertText(text: string): boolean {
-    const field = this.screen.getFieldAtCursor();
-    if (!field || !this.screen.isInputField(field)) return false;
+  private filledParkAt: number | null = null;
 
-    const fieldStart = this.screen.offset(field.row, field.col);
+  /** Forget the park: the cursor moved by some means other than typing. */
+  clearFilledPark(): void {
+    this.filledParkAt = null;
+  }
+
+  /**
+   * Insert text at the current cursor position. Updates the screen buffer and
+   * marks every field it types into as modified. Returns false when a
+   * character could not be placed (no input field at the cursor, or the text
+   * ran past the end of a field it may not leave).
+   *
+   * At the end of a field: with ``opts.advance`` (keyboard typing) the next
+   * character moves on to the next input field in Tab order, as a 5250
+   * keyboard does — the operator who types a 10-character user and goes on
+   * typing gets the password in the Password field. Without it the text is a
+   * field write and the overflow is refused. Either way the field's last
+   * cell is never overwritten by text that runs past it: it used to be, once
+   * per extra character, so "USER" + "PASS" into a 4-cell field read "USES".
+   * The cursor stays parked on the full field (it does not jump on fill), so
+   * a Tab or Field Exit sent after a full value still acts on that field.
+   */
+  insertText(text: string, opts: TextEntryOptions = {}): boolean {
+    const atCursor = this.screen.getFieldAtCursor();
+    if (!atCursor || !this.screen.isInputField(atCursor)) {
+      this.filledParkAt = null;
+      return false;
+    }
+    let field: FieldDef = atCursor;
+
+    let fieldStart = this.screen.offset(field.row, field.col);
     let cursorOffset = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
-    const fieldEnd = fieldStart + field.length;
-    const dbcsCapable = this.screen.isDbcsField(field);
+    let fieldEnd = fieldStart + field.length;
+    let dbcsCapable = this.screen.isDbcsField(field);
+    // Typing goes on where the previous keystroke filled this field.
+    let pastEnd = this.filledParkAt === cursorOffset && cursorOffset === fieldEnd - 1;
+    this.filledParkAt = null;
+    let typedHere = false;
+    let placedAll = true;
+    // Fields one character has moved through without landing: a glyph no
+    // field can hold must end the typing, not circle the screen.
+    let hops = 0;
 
-    for (const ch of text) {
-      if (cursorOffset >= fieldEnd) break; // Field is full
+    const chars = [...text];
+    for (let i = 0; i < chars.length;) {
+      const ch = chars[i];
+      if (pastEnd || cursorOffset >= fieldEnd) {
+        const next: FieldDef | null = opts.advance ? this.advanceTarget(field) : null;
+        if (!next || ++hops > this.screen.fields.length) { placedAll = false; break; }
+        if (typedHere) this.screen.setFieldMdt(field);
+        field = next;
+        fieldStart = this.screen.offset(field.row, field.col);
+        cursorOffset = fieldStart;
+        fieldEnd = fieldStart + field.length;
+        dbcsCapable = this.screen.isDbcsField(field);
+        pastEnd = false;
+        typedHere = false;
+      }
 
       if (dbcsCapable && isDbcsGlyph(ch)) {
-        cursorOffset = this.insertDbcsGlyph(field, ch, cursorOffset, fieldEnd);
-        if (cursorOffset < 0) break; // glyph did not fit
+        const after = this.insertDbcsGlyph(field, ch, cursorOffset, fieldEnd);
+        if (after < 0) { pastEnd = true; continue; } // no room left: as a full field
+        cursorOffset = after;
+        typedHere = true;
+        hops = 0;
+        i++;
         continue;
       }
 
@@ -503,14 +560,14 @@ export class TN5250Encoder {
       // belongs AFTER the run — overwriting the SI would unterminate it.
       if (dbcsCapable && this.screen.dbcsShift[cursorOffset] === 2) {
         cursorOffset++;
-        if (cursorOffset >= fieldEnd) break;
+        if (cursorOffset >= fieldEnd) continue; // the run ends the field
       }
 
       // In insert mode, shift existing content right to make room
       // (per lib5250 dbuffer.c:790-835 dbuffer_ins)
       if (this.screen.insertMode && this.screen.buffer[cursorOffset] !== ' ') {
-        for (let i = fieldEnd - 1; i > cursorOffset; i--) {
-          this.screen.buffer[i] = this.screen.buffer[i - 1];
+        for (let j = fieldEnd - 1; j > cursorOffset; j--) {
+          this.screen.buffer[j] = this.screen.buffer[j - 1];
         }
       }
       this.screen.buffer[cursorOffset] = ch;
@@ -518,15 +575,34 @@ export class TN5250Encoder {
       this.screen.dbcsCont[cursorOffset] = false;
       this.screen.dbcsShift[cursorOffset] = 0;
       cursorOffset++;
+      typedHere = true;
+      hops = 0;
+      i++;
     }
 
     // Update cursor position
     const newPos = this.screen.toRowCol(Math.min(cursorOffset, fieldEnd - 1));
     this.screen.cursorRow = newPos.row;
     this.screen.cursorCol = newPos.col;
+    if (pastEnd || cursorOffset >= fieldEnd) this.filledParkAt = fieldEnd - 1;
 
     this.screen.setFieldMdt(field);
-    return true;
+    return placedAll;
+  }
+
+  /**
+   * The field a character typed past the end of ``full`` moves on to, or
+   * null where a 5250 keyboard stops too: Field Exit Required, and a signed
+   * numeric field, whose last cell is its sign (Field Exit / Field+ / Field−
+   * end it). Auto Enter is not raised: the emulator never fires an AID on its
+   * own, whatever it types. A screen whose only input field is this one has
+   * nowhere to go.
+   */
+  private advanceTarget(full: FieldDef): FieldDef | null {
+    if ((full.ffw2 & FFW.FER) !== 0) return null;
+    if ((full.ffw1 & FFW.SHIFT_MASK) === FFW.SHIFT_SIGNED_NUM) return null;
+    const next = this.screen.adjacentInputField(this.screen.offset(full.row, full.col), 1);
+    return next && next !== full ? next : null;
   }
 
   /**

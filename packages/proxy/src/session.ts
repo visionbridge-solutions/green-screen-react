@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { ProtocolHandler, createProtocolHandler } from './protocols/index.js';
-import type { ProtocolType, ProtocolOptions, ScreenData } from './protocols/index.js';
+import type { ProtocolType, ProtocolOptions, ScreenData, TextEntryOptions } from './protocols/index.js';
 import type { ConnectionStatus, FieldValue } from 'green-screen-types';
 import { getSessionStore, sessionLifecycle } from './session-store.js';
 
@@ -309,8 +309,8 @@ export class Session extends EventEmitter {
     }
   }
 
-  sendText(text: string): boolean {
-    return this.handler.sendText(text);
+  sendText(text: string, opts?: TextEntryOptions): boolean {
+    return this.handler.sendText(text, opts);
   }
 
   sendKey(keyName: string): boolean {

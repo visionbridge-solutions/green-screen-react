@@ -27,6 +27,13 @@ export interface ProtocolTraits {
   hasMdt: boolean;
 }
 
+/** How typed text treats the end of a field (see ``ProtocolHandler.sendText``). */
+export interface TextEntryOptions {
+  /** Keyboard typing: a character typed into a full field moves on to the
+   *  next input field, as a terminal keyboard does. Default false. */
+  advance?: boolean;
+}
+
 export interface ProtocolOptions {
   /** Terminal type string for negotiation */
   terminalType?: string;
@@ -117,8 +124,14 @@ export abstract class ProtocolHandler extends EventEmitter {
   /** Get the current screen state */
   abstract getScreenData(): ScreenData;
 
-  /** Send text input at the current cursor position */
-  abstract sendText(text: string): boolean;
+  /**
+   * Send text input at the current cursor position. Returns false when a
+   * character could not be placed. ``opts.advance`` asks for keyboard
+   * semantics where the protocol has them (TN5250: a character typed into a
+   * full field moves on to the next input field); without it the text is a
+   * field write that never leaves its field.
+   */
+  abstract sendText(text: string, opts?: TextEntryOptions): boolean;
 
   /**
    * Send a key action (ENTER, F1-F24, TAB, etc.).

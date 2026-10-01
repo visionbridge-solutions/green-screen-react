@@ -1,5 +1,5 @@
 export { ProtocolHandler } from './types.js';
-export type { ProtocolType, ProtocolOptions, ScreenData } from './types.js';
+export type { ProtocolType, ProtocolOptions, ScreenData, TextEntryOptions } from './types.js';
 export { TN5250Handler } from './tn5250-handler.js';
 export { TN3270Handler } from './tn3270-handler.js';
 export { VTHandler } from './vt-handler.js';

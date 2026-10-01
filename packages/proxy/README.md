@@ -84,10 +84,10 @@ All routes accept an `X-Session-Id` header (or `?sessionId=` query) to target a 
 | `POST` | `/reconnect` | Reconnect the current session's TCP socket. |
 | `GET`  | `/screen` | Read the latest `ScreenData` snapshot. |
 | `GET`  | `/status` | Read `ConnectionStatus`. |
-| `POST` | `/send-text` | Type text at the current cursor. |
+| `POST` | `/send-text` | Type text at the current cursor. `advance: true` types as a keyboard: a character typed past a full field moves on to the next input field (TN5250; not past Field Exit Required or signed-numeric fields). Without it the text is a field write: overflow is refused (`success: false`), never spilled into the next field or written over the field's last cell. |
 | `POST` | `/send-key` | Send a key (`Enter`, `F1`–`F24`, `Tab`, arrows, `Heartbeat` for idle keep-alive, etc.). |
 | `POST` | `/set-cursor` | Move cursor to `{row, col}`. |
-| `POST` | `/batch` | Atomic batch of `{type: 'key'|'text'|'setCursor', ...}` operations. |
+| `POST` | `/batch` | Atomic batch of `{type: 'key'|'text'|'setCursor', ...}` operations. A `text` op takes the same `advance` flag as `/send-text`. |
 | `GET`  | `/read-mdt` | **v1.2.0** — return input fields whose MDT bit is set. `?includeUnmodified=1` returns all input fields. |
 | `POST` | `/session/resume` | **v1.2.0** — probe whether a session still exists; returns current status + screen. Use on page reload for REST-only clients. |
 | `POST` | `/session/authenticated` | **v1.2.0** — flip the session status to `authenticated`. For integrators running their own sign-on cascade. |
@@ -103,7 +103,7 @@ Commands the client sends:
 |---|---|
 | `connect` | Open a session (same body as `POST /connect`). |
 | `reattach` | Re-bind to an existing session by `sessionId`. |
-| `text` | Send text input. |
+| `text` | Send text input. `advance: true` for keyboard typing (see `POST /send-text`); the React adapters always send it. |
 | `key` | Send a key. |
 | `setCursor` | Move cursor. |
 | `readMdt` | **v1.2.0** — request modified field values; response is `{type: 'mdt', data: {fields, modifiedOnly}}`. |

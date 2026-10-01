@@ -168,12 +168,14 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * and the caller can abort the batch rather than silently dropping the value.
  * Keystrokes are KEYSTROKE_DELAY_MS apart with no trailing delay.
  *
- * Returns false if a character could not be written (nothing more is typed).
+ * Returns false if a character could not be written (nothing more is typed) —
+ * including one past the end of a full field when `advance` is off: a field
+ * write never spills into the next field, nor overwrites its own last cell.
  */
-async function typeTextAnimated(session: Session, text: string): Promise<boolean> {
+async function typeTextAnimated(session: Session, text: string, advance = false): Promise<boolean> {
   const chars = [...text];
   for (let i = 0; i < chars.length; i++) {
-    const ok = session.sendText(chars[i]);
+    const ok = session.sendText(chars[i], { advance });
     if (!ok) return false;
     broadcastScreenToSession(session.id, session.getScreenData());
     if (i < chars.length - 1) await delay(KEYSTROKE_DELAY_MS);
@@ -635,7 +637,7 @@ router.post('/batch', async (req: Request, res: Response) => {
           break;
 
         case 'text': {
-          const typed = await typeTextAnimated(session, op.value);
+          const typed = await typeTextAnimated(session, op.value, op.advance === true);
           if (!typed) {
             return res.json({ success: false, error: `Cannot type "${op.value}" at current cursor position` });
           }
@@ -685,14 +687,15 @@ router.post('/send-text', async (req: Request, res: Response) => {
     return res.status(404).json({ success: false, error: 'No active session' });
   }
 
-  const { text } = req.body || {};
+  const { text, advance } = req.body || {};
   if (typeof text !== 'string') {
     return res.status(400).json({ success: false, error: 'text is required' });
   }
 
   // Type char-by-char (broadcasting each keystroke) so attached dashboards see
   // genuine typing; typeTextAnimated emits the per-keystroke frames itself.
-  const ok = await typeTextAnimated(session, text);
+  // ``advance`` asks for keyboard semantics past a full field (see sendText).
+  const ok = await typeTextAnimated(session, text, advance === true);
   const screenData = session.getScreenData();
 
   // Final authoritative frame after the last keystroke.

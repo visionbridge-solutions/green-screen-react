@@ -128,8 +128,9 @@ export class WebSocketAdapter implements TerminalAdapter {
     return this.status;
   }
 
+  /** Keyboard typing: past a full field the proxy moves on to the next one. */
   async sendText(text: string): Promise<SendResult> {
-    return this.sendAndWaitForScreen({ type: 'text', text });
+    return this.sendAndWaitForScreen({ type: 'text', text, advance: true });
   }
 
   async sendKey(key: string): Promise<SendResult> {
