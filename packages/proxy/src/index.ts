@@ -125,17 +125,12 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
           // descriptions stuck in VARY ON PENDING, blocking device-
           // restricted user profiles from signing on again — CPF1220).
           try {
-            // 1. REST-created sessions: graceful destroy (SIGNOFF + TCP
-            //    close) in parallel. Each attemptSignOff has a 1.5s timeout
-            //    so the total drain is ~1.5s regardless of session count.
-            const { getSessionStore } = await import('./session-store.js');
-            const { gracefullyDestroySession } = await import('./session.js');
-            const sessions = Array.from(getSessionStore().values());
-            await Promise.allSettled(
-              sessions.map(s => gracefullyDestroySession(s.id).catch(() => { /* ignore */ }))
-            );
-            // 2. WS-created SessionControllers (live + orphaned).
-            await shutdownAllWsControllers();
+            // REST-created sessions drain in parallel (SIGNOFF + TCP close,
+            // ~1.5s whatever their number), each announced `session.lost`
+            // once gone; nothing new starts meanwhile; then the WS-created
+            // SessionControllers (live + orphaned). See shutdown.ts.
+            const { drainForShutdown } = await import('./shutdown.js');
+            await drainForShutdown(shutdownAllWsControllers);
           } catch { /* ignore */ }
 
           await new Promise<void>((res) => {

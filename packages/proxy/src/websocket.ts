@@ -12,6 +12,7 @@ import { SessionController } from './controller.js';
 import { authEnabled, resolveAuth, validateEgressTarget } from './security.js';
 import type { ProtocolType } from './protocols/index.js';
 import type { ConnectionStatus } from 'green-screen-types';
+import { SHUTTING_DOWN, isShuttingDown } from './shutdown.js';
 
 interface WsClient {
   ws: WebSocket;
@@ -264,6 +265,11 @@ function driveBlocked(ws: WebSocket, client: WsClient): boolean {
 }
 
 async function handleWsCommand(ws: WebSocket, client: WsClient, msg: any): Promise<void> {
+  // A draining proxy starts nothing and adopts nothing: it is about to exit.
+  if (isShuttingDown() && (msg.type === 'connect' || msg.type === 'reattach')) {
+    wsSend(ws, { type: 'error', message: SHUTTING_DOWN });
+    return;
+  }
   switch (msg.type) {
     case 'connect': {
       const { host = 'pub400.com', port = 23, protocol = 'tn5250', username, password, terminalType, codePage } = msg;
@@ -599,6 +605,21 @@ export async function destroyWsSession(sessionId: string): Promise<boolean> {
  * Session owns the handler lifecycle and is drained separately by
  * iterating the session store.
  */
+/**
+ * Whether a controller only wraps a REST Session's handler (it was adopted by
+ * a `reattach`) — the shutdown drain disconnects and announces that session
+ * itself, so the controller must not. Asking the store is not enough: by the
+ * time the WS controllers are shut down the drain has emptied it, and an
+ * adopted controller's own disconnect then sends a bare `status: disconnected`,
+ * which on an auto-reconnecting session reads as "the proxy is recovering this".
+ */
+export function wrapsARestSession(ctrl: SessionController, sessionId: string | null | undefined): boolean {
+  if (ctrl.adopted) return true;
+  return sessionId
+    ? getSessionStore().get(sessionId)?.handler === (ctrl as unknown as { handler: unknown }).handler
+    : false;
+}
+
 export async function shutdownAllWsControllers(): Promise<void> {
   // Gracefully disconnect orphaned controllers (SIGNOFF + TCP close)
   const orphanDrains: Promise<void>[] = [];
@@ -613,16 +634,7 @@ export async function shutdownAllWsControllers(): Promise<void> {
   const liveDrains: Promise<void>[] = [];
   for (const client of clients) {
     const ctrl = client.controller;
-    if (!ctrl) continue;
-    // Skip adopted controllers — they wrap a REST Session's handler,
-    // which the session store drain will disconnect. Adopted
-    // controllers have `connected=true` but no owned handler lifecycle.
-    // We detect them by checking whether the handler is owned by a
-    // Session in the store (same instance).
-    const ownedByRestSession = client.sessionId
-      ? getSessionStore().get(client.sessionId)?.handler === (ctrl as any).handler
-      : false;
-    if (ownedByRestSession) continue;
+    if (!ctrl || wrapsARestSession(ctrl, client.sessionId)) continue;
     liveDrains.push(
       ctrl.handleGracefulDisconnect().catch(() => { /* ignore */ })
     );

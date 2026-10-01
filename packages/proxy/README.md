@@ -83,7 +83,7 @@ All routes accept an `X-Session-Id` header (or `?sessionId=` query) to target a 
 | `POST` | `/disconnect` | Close the current session. |
 | `POST` | `/reconnect` | Reconnect the current session's TCP socket. |
 | `GET`  | `/screen` | Read the latest `ScreenData` snapshot. |
-| `GET`  | `/status` | Read `ConnectionStatus`. |
+| `GET`  | `/status` | Read `ConnectionStatus`. While the proxy is shutting down it answers `503 {ok: false, shuttingDown: true}` (and `/connect` refuses), so a client waiting for a proxy to come back does not mistake the leaving one for it. |
 | `POST` | `/send-text` | Type text at the current cursor. `advance: true` types as a keyboard: a character typed past a full field moves on to the next input field (TN5250; not past Field Exit Required or signed-numeric fields). Without it the text is a field write: overflow is refused (`success: false`), never spilled into the next field or written over the field's last cell. |
 | `POST` | `/send-key` | Send a key (`Enter`, `F1`–`F24`, `Tab`, arrows, `Heartbeat` for idle keep-alive, etc.). |
 | `POST` | `/set-cursor` | Move cursor to `{row, col}`. |
@@ -120,7 +120,7 @@ Events the proxy pushes:
 | `connected` | Session established after `connect`/`reattach`. |
 | `cursor` | Lightweight cursor-only update (local ops like Tab/arrows). |
 | `mdt` | Response to a `readMdt` command. |
-| `session.lost` | **v1.2.0** — session died (TCP drop, idle timeout, destroy, or an auto-reconnect that gave up — its status then reads `disconnected` with the reason). A lost session stays readable (`/status`, `/session/resume`) for 60 s, then the proxy removes it. |
+| `session.lost` | **v1.2.0** — session died (TCP drop, idle timeout, destroy, or an auto-reconnect that gave up — its status then reads `disconnected` with the reason). A lost session stays readable (`/status`, `/session/resume`) for 60 s, then the proxy removes it. A proxy shutting down announces every session it drains this way, with the error `proxy shutting down`. |
 | `session.resumed` | **v1.2.0** — a client successfully reattached to this session. |
 | `error` | Generic error with a `message`. |
 

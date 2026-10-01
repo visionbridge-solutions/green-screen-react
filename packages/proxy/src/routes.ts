@@ -14,6 +14,7 @@ import {
 } from './websocket.js';
 import { getKeyedSessionId, bindKey, withKeyLock } from './session-keys.js';
 import { validateEgressTarget } from './security.js';
+import { SHUTTING_DOWN, isShuttingDown } from './shutdown.js';
 const router = Router();
 
 /** Build the success payload for a connected session: its id, whether it was
@@ -185,6 +186,10 @@ async function typeTextAnimated(session: Session, text: string, advance = false)
 
 // POST /connect
 router.post('/connect', async (req: Request, res: Response) => {
+  // A session opened now would be cut by the exit, with no SIGNOFF.
+  if (isShuttingDown()) {
+    return res.status(503).json({ success: false, error: SHUTTING_DOWN });
+  }
   try {
     const { host = 'pub400.com', port = 23, protocol = 'tn5250', terminalType, codePage, screenTimeout, connectTimeout, username, password, key, forceNew, deviceName, autoReconnect, tls, tlsVerify, caCert } = req.body || {};
 
@@ -382,6 +387,10 @@ router.post('/reconnect', async (req: Request, res: Response) => {
 //    'disconnected' stub. Callers wanting per-session state must pass a
 //    session id (or use /sessions).
 router.get('/status', (req: Request, res: Response) => {
+  // A draining proxy is not the one to wait for: it is about to exit.
+  if (isShuttingDown()) {
+    return res.status(503).json({ ok: false, shuttingDown: true, error: SHUTTING_DOWN });
+  }
   const session = resolveSession(req);
   if (!session) {
     const scope = reqScope(req);
