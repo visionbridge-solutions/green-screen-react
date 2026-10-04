@@ -188,8 +188,13 @@ class RestClient:
                 )
         return result
 
-    async def disconnect(self) -> SendResult:
-        data = await self._request("POST", "/disconnect") or {}
+    async def disconnect(self, *, sign_off: bool = True) -> SendResult:
+        """End the session. ``sign_off=False`` closes the socket WITHOUT the
+        protocol's graceful exit, which types SIGNOFF + Enter into whatever
+        screen is up — a submit of that screen when it is not a menu. Use it
+        when the session cannot be proved to stand where SIGNOFF is a command."""
+        body = None if sign_off else {"signOff": False}
+        data = await self._request("POST", "/disconnect", json=body) or {}
         self._session_id = None
         return SendResult.from_wire({"success": True, **data})
 

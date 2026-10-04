@@ -5,6 +5,7 @@ import {
   getSession,
   getDefaultSession,
   getAllSessions,
+  destroySession,
   gracefullyDestroySession,
 } from './session.js';
 import {
@@ -267,8 +268,23 @@ router.post('/connect', async (req: Request, res: Response) => {
   }
 });
 
+/** Whether a disconnect asked to close WITHOUT the protocol's graceful exit:
+ *  `{"signOff": false}` in the body, or `?signOff=false`. */
+export function wantsSignOff(req: Request): boolean {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  if (body.signOff === false) return false;
+  return String(req.query.signOff ?? '').toLowerCase() !== 'false';
+}
+
 // POST /disconnect — graceful teardown: SIGNOFF + TCP close for
 // authenticated sessions, plain destroy otherwise.
+//
+// `signOff: false` closes the socket WITHOUT typing anything. The graceful exit
+// types SIGNOFF into the widest input field of whatever screen is up and
+// presses Enter: on a menu that ends the job, but on a data-entry screen it is
+// a SUBMIT of that screen with "SIGNOFF" in one of its fields. A caller that
+// cannot prove the session stands where SIGNOFF is a command asks for the bare
+// close instead, and the host's own disconnected-job handling ends the job.
 router.post('/disconnect', async (req: Request, res: Response) => {
   const requestedId = req.headers['x-session-id'] as string || '(none)';
   const session = resolveSession(req);
@@ -277,9 +293,14 @@ router.post('/disconnect', async (req: Request, res: Response) => {
     return res.json({ success: true }); // Already disconnected
   }
 
-  console.log(`[disconnect] Destroying session ${session.id.slice(0, 8)} (requested=${requestedId.slice(0, 8)})`);
-  await gracefullyDestroySession(session.id);
-  res.json({ success: true });
+  const signOff = wantsSignOff(req);
+  console.log(`[disconnect] Destroying session ${session.id.slice(0, 8)} (requested=${requestedId.slice(0, 8)}${signOff ? '' : ', no sign-off'})`);
+  if (signOff) {
+    await gracefullyDestroySession(session.id);
+  } else {
+    destroySession(session.id);
+  }
+  res.json({ success: true, signedOff: signOff });
 });
 
 // POST /disconnect-beacon — unload-friendly teardown endpoint for

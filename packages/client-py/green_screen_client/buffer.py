@@ -302,9 +302,10 @@ class ProxyTerminalClient:
             pass
         return result.success
 
-    async def disconnect(self) -> None:
+    async def disconnect(self, *, sign_off: bool = True) -> None:
+        """``sign_off=False``: close without typing (see ``RestClient.disconnect``)."""
         try:
-            await self._rest.disconnect()
+            await self._rest.disconnect(sign_off=sign_off)
         finally:
             self._connected = False
             await self._rest.close()
