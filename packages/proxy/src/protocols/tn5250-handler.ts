@@ -160,18 +160,22 @@ export class TN5250Handler extends ProtocolHandler {
     const hasPasswordField = sortedInputs.some(f => f.attribute === ATTR_NON_DISPLAY);
     if (hasUserField && hasPasswordField) return false;
 
-    // Pick the widest non-password input field — on IBM i menus the
-    // command line is consistently the longest input. Avoids typing
-    // SIGNOFF into a small opt column or into a password field. We do
-    // NOT require the field to have the UNDERSCORE attribute: many IBM i
-    // panels render the command line via a colored/extended attribute
-    // instead of the bare 0x24 byte, so hasNativeUnderscore() would miss
-    // it.
+    // Type only where SIGNOFF can be a COMMAND: a screen whose one input is
+    // a command line — the shape of an IBM i menu. It used to pick the
+    // widest input on ANY screen, so a proxy roll or a plain /disconnect
+    // with a session left on a data-entry record typed "SIGNOFF" into one of
+    // the record's fields and pressed Enter — submitting that record on a
+    // host that commits on Enter. A screen with several inputs (a record, a
+    // work-with list's option column + command line) is closed without
+    // typing; the host's own disconnected-job handling ends the job, which
+    // costs a device at worst and never writes a record. We do NOT require
+    // the UNDERSCORE attribute: many panels render the command line via a
+    // colored/extended attribute instead of the bare 0x24 byte.
     const inputs = this.screen.fields.filter(
       (f) => this.screen.isInputField(f) && !this.screen.hasNativeNonDisplay(f),
     );
-    if (inputs.length === 0) return false;
-    const target = inputs.reduce((a, b) => (b.length > a.length ? b : a));
+    if (inputs.length !== 1) return false;
+    const target = inputs[0];
     if (target.length < 7) return false; // "SIGNOFF" is 7 chars
 
     this.screen.cursorRow = target.row;
