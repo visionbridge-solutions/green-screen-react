@@ -571,8 +571,13 @@ export class TN5250Parser {
       // 0x04 as an EBCDIC control char written to the buffer, then 0x52
       // (the real READ_MDT_FIELDS command) decoded via cp37 → U+00EA (ê)
       // and painted into the screen wherever the cursor happened to land.
+      // Leave the ORDER LOOP, not the function: lib5250 un-gets the ESC and
+      // still runs the post-WTD cursor logic below (session.c:998-1018).
+      // Returning here skipped it, so an IC order — where the host parks the
+      // cursor on the field in error — was dropped on every WTD that ends in
+      // `04 52 00 00`, which is how an IBM i writes a screen.
       if (byte === 0x04) {
-        return pos; // hand back to parseCommands to handle the next cmd
+        break; // the post-WTD logic runs, then parseCommands takes the next cmd
       }
 
       switch (byte) {
