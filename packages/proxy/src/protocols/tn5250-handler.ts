@@ -283,9 +283,13 @@ export class TN5250Handler extends ProtocolHandler {
     }
 
     // Home: move cursor to start of current input field
+    // Home: the start of the field the cursor is in — its row AND column. On a
+    // field wrapping onto the next row, keeping the cursor's row landed it
+    // mid-field (LegacyBridge 2026-10-17: a 153-cell menu command line).
     if (normalizedKey === 'Home') {
       const field = this.screen.getFieldAtCursor();
       if (field && this.screen.isInputField(field)) {
+        this.screen.cursorRow = field.row;
         this.screen.cursorCol = field.col;
       }
       return true;

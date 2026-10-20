@@ -655,8 +655,15 @@ export class TN5250Encoder {
   }
 
   /**
-   * Field Exit: right-adjust field value per FFW2 bits and mark modified.
+   * Field Exit: erase from the cursor to the end of the field (5250 Field
+   * Exit), right-adjust the value per FFW2 bits, and mark it modified.
    * Does NOT advance cursor — caller should handle that (e.g., Tab).
+   *
+   * The erase was missing: Field Exit only right-adjusted, so HOME + Field
+   * Exit — an integrator's "clear this field" — cleared nothing, and a menu
+   * command line holding a refused selection had every next selection typed
+   * onto its end ("1111…1", LegacyBridge 2026-10-17). A cursor parked on the
+   * last cell of a field a value filled is past the value: nothing is erased.
    */
   fieldExit(): boolean {
     const field = this.screen.getFieldAtCursor();
@@ -673,6 +680,17 @@ export class TN5250Encoder {
         return true;
       }
     }
+
+    const cursorAt = this.screen.offset(this.screen.cursorRow, this.screen.cursorCol);
+    // Parked after a full value — the typing park, or a field write that left
+    // the cursor on the last cell of a field it filled — erases nothing.
+    const lastCell = start + field.length - 1;
+    const parked = this.filledParkAt === cursorAt
+      || (cursorAt === lastCell && !/\s$/.test(this.screen.getFieldValue(field)));
+    if (!parked) {
+      for (let i = cursorAt; i < start + field.length && i < this.screen.size; i++) this.screen.buffer[i] = ' ';
+    }
+    this.filledParkAt = null;
 
     const value = this.screen.getFieldValue(field);
     const trimmed = value.replace(/\s+$/, '');
