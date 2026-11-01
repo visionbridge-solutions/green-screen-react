@@ -332,18 +332,28 @@ class ProxyTerminalClient:
         self.screen.apply(screen)
         return self.screen.content
 
-    async def send_text(self, text: str) -> bool:
-        result = await self._rest.send_text(text)
+    async def send_text(self, text: str, *, animate: bool = True) -> bool:
+        """``animate=False``: one burst, no per-keystroke frames (see ``RestClient.send_text``)."""
+        result = await self._rest.send_text(text, animate=animate)
         if result.success:
-            # Fetch the updated screen so callers see the effect
-            self.screen.apply(await self._rest.get_screen())
+            await self._apply_result_frame(result)
         return result.success
 
     async def send_key(self, key: str) -> bool:
         result = await self._rest.send_key(key)
         if result.success:
-            self.screen.apply(await self._rest.get_screen())
+            await self._apply_result_frame(result)
         return result.success
+
+    async def _apply_result_frame(self, result: SendResult) -> None:
+        """Show the caller the effect of a send from the frame its own round
+        trip returned; a second ``GET /screen`` for the same instant was one
+        more hop per keystroke. Only a response that carried no frame is
+        followed by a read."""
+        if result.screen is not None:
+            self.screen.apply(result.screen)
+            return
+        self.screen.apply(await self._rest.get_screen())
 
     async def send_enter(self) -> bool:
         return await self.send_key("Enter")

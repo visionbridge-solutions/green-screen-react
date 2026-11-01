@@ -212,8 +212,17 @@ class RestClient:
             return None
         return ScreenData.from_wire(data)
 
-    async def send_text(self, text: str) -> SendResult:
-        data = await self._request("POST", "/send-text", json={"text": text}) or {"success": False}
+    async def send_text(self, text: str, *, animate: bool = True) -> SendResult:
+        """Type ``text`` at the cursor.
+
+        ``animate=False`` asks the proxy to insert the characters in one burst
+        (still one validated character at a time, never spilling past the
+        field) with no per-keystroke pacing or frames — for an automated
+        driver, whose typing no one watches keystroke by keystroke. A person's
+        interactive typing keeps the default.
+        """
+        payload = {"text": text, "animate": animate}
+        data = await self._request("POST", "/send-text", json=payload) or {"success": False}
         return SendResult.from_wire(data)
 
     async def send_key(self, key: str) -> SendResult:
@@ -229,11 +238,14 @@ class RestClient:
         operations: List[Dict[str, Any]],
         *,
         read_screen: bool = True,
+        animate: bool = True,
     ) -> Optional[Dict[str, Any]]:
+        """``animate`` is the batch's default for its text ops (see ``send_text``);
+        an op's own ``animate`` outranks it."""
         return await self._request(
             "POST",
             "/batch",
-            json={"operations": operations, "readScreen": read_screen},
+            json={"operations": operations, "readScreen": read_screen, "animate": animate},
         )
 
     # ------------------------------------------------------------------

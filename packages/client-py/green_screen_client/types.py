@@ -391,6 +391,12 @@ class SendResult:
     # echoed from the request. Absent on proxies that predate the field, which
     # a TLS-requiring caller must treat as NOT secured.
     security: Optional[Dict[str, Any]] = None
+    # The whole frame the proxy returned with the result (``/send-text``,
+    # ``/send-key`` and ``/batch`` answer ``{success, ...screenData}``): the
+    # screen as it stood after the keystroke, parsed once here so the caller
+    # applies it instead of paying a second round trip for the same instant.
+    # ``None`` when the response carried no frame (an error, an old proxy).
+    screen: Optional[ScreenData] = None
 
     @classmethod
     def from_wire(cls, data: Dict[str, Any]) -> "SendResult":
@@ -404,4 +410,5 @@ class SendResult:
             reused=data.get("reused"),
             authenticated=data.get("authenticated"),
             security=data.get("security"),
+            screen=ScreenData.from_wire(data) if data.get("content") else None,
         )

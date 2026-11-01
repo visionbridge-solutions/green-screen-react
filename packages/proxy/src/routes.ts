@@ -185,30 +185,50 @@ const KEYSTROKE_DELAY_MS = 15;
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+interface TypeTextOptions {
+  /** Keyboard semantics past a full field (see `sendText`). */
+  advance?: boolean;
+  /**
+   * Animate the keystrokes: broadcast a frame after each character and pace
+   * them KEYSTROKE_DELAY_MS apart so WS-attached viewers see genuine typing.
+   * Off, the value is inserted in one burst with no frame of its own — the
+   * caller emits the one frame that follows. An automated driver turns this
+   * off: a few hundred characters a form cost it seconds of pure delay and
+   * as many broadcasts, for frames no person was watching keystroke by
+   * keystroke.
+   */
+  animate?: boolean;
+}
+
 /**
- * Type `text` into the current field one character at a time, broadcasting a
- * screen frame after each keystroke so WS-attached dashboards render genuine
- * per-keystroke "typing" instead of the whole value snapping in at once.
+ * Type `text` into the current field one character at a time.
  *
- * The cursor/field is validated per character: `sendText` (→ `insertText`)
- * returns false at a non-writable position, so a misplaced cursor fails fast
- * and the caller can abort the batch rather than silently dropping the value.
- * Keystrokes are KEYSTROKE_DELAY_MS apart with no trailing delay.
+ * The cursor/field is validated per character in BOTH modes: `sendText`
+ * (→ `insertText`) returns false at a non-writable position, so a misplaced
+ * cursor fails fast and the caller can abort the batch rather than silently
+ * dropping the value. Unanimated typing is the same per-character insert
+ * without the pacing and the per-keystroke frames — never a block write that
+ * could spill past the field.
  *
  * Returns false if a character could not be written (nothing more is typed) —
  * including one past the end of a full field when `advance` is off: a field
  * write never spills into the next field, nor overwrites its own last cell.
  */
-async function typeTextAnimated(session: Session, text: string, advance = false): Promise<boolean> {
+async function typeText(session: Session, text: string, opts: TypeTextOptions = {}): Promise<boolean> {
+  const { advance = false, animate = true } = opts;
   const chars = [...text];
   for (let i = 0; i < chars.length; i++) {
     const ok = session.sendText(chars[i], { advance });
     if (!ok) return false;
+    if (!animate) continue;
     broadcastScreenToSession(session.id, session.getScreenData());
     if (i < chars.length - 1) await delay(KEYSTROKE_DELAY_MS);
   }
   return true;
 }
+
+/** `animate` as a request carries it: anything but an explicit `false` animates. */
+const wantsAnimation = (value: unknown): boolean => value !== false;
 
 // POST /connect
 router.post('/connect', async (req: Request, res: Response) => {
@@ -679,7 +699,7 @@ router.post('/batch', async (req: Request, res: Response) => {
     return res.status(404).json({ success: false, error: 'No active session' });
   }
 
-  const { operations, readScreen = true } = req.body || {};
+  const { operations, readScreen = true, animate: batchAnimate } = req.body || {};
   if (!Array.isArray(operations) || operations.length === 0) {
     return res.status(400).json({ success: false, error: 'operations array is required' });
   }
@@ -702,8 +722,13 @@ router.post('/batch', async (req: Request, res: Response) => {
           break;
 
         case 'text': {
-          const typed = await typeTextAnimated(session, op.value, op.advance === true);
+          // A text op's own `animate` outranks the request's; both default on.
+          const animate = wantsAnimation(op.animate ?? batchAnimate);
+          const typed = await typeText(session, op.value, { advance: op.advance === true, animate });
           if (!typed) {
+            // The characters placed before the refusal are on the buffer; an
+            // unanimated op has shown none of them yet.
+            broadcastScreenToSession(session.id, session.getScreenData());
             return res.json({ success: false, error: `Cannot type "${op.value}" at current cursor position` });
           }
           lastRemoteKey = false;
@@ -752,21 +777,19 @@ router.post('/send-text', async (req: Request, res: Response) => {
     return res.status(404).json({ success: false, error: 'No active session' });
   }
 
-  const { text, advance } = req.body || {};
+  const { text, advance, animate } = req.body || {};
   if (typeof text !== 'string') {
     return res.status(400).json({ success: false, error: 'text is required' });
   }
 
-  // Type char-by-char (broadcasting each keystroke) so attached dashboards see
-  // genuine typing; typeTextAnimated emits the per-keystroke frames itself.
-  // ``advance`` asks for keyboard semantics past a full field (see sendText).
-  const ok = await typeTextAnimated(session, text, advance === true);
+  // Animated (the default), typeText emits a frame per keystroke so attached
+  // dashboards see genuine typing; unanimated it emits none. Either way the
+  // one frame below is the authoritative state after the last character —
+  // also after a refusal, when the characters placed before it are on the
+  // buffer. ``advance`` asks for keyboard semantics past a full field.
+  const ok = await typeText(session, text, { advance: advance === true, animate: wantsAnimation(animate) });
   const screenData = session.getScreenData();
-
-  // Final authoritative frame after the last keystroke.
-  if (ok) {
-    broadcastScreenToSession(session.id, screenData);
-  }
+  broadcastScreenToSession(session.id, screenData);
 
   res.json({
     success: ok,
