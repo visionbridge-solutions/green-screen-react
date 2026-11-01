@@ -41,7 +41,12 @@ function sessionConnectPayload(session: Session, reused: boolean): Record<string
 /** Feature flags a client can probe BEFORE sending credentials in /connect.
  *  A client that needs TLS checks for 'tls' here and refuses to proceed
  *  against a proxy that predates it (fail-closed against silent plaintext). */
-const PROXY_CAPABILITIES = ['tls'] as const;
+// 'scoped-auth': this proxy verifies `<scope>.<hmac>` tokens, confines a scoped
+// caller to its scope's sessions, and lets a scoped keyed connect CLAIM the
+// keyed session the all-access caller opened (claimKeyedSession). An integrator
+// hands out scoped tokens only to a proxy that advertises it — an older proxy
+// would 401 them, and a 401 storm against IBM i trips QMAXSIGN.
+const PROXY_CAPABILITIES = ['tls', 'scoped-auth'] as const;
 
 interface FreshConnectOpts {
   host: string;
@@ -121,6 +126,26 @@ function reqScope(req: Request): string | null {
  *  (null) reaches everything; a scoped caller only its own scope's sessions. */
 function sessionInScope(session: Session, scope: string | null): boolean {
   return scope === null || session.scope === scope;
+}
+
+/**
+ * The keyed session a connect-by-key may reuse or replace, for a caller at
+ * ``scope``. A session the all-access caller opened (scope null) is CLAIMED by
+ * the first scoped caller naming its key: the control plane chose that key and
+ * handed it, with a token for exactly that scope, to the worker — so the key
+ * plus the scoped token is the proof. From then on the session belongs to that
+ * scope: it is never claimed again, and never across two scopes (a session of
+ * another scope resolves to undefined, indistinguishable from none). This is
+ * what lets an integrator turn scoping on under live sessions without opening
+ * a second host session per key.
+ */
+export function claimKeyedSession(session: Session | undefined, scope: string | null): Session | undefined {
+  if (!session) return undefined;
+  if (scope !== null && session.scope === null) {
+    session.scope = scope;
+    console.log(`[connect] keyed session ${session.id.slice(0, 8)} claimed by scope ${scope}`);
+  }
+  return sessionInScope(session, scope) ? session : undefined;
 }
 
 /** Resolve session from header, query param, or default — CONFINED to the
@@ -214,11 +239,11 @@ router.post('/connect', async (req: Request, res: Response) => {
     if (typeof key === 'string' && key.length > 0) {
       return await withKeyLock(key, async () => {
         const existingId = forceNew ? undefined : getKeyedSessionId(key);
-        const existingRaw = existingId ? getSession(existingId) : undefined;
-        // Never re-hand a session created under a different scope, even on a key
+        // Never re-hand a session created under a DIFFERENT scope, even on a key
         // collision — the key is integrator-chosen and opaque, so scope is the
-        // authoritative tenant boundary.
-        const existing = existingRaw && sessionInScope(existingRaw, scope) ? existingRaw : undefined;
+        // authoritative tenant boundary. The control plane's own (unscoped)
+        // session is claimed for this scope instead (claimKeyedSession).
+        const existing = claimKeyedSession(existingId ? getSession(existingId) : undefined, scope);
         let session: Session;
         let reused = false;
         if (existing && existing.status.connected) {
@@ -229,9 +254,9 @@ router.post('/connect', async (req: Request, res: Response) => {
           // Release any prior keyed session's device (dead, or forceNew) before
           // replacing it, so the host's device pool stays clean.
           const priorId = getKeyedSessionId(key);
-          const prior = priorId ? getSession(priorId) : undefined;
-          if (prior && sessionInScope(prior, scope)) {
-            void gracefullyDestroySession(priorId!).catch(() => { /* best-effort */ });
+          const prior = claimKeyedSession(priorId ? getSession(priorId) : undefined, scope);
+          if (prior) {
+            void gracefullyDestroySession(prior.id).catch(() => { /* best-effort */ });
           }
           session = await freshConnectSession(opts);
           bindKey(key, session.id);
@@ -346,6 +371,9 @@ router.get('/sessions', (req: Request, res: Response) => {
     .map(s => ({
       id: s.id,
       status: s.status,
+      // The scope the session was created under (or claimed for): how an
+      // integrator's control plane verifies its tenant tagging from outside.
+      scope: s.scope,
     }));
   res.json({ sessions, count: sessions.length });
 });
@@ -412,7 +440,14 @@ router.get('/status', (req: Request, res: Response) => {
   if (isShuttingDown()) {
     return res.status(503).json({ ok: false, shuttingDown: true, error: SHUTTING_DOWN });
   }
-  const session = resolveSession(req);
+  // The credential-less probe the auth gate admits (auth-gate.ts) learns that
+  // the server is up and what it can do — never a session: with exactly one
+  // live session the default resolution below would answer with its host and
+  // user to anyone who can reach the port, and touch() it, keeping it from
+  // the idle reap. Without auth enabled nothing is stamped and the bare probe
+  // keeps resolving the lone session (the single-user dev default).
+  const anonymous = (req as { gsAnonymous?: boolean }).gsAnonymous === true;
+  const session = anonymous ? undefined : resolveSession(req);
   if (!session) {
     const scope = reqScope(req);
     return res.json({

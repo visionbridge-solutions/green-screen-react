@@ -1,7 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer, Server as HttpServer } from 'http';
-import { authEnabled, resolveAuth, corsOrigins, bindAddress } from './security.js';
+import { authEnabled, corsOrigins, bindAddress } from './security.js';
+import { authGate } from './auth-gate.js';
 
 // Re-export session store primitives so integrators can swap the default
 // in-memory store for a custom implementation (e.g. Redis routing for
@@ -63,23 +64,12 @@ export async function createProxy(options: ProxyOptions = {}): Promise<ProxyServ
 
   // Bearer auth is opt-in (GS_PROXY_AUTH_TOKEN). When enabled, every route
   // requires the token EXCEPT the bare healthcheck (`GET /status` with no
-  // session id), which orchestrators poll without credentials. A scoped token
+  // session id), which orchestrators poll without credentials and which is
+  // answered with server liveness only (auth-gate.ts). A scoped token
   // additionally confines the caller to its own tenant's sessions — the
   // resolved scope is stamped on the request for the route/WS layers to enforce.
   if (authEnabled()) {
-    app.use((req, res, next) => {
-      const isBareHealthcheck =
-        req.method === 'GET' && req.path === '/status' &&
-        !req.headers['x-session-id'] && !req.query.sessionId;
-      if (isBareHealthcheck) return next();
-      const auth = resolveAuth(req.headers.authorization);
-      if (!auth.ok) {
-        res.status(401).json({ success: false, error: 'unauthorized' });
-        return;
-      }
-      (req as { gsScope?: string | null }).gsScope = auth.scope;
-      next();
-    });
+    app.use(authGate);
   }
 
   const [{ default: routes }, { setupWebSocket, shutdownAllWsControllers }] = await Promise.all([
