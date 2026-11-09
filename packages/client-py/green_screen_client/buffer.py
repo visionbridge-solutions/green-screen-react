@@ -50,6 +50,7 @@ class ScreenBuffer:
         self.dbcs_cont: List[int] = []
         self.code_page: str = "cp37"
         self.command_keys_no_transmit: Optional[List[str]] = None
+        self.host_error_line: Optional[dict] = None
 
     def apply(self, screen: Optional[ScreenData]) -> None:
         if screen is None:
@@ -86,6 +87,7 @@ class ScreenBuffer:
             if screen.command_keys_no_transmit
             else None
         )
+        self.host_error_line = dict(screen.host_error_line) if screen.host_error_line else None
 
     @staticmethod
     def _field_to_dict(field) -> dict:  # type: ignore[no-untyped-def]

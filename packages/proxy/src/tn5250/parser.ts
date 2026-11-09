@@ -252,6 +252,7 @@ export class TN5250Parser {
           this.screen.scrollbarList = [];
           this.screen.savedMsgLine = null;
           this.screen.savedMsgLineRow = -1;
+          this.screen.errorStateActive = false;
           this.screen.headerData = [];
           this.winRowOff = 0;
           this.winColOff = 0;
@@ -272,6 +273,7 @@ export class TN5250Parser {
           this.screen.scrollbarList = [];
           this.screen.savedMsgLine = null;
           this.screen.savedMsgLineRow = -1;
+          this.screen.errorStateActive = false;
           this.screen.headerData = [];
           this.winRowOff = 0;
           this.winColOff = 0;
@@ -340,6 +342,7 @@ export class TN5250Parser {
           // last row by default (per lib5250 dbuffer.c:934-944).
           const msgRow = this.screen.msgLineRow();
           let msgCol = 0;
+          let msgText = '';
           let endY = this.screen.cursorRow;
           let endX = this.screen.cursorCol;
           // Parse error message data: printable chars go to message line,
@@ -363,10 +366,14 @@ export class TN5250Parser {
               if (addr < this.screen.size) {
                 this.screen.setCharAt(addr, ch);
               }
+              msgText += c === 0x00 ? ' ' : ch;
               msgCol++;
             }
             pos++;
           }
+          // The host's words, kept past the Reset that restores the line.
+          this.screen.hostErrorLine = { text: msgText.trim(), row: msgRow };
+          this.screen.errorStateActive = true;
           // Set cursor to the IC position from within the error code
           if (endY >= 0 && endY < this.screen.rows && endX >= 0 && endX < this.screen.cols) {
             this.screen.cursorRow = endY;

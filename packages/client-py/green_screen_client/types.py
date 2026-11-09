@@ -241,6 +241,10 @@ class ScreenData:
     # Attention) on this screen — pressing them does NOT transmit typed input
     # (the SOH key mask). Absent/None when no key mask is present.
     command_keys_no_transmit: Optional[List[str]] = None
+    # The message the host wrote in the operator error state in answer to the
+    # last AID: {"text", "row", "active"}. Kept by the proxy through a Reset
+    # (which restores the line on screen) until the next AID.
+    host_error_line: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_wire(cls, data: Dict[str, Any]) -> "ScreenData":
@@ -273,6 +277,7 @@ class ScreenData:
             dbcs_cont=data.get("dbcs_cont"),
             code_page=data.get("code_page"),
             command_keys_no_transmit=data.get("command_keys_no_transmit"),
+            host_error_line=data.get("host_error_line") or None,
         )
 
 

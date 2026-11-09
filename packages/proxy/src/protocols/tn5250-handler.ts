@@ -209,6 +209,9 @@ export class TN5250Handler extends ProtocolHandler {
    *  mark `host_records_at_aid` that the host's answer moves past. */
   private sendAid(aid: Buffer): void {
     this.noteAidSent();
+    // An error line answers the key before this one.
+    this.screen.hostErrorLine = null;
+    this.screen.errorStateActive = false;
     this.connection.sendRaw(aid);
   }
 
@@ -340,6 +343,8 @@ export class TN5250Handler extends ProtocolHandler {
     // saved_msg_line). Client-side only — nothing sent to host.
     if (normalizedKey === 'Reset') {
       this.screen.keyboardLocked = false;
+      // The error state ends; the host's words stay in hostErrorLine.
+      this.screen.errorStateActive = false;
       if (this.screen.savedMsgLine) {
         this.screen.restoreMsgLine();
       } else {
@@ -770,9 +775,17 @@ export class TN5250Handler extends ProtocolHandler {
   cadence (LOCKED_FLUSH_MS) as a progress fallback; on unlock — or with
   GS_EMIT_PARTIAL_WRITES=1 restoring the old behaviour — emit immediately.
   Automation is unaffected either way (REST /screen always serves the live
-  buffer; integrators settle on stability, not frame timing). */
+  buffer; integrators settle on stability, not frame timing).
+
+  The operator error state is the other end of a transaction: the host has
+  answered with a message and left the keyboard inhibited until Reset.
+  Holding THAT frame meant a client's Reset (which restores the saved
+  message line) could land inside the hold, and the host's message never
+  reached a frame at all — viewers and recordings showed a key the host
+  "ignored" (IBM i claim entry, 2026-11-08/09). It is emitted at once. */
   private emitScreenGated(): void {
-    if (process.env.GS_EMIT_PARTIAL_WRITES === '1' || !this.screen.keyboardLocked) {
+    if (process.env.GS_EMIT_PARTIAL_WRITES === '1' || !this.screen.keyboardLocked
+        || this.screen.errorStateActive) {
       this.clearLockedFlushTimer();
       this.pendingScreenEmit = false;
       this.emit('screenChange', this.getScreenData());

@@ -219,6 +219,18 @@ export class ScreenBuffer {
   /** Row (0-based) where savedMsgLine was captured from. */
   savedMsgLineRow: number = -1;
   /**
+   * The message the host's last WRITE_ERROR_CODE wrote, in answer to the
+   * last AID. Reset restores the saved message line, so without this the
+   * host's words are gone from the buffer the moment the operator error
+   * state is cleared — a reader after the Reset sees the screen as if the
+   * host had said nothing. Kept through Reset; dropped when the next AID
+   * goes out (it then answers a key the host has not seen yet).
+   */
+  hostErrorLine: { text: string; row: number } | null = null;
+  /** True from WRITE_ERROR_CODE until Reset: the keyboard is inhibited by
+   *  the host's error, not by a transaction still in flight. */
+  errorStateActive = false;
+  /**
    * Persistent Insert Cursor position from IC order. Per lib5250
    * display.c:458-462 (set_pending_insert) and display.c:614-635
    * (set_cursor_home). Set by IC order, cleared by SOH and CLEAR_UNIT.
@@ -366,6 +378,8 @@ export class ScreenBuffer {
     this.headerData = [];
     this.savedMsgLine = null;
     this.savedMsgLineRow = -1;
+    this.hostErrorLine = null;
+    this.errorStateActive = false;
     this.pendingInsert = false;
     this.pendingInsertRow = 0;
     this.pendingInsertCol = 0;
@@ -1220,6 +1234,9 @@ export class ScreenBuffer {
       dbcs_cont,
       code_page: this.codePage,
       command_keys_no_transmit: noTransmitKeys.length ? noTransmitKeys : undefined,
+      host_error_line: this.hostErrorLine
+        ? { ...this.hostErrorLine, active: this.errorStateActive }
+        : undefined,
     };
   }
 }

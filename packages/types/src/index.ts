@@ -273,6 +273,15 @@ export interface ScreenData {
    * wait on that instead of on the screen content changing.
    */
   host_records_at_aid?: number;
+  /**
+   * The message the host wrote in the operator error state (5250 WRITE ERROR
+   * CODE) in answer to the last AID, with the row it was written on.
+   * `active` while the keyboard is still inhibited by that error; after a
+   * Reset the line on screen is restored to what it held before, but this
+   * keeps the host's words until the next AID is sent. Absent when the host's
+   * answer to the last AID was no error, and on protocols without the state.
+   */
+  host_error_line?: { text: string; row: number; active: boolean };
   /** Whether the message waiting indicator is set */
   message_waiting?: boolean;
   /** Whether the host requested an audible alarm (beep) */

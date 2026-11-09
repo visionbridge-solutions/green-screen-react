@@ -171,3 +171,14 @@ def test_a_failed_strict_read_is_none_not_the_previous_frame():
     # The strict read says so, and leaves the buffer as it was:
     assert asyncio.run(client.get_screen_strict()) is None
     assert client.screen.content == "MENU"
+
+
+def test_apply_carries_the_hosts_error_line_and_drops_a_stale_one():
+    """The host's operator-error message outlives a Reset only in this field;
+    a buffer that dropped it would hide the host's answer from REST readers."""
+    buf = ScreenBuffer()
+    assert buf.host_error_line is None
+    buf.apply(_screen(host_error_line={"text": "NO DEPS", "row": 23, "active": False}))
+    assert buf.host_error_line == {"text": "NO DEPS", "row": 23, "active": False}
+    buf.apply(_screen())
+    assert buf.host_error_line is None
