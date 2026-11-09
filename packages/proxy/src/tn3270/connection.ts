@@ -1,6 +1,7 @@
 import * as net from 'net';
 import { EventEmitter } from 'events';
 import { TELNET, TelnetRecordStream } from '../net/telnet.js';
+import { FirstByteWatch, closedBeforeDataError } from '../net/closed-before-data.js';
 import { TERMINAL_TYPE, TN3270E } from './constants.js';
 
 export interface TN3270ConnectOptions {
@@ -27,6 +28,8 @@ export class TN3270Connection extends EventEmitter {
   private socket: net.Socket | null = null;
   private host: string = '';
   private port: number = 23;
+  /** Bytes from the far end since this socket opened (closed-before-data verdict). */
+  private readonly firstByte = new FirstByteWatch();
   private connected: boolean = false;
   private terminalType: string = TERMINAL_TYPE;
 
@@ -79,6 +82,7 @@ export class TN3270Connection extends EventEmitter {
 
       this.host = host;
       this.port = port;
+      this.firstByte.reset();
       this.stream.reset();
       this.tn3270eEnabled = options?.tn3270e !== false;
       this.tn3270eMode = false;
@@ -110,7 +114,12 @@ export class TN3270Connection extends EventEmitter {
         });
 
         this.socket!.on('close', () => {
+          // The far end hung up before a single byte: no negotiation, so no
+          // host ever saw this session (net/closed-before-data.ts). Say so
+          // before the disconnect, or the silence reads as a host verdict.
+          const silent = this.firstByte.silent;
           this.cleanup();
+          if (silent) this.emit('error', closedBeforeDataError(this.host, this.port));
           this.emit('disconnected');
         });
 
@@ -186,6 +195,7 @@ export class TN3270Connection extends EventEmitter {
   }
 
   private onData(data: Buffer): void {
+    this.firstByte.note(data.length);
     // Any byte from the host is liveness proof — stamp before parsing.
     this.lastRecvAtMs = Date.now();
     this.stream.feed(data);

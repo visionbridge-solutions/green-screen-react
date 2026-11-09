@@ -1,6 +1,7 @@
 import * as net from 'net';
 import { EventEmitter } from 'events';
 import { TELNET } from '../net/telnet.js';
+import { FirstByteWatch, closedBeforeDataError } from '../net/closed-before-data.js';
 import { TERMINAL_TYPE, CTRL } from './constants.js';
 
 export interface ConnectionEvents {
@@ -23,6 +24,8 @@ export class HP6530Connection extends EventEmitter {
   private socket: net.Socket | null = null;
   private host: string = '';
   private port: number = 23;
+  /** Bytes from the far end since this socket opened (closed-before-data verdict). */
+  private readonly firstByte = new FirstByteWatch();
   private _connected: boolean = false;
   private recvBuffer: Buffer = Buffer.alloc(0);
 
@@ -52,6 +55,7 @@ export class HP6530Connection extends EventEmitter {
 
       this.host = host;
       this.port = port;
+      this.firstByte.reset();
       this.recvBuffer = Buffer.alloc(0);
       this.xoff = false;
       this.sendQueue = [];
@@ -76,7 +80,12 @@ export class HP6530Connection extends EventEmitter {
         });
 
         this.socket!.on('close', () => {
+          // The far end hung up before a single byte: no negotiation, so no
+          // host ever saw this session (net/closed-before-data.ts). Say so
+          // before the disconnect, or the silence reads as a host verdict.
+          const silent = this.firstByte.silent;
           this.cleanup();
+          if (silent) this.emit('error', closedBeforeDataError(this.host, this.port));
           this.emit('disconnected');
         });
 
@@ -127,6 +136,7 @@ export class HP6530Connection extends EventEmitter {
   }
 
   private onData(data: Buffer): void {
+    this.firstByte.note(data.length);
     this.recvBuffer = Buffer.concat([this.recvBuffer, data]);
     this.processBuffer();
   }
