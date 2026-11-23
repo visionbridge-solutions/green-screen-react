@@ -17,7 +17,7 @@ Example:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -270,6 +270,41 @@ class RestClient:
         if not data or not data.get("success"):
             return None
         return ConnectionStatus.from_wire(data.get("status", {}))
+
+    async def probe_session(self, session_id: str) -> Tuple[Optional[bool], Optional[ConnectionStatus]]:
+        """Whether the proxy holds ``session_id`` — WITHOUT adopting it (this
+        client's own session id is left alone) and telling "no such session"
+        from "no answer", which :meth:`resume_session` cannot (it answers None
+        for both):
+
+        * ``(True, status)``  — the proxy holds it; ``status.connected`` says
+          whether its host connection is up.
+        * ``(False, None)``   — the proxy ANSWERED that it holds no such
+          session (its own 404, with its JSON body).
+        * ``(None, None)``    — nothing can be said: the request failed, or the
+          answer was not the proxy's (a gateway error, another status, a body
+          that is not its own). A caller must not treat this as absent.
+        """
+        http = await self._ensure_http()
+        try:
+            resp = await http.request(
+                "POST", f"{self._base_url}/session/resume",
+                json={"sessionId": session_id}, headers=self._headers(),
+            )
+        except httpx.HTTPError as e:
+            logger.warning("proxy session probe failed: %s", e)
+            return None, None
+        try:
+            data = resp.json() if resp.content else None
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            return None, None
+        if resp.status_code == 404 and data.get("success") is False:
+            return False, None
+        if resp.status_code == 200 and data.get("success") is True:
+            return True, ConnectionStatus.from_wire(data.get("status", {}))
+        return None, None
 
     async def get_liveness(self) -> Optional[Dict[str, Any]]:
         """Liveness signal for unambiguous half-open detection.

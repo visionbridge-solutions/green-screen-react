@@ -67,6 +67,7 @@ async with ProxyTerminalClient("http://proxy:3001", host="pub400.com") as client
 
 - `read_mdt(modified_only=True)` — cheap post-write verification via per-field MDT bits.
 - `resume_session(session_id)` — REST probe for "is this session still alive?"
+- `probe_session(session_id)` — the same probe without adopting the session; tells "no such session" `(False, None)` from "no answer" `(None, None)`
 - `mark_authenticated(username)` — flip session status after your own sign-on cascade (the proxy stays protocol-generic).
 - `wait_for_fields(min_fields, timeout_ms=...)` — wait until a form with N input fields appears.
 
